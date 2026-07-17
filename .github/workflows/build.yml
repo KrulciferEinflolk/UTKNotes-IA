@@ -28,14 +28,75 @@ jobs:
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
-          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
-            echo "$GOOGLE_SERVICES_JSON" > app/google-services.json
-            echo "Successfully wrote app/google-services.json from secret"
-          else
-            echo "WARNING: GOOGLE_SERVICES_JSON secret is not set. Generating a placeholder/mock google-services.json to allow compilation..."
-            echo '{"project_info":{"project_number":"1234567890","project_id":"mock-project-id","storage_bucket":"mock-project-id.appspot.com"},"client":[{"client_info":{"mobilesdk_app_id":"1:1234567890:android:mockappid","android_client_info":{"package_name":"utk.notes.ia"}},"oauth_client":[{"client_id":"mock-client-id.apps.googleusercontent.com","client_type":3}],"api_key":[{"current_key":"mock-api-key"}],"services":{"appinvite_service":{"other_platform_oauth_client":[]}}}],"configuration_version":"1"}' > app/google-services.json
-            echo "Successfully generated dummy app/google-services.json"
-          fi
+          python3 -c '
+          import os, json, base64
+
+          secret = os.environ.get("GOOGLE_SERVICES_JSON", "").strip()
+          out_path = "app/google-services.json"
+
+          dummy_json = {
+            "project_info": {
+              "project_number": "1234567890",
+              "project_id": "mock-project-id",
+              "storage_bucket": "mock-project-id.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:1234567890:android:mockappid",
+                  "android_client_info": {
+                    "package_name": "utk.notes.ia"
+                  }
+                },
+                "oauth_client": [
+                  {
+                    "client_id": "mock-client-id.apps.googleusercontent.com",
+                    "client_type": 3
+                  }
+                ],
+                "api_key": [
+                  {
+                    "current_key": "mock-api-key"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
+              }
+            ],
+            "configuration_version": "1"
+          }
+
+          def try_parse_json(content):
+              try:
+                  return json.loads(content)
+              except Exception:
+                  return None
+
+          parsed = None
+          if secret:
+              parsed = try_parse_json(secret)
+              if parsed is not None:
+                  print("Successfully parsed GOOGLE_SERVICES_JSON directly as plain JSON.")
+              else:
+                  try:
+                      decoded = base64.b64decode(secret).decode("utf-8")
+                      parsed = try_parse_json(decoded)
+                      if parsed is not None:
+                          print("Successfully decoded and parsed GOOGLE_SERVICES_JSON from Base64.")
+                  except Exception:
+                      pass
+
+          if parsed is None:
+              print("WARNING: GOOGLE_SERVICES_JSON secret is not set, or is invalid/malformed. Using fallback placeholder JSON.")
+              parsed = dummy_json
+
+          with open(out_path, "w") as f:
+              json.dump(parsed, f, indent=2)
+          print("Saved google-services.json successfully.")
+          '
 
       - name: Setup Release Keystore
         env:
