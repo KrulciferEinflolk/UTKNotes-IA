@@ -68,7 +68,7 @@ jobs:
               ],
               "configuration_version": "1"
             }
-            
+EOF
             echo "Successfully generated dummy app/google-services.json"
           fi
 
