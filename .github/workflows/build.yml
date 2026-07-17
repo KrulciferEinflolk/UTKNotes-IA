@@ -28,46 +28,14 @@ jobs:
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
+          mkdir -p app
           if [ -n "$GOOGLE_SERVICES_JSON" ]; then
             echo "$GOOGLE_SERVICES_JSON" > app/google-services.json
             echo "Successfully wrote app/google-services.json from secret"
           else
             echo "WARNING: GOOGLE_SERVICES_JSON secret is not set. Generating a placeholder/mock google-services.json to allow compilation..."
-            cat << 'EOF' > app/google-services.json
-            {
-              "project_info": {
-                "project_number": "1234567890",
-                "project_id": "mock-project-id",
-                "storage_bucket": "mock-project-id.appspot.com"
-              },
-              "client": [
-                {
-                  "client_info": {
-                    "mobilesdk_app_id": "1:1234567890:android:mockappid",
-                    "android_client_info": {
-                      "package_name": "utk.notes.ia"
-                    }
-                  },
-                  "oauth_client": [
-                    {
-                      "client_id": "mock-client-id.apps.googleusercontent.com",
-                      "client_type": 3
-                    }
-                  ],
-                  "api_key": [
-                    {
-                      "current_key": "mock-api-key"
-                    }
-                  ],
-                  "services": {
-                    "appinvite_service": {
-                      "other_platform_oauth_client": []
-                    }
-                  }
-                }
-              ],
-              "configuration_version": "1"
-            }
+            cat > app/google-services.json <<'EOF'
+{"project_info":{"project_number":"1234567890","project_id":"mock-project-id","storage_bucket":"mock-project-id.appspot.com"},"client":[{"client_info":{"mobilesdk_app_id":"1:1234567890:android:mockappid","android_client_info":{"package_name":"utk.notes.ia"}},"oauth_client":[{"client_id":"mock-client-id.apps.googleusercontent.com","client_type":3}],"api_key":[{"current_key":"mock-api-key"}],"services":{"appinvite_service":{"other_platform_oauth_client":[]}}}],"configuration_version":"1"}
 EOF
             echo "Successfully generated dummy app/google-services.json"
           fi
@@ -90,13 +58,15 @@ EOF
             keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-      - name: Regenerate Gradle Wrapper
+      - name: Fix Gradle wrapper (if present)
         run: |
-          echo "Force-regenerating Gradle wrapper to prevent corrupt jar errors..."
-          gradle wrapper --gradle-version 9.3.1
-          # Convert CRLF to LF in case of Windows line endings
-          sed -i -e 's/\r$//' gradlew
-          chmod +x gradlew
+          if [ -f "./gradlew" ]; then
+            echo "gradlew found — fixing line endings and permissions"
+            sed -i -e 's/\r$//' gradlew || true
+            chmod +x gradlew || true
+          else
+            echo "gradlew not found; skipping wrapper fix (assuming wrapper is not checked in)"
+          fi
 
       - name: Build with Gradle
         env:
@@ -105,12 +75,24 @@ EOF
           KEY_ALIAS: "my-key-alias"
           KEYSTORE_PATH: "my-upload-key.keystore"
         run: |
+          # Prefer the checked-in wrapper when available
+          GRADLE_CMD="./gradlew"
+          if [ ! -f "./gradlew" ]; then
+            # fallback to system gradle if available
+            if command -v gradle >/dev/null 2>&1; then
+              GRADLE_CMD="gradle"
+            else
+              echo "ERROR: No gradle wrapper (./gradlew) and no system gradle found. Aborting build."
+              exit 1
+            fi
+          fi
+
           if [ -f "my-upload-key.keystore" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
             echo "Building signed Release APK..."
-            ./gradlew assembleRelease --no-daemon
+            $GRADLE_CMD assembleRelease --no-daemon
           else
             echo "Keystore or passwords missing, building Debug APK instead..."
-            ./gradlew assembleDebug --no-daemon
+            $GRADLE_CMD assembleDebug --no-daemon
           fi
 
       - name: Upload APK Artifacts
