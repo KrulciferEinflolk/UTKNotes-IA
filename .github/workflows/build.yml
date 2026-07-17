@@ -33,16 +33,18 @@ jobs:
       run: |
         keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
 
-    # Generar google-services.json usando el nombre real de paquete de tu App
+    # CORRECCIÓN: Nombre de paquete corregido exactamente a 'utk.notes.ia'
     - name: Generar google-services.json de prueba
       run: |
-        echo '{"project_info":{"project_number":"123456789","project_id":"dummy-id"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789:android:123456","android_client_info":{"package_name":"com.utk.noted.ia"}},"api_key":[{"current_key":"dummy_key"}]}]}' > app/google-services.json
+        echo '{"project_info":{"project_number":"123456789","project_id":"dummy-id"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789:android:123456","android_client_info":{"package_name":"utk.notes.ia"}},"api_key":[{"current_key":"dummy_key"}]}]}' > app/google-services.json
 
+    # Compilamos de forma limpia para evitar bloqueos de KSP e IntelliJ
     - name: Compilar APK de depuración (Debug)
-      run: ./gradlew assembleDebug
+      run: ./gradlew assembleDebug --no-daemon --no-configuration-cache
 
+    # Usamos un comodín (*.apk) para evitar fallos si el archivo no se llama UTKNotes.apk
     - name: Subir el archivo APK resultante
       uses: actions/upload-artifact@v4
       with:
         name: UTKNotes_IA
-        path: app/build/outputs/apk/debug/UTKNotes.apk
+        path: app/build/outputs/apk/debug/*.apk
