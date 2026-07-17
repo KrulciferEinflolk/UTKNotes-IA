@@ -4009,10 +4009,18 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
     val context = LocalContext.current
     var isSending by remember { mutableStateOf(false) }
 
-    var showSettingsDialog by remember { mutableStateOf(false) }
+        var showSettingsDialog by remember { mutableStateOf(false) }
+    val currentEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
+    var tempApiKey by remember { mutableStateOf(viewModel.syncManager.geminiApiKey ?: "") }
+    
+    // Reset temp api key when dialog opens
+    LaunchedEffect(showSettingsDialog) {
+        if (showSettingsDialog) {
+            tempApiKey = viewModel.syncManager.geminiApiKey ?: ""
+        }
+    }
+
     if (showSettingsDialog) {
-        val currentEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
-        var tempApiKey by remember { mutableStateOf(viewModel.syncManager.geminiApiKey ?: "") }
         
         AlertDialog(
             onDismissRequest = { showSettingsDialog = false },
