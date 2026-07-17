@@ -46,13 +46,11 @@ jobs:
             echo "WARNING: RELEASE_KEYSTORE_BASE64 secret is not set. Release APK signing will be skipped if keystore is missing."
           fi
 
-      - name: Make Gradle Wrapper Executable
+      - name: Regenerate Gradle Wrapper
         run: |
-          if [ ! -f "gradlew" ]; then
-            echo "gradlew not found, generating wrapper using local gradle installation..."
-            gradle wrapper --gradle-version 9.3.1
-          fi
-          # Convierte terminaciones de línea CRLF a LF (útil si subes cambios desde Windows)
+          echo "Force-regenerating Gradle wrapper to prevent corrupt jar errors..."
+          gradle wrapper --gradle-version 9.3.1
+          # Convert CRLF to LF in case of Windows line endings
           sed -i -e 's/\r$//' gradlew
           chmod +x gradlew
 
