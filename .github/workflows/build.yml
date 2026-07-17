@@ -46,6 +46,13 @@ jobs:
             echo "WARNING: RELEASE_KEYSTORE_BASE64 secret is not set. Release APK signing will be skipped if keystore is missing."
           fi
 
+      - name: Setup Debug Keystore
+        run: |
+          if [ ! -f "debug.keystore" ]; then
+            echo "debug.keystore not found, generating a new one..."
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
       - name: Regenerate Gradle Wrapper
         run: |
           echo "Force-regenerating Gradle wrapper to prevent corrupt jar errors..."
