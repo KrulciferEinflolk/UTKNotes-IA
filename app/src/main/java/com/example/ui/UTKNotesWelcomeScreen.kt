@@ -158,7 +158,11 @@ fun UTKNotesWelcomeScreen(
                                 // Si no tienes google-services.json, puedes poner un string vacío, pero fallará la autenticación.
                                 val googleIdOption = GetGoogleIdOption.Builder()
                                     .setFilterByAuthorizedAccounts(false)
-                                    .setServerClientId(context.getString(R.string.default_web_client_id)) // Requiere google-services.json para existir
+                                    .setServerClientId(
+                                        context.resources.getIdentifier("default_web_client_id", "string", context.packageName).let { id ->
+                                            if (id != 0) context.getString(id) else ""
+                                        }
+                                    ) // Requiere google-services.json para existir
                                     .setNonce(hashedNonce)
                                     .build()
 
