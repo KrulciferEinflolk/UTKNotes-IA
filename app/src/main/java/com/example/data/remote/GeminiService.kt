@@ -60,7 +60,8 @@ interface GeminiApi {
 }
 
 class GeminiService {
-    private val apiKey: String = BuildConfig.GEMINI_API_KEY
+    private val defaultApiKey: String = BuildConfig.GEMINI_API_KEY
+    var customApiKey: String? = null
 
     private val moshi = Moshi.Builder()
         .addLast(KotlinJsonAdapterFactory())
@@ -80,11 +81,16 @@ class GeminiService {
 
     private val api = retrofit.create(GeminiApi::class.java)
 
+    private fun getActiveKey(): String {
+        return if (!customApiKey.isNullOrBlank()) customApiKey!! else defaultApiKey
+    }
+
+
     suspend fun executeInstruction(
         systemPrompt: String,
         userPrompt: String
     ): String? {
-        if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
+        if (getActiveKey().isEmpty() || getActiveKey() == "MY_GEMINI_API_KEY") {
             Log.e("GeminiService", "API Key is missing or default placeholder!")
             return "Error: API Key no configurada. Por favor, agrega tu clave GEMINI_API_KEY en el panel de secretos de AI Studio."
         }
@@ -95,7 +101,7 @@ class GeminiService {
                 ),
                 systemInstruction = GeminiContent(parts = listOf(GeminiPart(text = systemPrompt)))
             )
-            val response = api.generateContent(apiKey, request)
+            val response = api.generateContent(getActiveKey(), request)
             response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
         } catch (e: Exception) {
             Log.e("GeminiService", "Failed to contact Gemini API", e)
@@ -168,7 +174,7 @@ class GeminiService {
 
     suspend fun sendMessage(message: String, imageBase64: String? = null, mimeType: String? = null): String? {
         val systemPrompt = "Eres un asistente de notas útil que ayuda al usuario con sus preguntas y dudas. El usuario puede adjuntar imágenes para complementar su mensaje."
-        if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
+        if (getActiveKey().isEmpty() || getActiveKey() == "MY_GEMINI_API_KEY") {
             Log.e("GeminiService", "API Key is missing or default placeholder!")
             return "Error: API Key no configurada. Por favor, agrega tu clave GEMINI_API_KEY en el panel de secretos de AI Studio."
         }
@@ -184,7 +190,7 @@ class GeminiService {
                 ),
                 systemInstruction = GeminiContent(parts = listOf(GeminiPart(text = systemPrompt)))
             )
-            val response = api.generateContent(apiKey, request)
+            val response = api.generateContent(getActiveKey(), request)
             response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
         } catch (e: Exception) {
             Log.e("GeminiService", "Failed to contact Gemini API", e)

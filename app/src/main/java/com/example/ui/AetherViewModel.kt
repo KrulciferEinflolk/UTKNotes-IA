@@ -23,6 +23,16 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     val syncManager = DriveSyncManager(application, database)
     private val geminiService = GeminiService()
 
+    init {
+        geminiService.customApiKey = syncManager.geminiApiKey
+    }
+    
+    fun updateGeminiApiKey(key: String?) {
+        syncManager.geminiApiKey = key
+        geminiService.customApiKey = key
+    }
+
+
     // --- SELECTION STATES ---
     private val _selectedBook = MutableStateFlow<BookEntity?>(null)
     val selectedBook: StateFlow<BookEntity?> = _selectedBook.asStateFlow()

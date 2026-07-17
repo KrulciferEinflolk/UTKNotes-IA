@@ -4009,6 +4009,68 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
     val context = LocalContext.current
     var isSending by remember { mutableStateOf(false) }
 
+    var showSettingsDialog by remember { mutableStateOf(false) }
+    if (showSettingsDialog) {
+        val currentEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
+        var tempApiKey by remember { mutableStateOf(viewModel.syncManager.geminiApiKey ?: "") }
+        
+        AlertDialog(
+            onDismissRequest = { showSettingsDialog = false },
+            containerColor = CosmicSurfaceVariant,
+            title = { Text("Ajustes de IA", color = TextPrimary) },
+            text = {
+                Column {
+                    Text("Cuenta actual:", color = TextSecondary, fontSize = 14.sp)
+                    Text(currentEmail ?: "No has iniciado sesión", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    OutlinedTextField(
+                        value = tempApiKey,
+                        onValueChange = { tempApiKey = it },
+                        label = { Text("Clave de Gemini API (Opcional)") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedBorderColor = GeminiBlue,
+                            unfocusedBorderColor = CosmicBorder
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text("Si se deja en blanco se utilizará la clave por defecto.", fontSize = 12.sp, color = TextTertiary)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.updateGeminiApiKey(tempApiKey.takeIf { it.isNotBlank() })
+                        showSettingsDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
+                ) {
+                    Text("Guardar", color = GeminiOnPrimary)
+                }
+            },
+            dismissButton = {
+                if (currentEmail != null) {
+                    TextButton(onClick = {
+                        viewModel.syncManager.disconnectDrive()
+                        showSettingsDialog = false
+                        onDismiss()
+                        showSettingsDialog = false
+                    }) {
+                        Text("Cerrar Sesión", color = Color.Red)
+                    }
+                } else {
+                    TextButton(onClick = { showSettingsDialog = false }) {
+                        Text("Cancelar", color = TextSecondary)
+                    }
+                }
+            }
+        )
+    }
+
+
     // Collect Room state
     val allSessions by viewModel.allChatSessions.collectAsStateWithLifecycle(emptyList())
     val allNotes by viewModel.allNotes.collectAsStateWithLifecycle(emptyList())
@@ -4177,7 +4239,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                 }
                 Spacer(modifier = Modifier.width(4.dp))
                 IconButton(onClick = {
-                    Toast.makeText(context, "Ajustes de IA de Aether", Toast.LENGTH_SHORT).show()
+                    showSettingsDialog = true
                 }) {
                     Icon(
                         imageVector = Icons.Default.Settings,

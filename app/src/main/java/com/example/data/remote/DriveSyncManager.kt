@@ -24,6 +24,7 @@ data class DriveBackupPayload(
     val books: List<BookEntity>,
     val pages: List<PageEntity>,
     val notes: List<NoteEntity>,
+    val apiKey: String? = null,
     val timestamp: Long
 )
 
@@ -54,6 +55,13 @@ class DriveSyncManager(
         .build()
 
     private val client = OkHttpClient()
+
+    var geminiApiKey: String?
+        get() = prefs.getString("gemini_api_key", null)
+        set(value) {
+            prefs.edit().putString("gemini_api_key", value).apply()
+        }
+
 
     init {
         val savedEmail = prefs.getString("google_email", null)
@@ -112,6 +120,7 @@ class DriveSyncManager(
                 books = books,
                 pages = pages,
                 notes = notes,
+                apiKey = geminiApiKey,
                 timestamp = System.currentTimeMillis()
             )
 

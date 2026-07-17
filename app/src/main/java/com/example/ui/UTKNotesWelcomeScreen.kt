@@ -21,6 +21,16 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import android.accounts.AccountManager
+import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
+
+
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,6 +54,27 @@ fun UTKNotesWelcomeScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+
+    val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+        .requestEmail()
+        .build()
+    val googleSignInClient = GoogleSignIn.getClient(context, gso)
+
+    val accountPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        try {
+            val account = task.getResult(ApiException::class.java)
+            val email = account?.email
+            if (email != null) {
+                viewModel.syncManager.connectDrive(email)
+            }
+        } catch (e: ApiException) {
+            Toast.makeText(context, "No se pudo iniciar sesión", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     val scope = rememberCoroutineScope()
     var isSigningIn by remember { mutableStateOf(false) }
     var showAccountChooser by remember { mutableStateOf(false) }
@@ -127,7 +158,9 @@ fun UTKNotesWelcomeScreen(
                 // Customized Google Sign-In Button
                 Surface(
                     onClick = {
-                        showAccountChooser = true
+                        googleSignInClient.signOut().addOnCompleteListener {
+                            accountPickerLauncher.launch(googleSignInClient.signInIntent)
+                        }
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -169,239 +202,8 @@ fun UTKNotesWelcomeScreen(
             
             Spacer(modifier = Modifier.height(32.dp))
         }
-
-        // Native-styled Google Account Chooser Dialog
-        if (showAccountChooser) {
-            Dialog(
-                onDismissRequest = { showAccountChooser = false },
-                properties = DialogProperties(usePlatformDefaultWidth = false)
-            ) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth(0.9f)
-                        .wrapContentHeight()
-                        .padding(16.dp),
-                    shape = RoundedCornerShape(28.dp),
-                    colors = CardDefaults.cardColors(containerColor = CosmicSurface),
-                    border = BorderStroke(1.dp, CosmicBorder)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.Start
-                    ) {
-                        // Header Google logo representation
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Google",
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                            Icon(
-                                imageVector = Icons.Default.CloudDone,
-                                contentDescription = null,
-                                tint = GeminiBlue,
-                                modifier = Modifier.size(24.dp)
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        Text(
-                            text = "Elige una cuenta",
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color.White
-                        )
-                        
-                        Text(
-                            text = "para continuar en UTK Notes - IA",
-                            fontSize = 14.sp,
-                            color = TextSecondary,
-                            modifier = Modifier.padding(bottom = 20.dp)
-                        )
-
-                        // Accounts List
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            accounts.forEach { account ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .clickable {
-                                            selectedAccountEmail = account.email
-                                            showAccountChooser = false
-                                            isSigningIn = true
-                                            scope.launch {
-                                                delay(1500) // Beautiful simulated authentication loading
-                                                viewModel.syncManager.connectDrive(account.email)
-                                                Toast.makeText(
-                                                    context,
-                                                    "¡Sesión iniciada como ${account.email}!",
-                                                    Toast.LENGTH_LONG
-                                                ).show()
-                                                isSigningIn = false
-                                            }
-                                        }
-                                        .padding(vertical = 12.dp, horizontal = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    // Colored Initial Avatar
-                                    Box(
-                                        modifier = Modifier
-                                            .size(40.dp)
-                                            .background(GeminiBlue.copy(alpha = 0.2f), CircleShape)
-                                            .border(1.dp, GeminiBlue.copy(alpha = 0.5f), CircleShape),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = account.initial,
-                                            color = GeminiBlue,
-                                            fontSize = 16.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                    
-                                    Spacer(modifier = Modifier.width(14.dp))
-                                    
-                                    Column {
-                                        Text(
-                                            text = account.name,
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = Color.White
-                                        )
-                                        Text(
-                                            text = account.email,
-                                            fontSize = 12.sp,
-                                            color = TextSecondary
-                                        )
-                                    }
-                                }
-                                Divider(color = CosmicBorder.copy(alpha = 0.5f), modifier = Modifier.padding(horizontal = 8.dp))
-                            }
-
-                            // Add account row
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .clickable {
-                                        Toast.makeText(context, "Servicio de cuentas externas no disponible en este entorno", Toast.LENGTH_SHORT).show()
-                                    }
-                                    .padding(vertical = 12.dp, horizontal = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .background(CosmicBorder, CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Add,
-                                        contentDescription = null,
-                                        tint = TextSecondary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                                
-                                Spacer(modifier = Modifier.width(14.dp))
-                                
-                                Text(
-                                    text = "Usar otra cuenta",
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color.White
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        Text(
-                            text = "Para continuar, Google compartirá tu nombre, dirección de correo electrónico, foto de perfil y preferencias con UTK Notes para autorizar el guardado de respaldos en Google Drive.",
-                            fontSize = 11.sp,
-                            color = TextTertiary,
-                            lineHeight = 15.sp
-                        )
-                    }
-                }
-            }
-        }
-
-        // Fullscreen Loading Overlay during Google Sign-In authentication process
-        AnimatedVisibility(
-            visible = isSigningIn,
-            enter = fadeIn(),
-            exit = fadeOut()
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.8f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = CosmicSurface),
-                    shape = RoundedCornerShape(24.dp),
-                    border = BorderStroke(1.dp, CosmicBorder),
-                    modifier = Modifier
-                        .width(300.dp)
-                        .padding(16.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(18.dp)
-                    ) {
-                        CircularProgressIndicator(
-                            color = GeminiBlue,
-                            strokeWidth = 3.dp,
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                text = "Iniciando sesión...",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                textAlign = TextAlign.Center
-                            )
-                            Text(
-                                text = selectedAccountEmail,
-                                fontSize = 12.sp,
-                                color = GeminiBlue,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                        Text(
-                            text = "Configurando biblioteca inteligente y conectando servicios con Gemini IA.",
-                            fontSize = 12.sp,
-                            color = TextSecondary,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
-            }
-        }
-    }
 }
-
+}
 data class GoogleAccount(
     val name: String,
     val email: String,
