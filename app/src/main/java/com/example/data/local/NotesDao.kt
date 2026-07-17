@@ -1,0 +1,121 @@
+package com.example.data.local
+
+import androidx.room.*
+import com.example.data.model.BookEntity
+import com.example.data.model.NoteEntity
+import com.example.data.model.PageEntity
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface NotesDao {
+
+    // --- BOOKS ---
+    @Query("SELECT * FROM books ORDER BY title ASC")
+    fun getAllBooksFlow(): Flow<List<BookEntity>>
+
+    @Query("SELECT * FROM books ORDER BY title ASC")
+    suspend fun getAllBooks(): List<BookEntity>
+
+    @Query("SELECT * FROM books WHERE id = :id")
+    suspend fun getBookById(id: String): BookEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertBook(book: BookEntity)
+
+    @Update
+    suspend fun updateBook(book: BookEntity)
+
+    @Delete
+    suspend fun deleteBook(book: BookEntity)
+
+
+    // --- PAGES ---
+    @Query("SELECT * FROM pages WHERE bookId = :bookId ORDER BY orderIndex ASC, createdAt ASC")
+    fun getPagesForBookFlow(bookId: String): Flow<List<PageEntity>>
+
+    @Query("SELECT * FROM pages WHERE bookId = :bookId ORDER BY orderIndex ASC, createdAt ASC")
+    suspend fun getPagesForBook(bookId: String): List<PageEntity>
+
+    @Query("SELECT * FROM pages WHERE id = :id")
+    suspend fun getPageById(id: String): PageEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPage(page: PageEntity)
+
+    @Update
+    suspend fun updatePage(page: PageEntity)
+
+    @Delete
+    suspend fun deletePage(page: PageEntity)
+
+
+    // --- NOTES ---
+    @Query("SELECT * FROM notes WHERE pageId = :pageId AND isDeleted = 0 ORDER BY isPinned DESC, updatedAt DESC")
+    fun getNotesForPageFlow(pageId: String): Flow<List<NoteEntity>>
+
+    @Query("SELECT * FROM notes WHERE pageId = :pageId AND isDeleted = 0 ORDER BY isPinned DESC, updatedAt DESC")
+    suspend fun getNotesForPage(pageId: String): List<NoteEntity>
+
+    @Query("SELECT * FROM notes WHERE id = :id")
+    suspend fun getNoteById(id: String): NoteEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertNote(note: NoteEntity)
+
+    @Update
+    suspend fun updateNote(note: NoteEntity)
+
+    @Delete
+    suspend fun deleteNote(note: NoteEntity)
+
+    // Soft delete / sync query (allows marking as deleted so sync can run)
+    @Query("UPDATE notes SET isDeleted = 1, isSynced = 0, updatedAt = :timestamp WHERE id = :id")
+    suspend fun softDeleteNote(id: String, timestamp: Long = System.currentTimeMillis())
+
+    // --- SEARCH & AI ---
+    @Query("""
+        SELECT * FROM notes 
+        WHERE isDeleted = 0 AND (title LIKE :query OR content LIKE :query OR tags LIKE :query)
+        ORDER BY updatedAt DESC
+    """)
+    fun searchNotesFlow(query: String): Flow<List<NoteEntity>>
+
+    @Query("""
+        SELECT * FROM notes 
+        WHERE isDeleted = 0 AND (title LIKE :query OR content LIKE :query OR tags LIKE :query)
+        ORDER BY updatedAt DESC
+    """)
+    suspend fun searchNotes(query: String): List<NoteEntity>
+
+    // Get all notes with active reminders
+    @Query("SELECT * FROM notes WHERE isDeleted = 0 AND reminderTime IS NOT NULL AND reminderStatus = 'pending' ORDER BY reminderTime ASC")
+    fun getPendingRemindersFlow(): Flow<List<NoteEntity>>
+
+    @Query("SELECT * FROM notes WHERE isDeleted = 0 AND reminderTime IS NOT NULL AND reminderStatus = 'pending' ORDER BY reminderTime ASC")
+    suspend fun getPendingReminders(): List<NoteEntity>
+
+
+    // --- SYNC QUERIES ---
+    @Query("SELECT * FROM books WHERE updatedAt > :lastSync")
+    suspend fun getModifiedBooks(lastSync: Long): List<BookEntity>
+
+    @Query("SELECT * FROM pages WHERE updatedAt > :lastSync")
+    suspend fun getModifiedPages(lastSync: Long): List<PageEntity>
+
+    @Query("SELECT * FROM notes WHERE updatedAt > :lastSync")
+    suspend fun getModifiedNotes(lastSync: Long): List<NoteEntity>
+
+    // --- CHAT SESSIONS ---
+    @Query("SELECT * FROM chat_sessions ORDER BY createdAt DESC")
+    fun getAllChatSessionsFlow(): Flow<List<com.example.data.model.ChatSessionEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertChatSession(session: com.example.data.model.ChatSessionEntity)
+
+    @Delete
+    suspend fun deleteChatSession(session: com.example.data.model.ChatSessionEntity)
+
+    @Query("SELECT * FROM chat_sessions WHERE id = :id")
+    suspend fun getChatSessionById(id: String): com.example.data.model.ChatSessionEntity?
+}
+

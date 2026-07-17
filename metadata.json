@@ -1,0 +1,8 @@
+{
+  "name": "UTK Notes - IA",
+  "description": "Una app minimalista de notas organizadas por libros y páginas, con sincronización de Google Drive en tiempo real y asistente inteligente de IA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
