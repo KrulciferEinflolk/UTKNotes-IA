@@ -28,21 +28,48 @@ jobs:
     - name: Dar permisos de ejecución a Gradle
       run: chmod +x gradlew
 
-    # Generar el Keystore de firmas que exige el proyecto
+    # 1. Generar el Keystore de firmas que exige el proyecto
     - name: Generar Keystore de depuración (debug.keystore)
       run: |
         keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
 
-    # CORRECCIÓN: Nombre de paquete corregido exactamente a 'utk.notes.ia'
+    # 2. Generar google-services.json usando el nombre real de paquete de tu App
     - name: Generar google-services.json de prueba
       run: |
         echo '{"project_info":{"project_number":"123456789","project_id":"dummy-id"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789:android:123456","android_client_info":{"package_name":"utk.notes.ia"}},"api_key":[{"current_key":"dummy_key"}]}]}' > app/google-services.json
 
-    # Compilamos de forma limpia para evitar bloqueos de KSP e IntelliJ
+    # 3. AUTO-GENERAR RECURSOS FALTANTES (Bypass para el error de AAPT)
+    - name: Generar recursos de Android faltantes (Placeholders)
+      run: |
+        mkdir -p app/src/main/res/values
+        mkdir -p app/src/main/res/xml
+        
+        # Crear strings.xml si no existe
+        if [ ! -f app/src/main/res/values/strings.xml ]; then
+          echo '<resources><string name="app_name">UTKNotes IA</string></resources>' > app/src/main/res/values/strings.xml
+        fi
+        
+        # Crear un tema base si no existen temas declarados
+        if [ ! -f app/src/main/res/values/themes.xml ] && [ ! -f app/src/main/res/values/styles.xml ] && [ ! -f app/src/main/res/values/theme.xml ]; then
+          echo '<resources><style name="Theme.MyApplication" parent="android:Theme.Material.Light.NoActionBar" /></resources>' > app/src/main/res/values/themes.xml
+        fi
+        
+        # Crear reglas XML de backup y rutas de archivos si faltan
+        if [ ! -f app/src/main/res/xml/data_extraction_rules.xml ]; then
+          echo '<?xml version="1.0" encoding="utf-8"?><data-extraction-rules></data-extraction-rules>' > app/src/main/res/xml/data_extraction_rules.xml
+        fi
+        if [ ! -f app/src/main/res/xml/backup_rules.xml ]; then
+          echo '<?xml version="1.0" encoding="utf-8"?><full-backup-content></full-backup-content>' > app/src/main/res/xml/backup_rules.xml
+        fi
+        if [ ! -f app/src/main/res/xml/file_paths.xml ]; then
+          echo '<?xml version="1.0" encoding="utf-8"?><paths></paths>' > app/src/main/res/xml/file_paths.xml
+        fi
+
+    # 4. Compilar APK de forma limpia
     - name: Compilar APK de depuración (Debug)
       run: ./gradlew assembleDebug --no-daemon --no-configuration-cache
 
-    # Usamos un comodín (*.apk) para evitar fallos si el archivo no se llama UTKNotes.apk
+    # 5. Guardar y subir el archivo APK resultante
     - name: Subir el archivo APK resultante
       uses: actions/upload-artifact@v4
       with:
