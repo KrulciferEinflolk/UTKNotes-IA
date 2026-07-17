@@ -19,23 +19,28 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # 1. Instalar Gradle explícitamente en la versión 8.7 (o la más estable)
     - name: Configurar Gradle en la máquina virtual
       uses: gradle/actions/setup-gradle@v3
-      with:
-        gradle-version: '8.7'
 
-    # 2. Generar el Keystore de firmas que exige el proyecto
+    # Solución: Especificamos explícitamente la versión 9.3.1
+    # para evitar que use la 8.7 por defecto del sistema
+    - name: Regenerar ejecutable gradlew
+      run: gradle wrapper --gradle-version 9.3.1
+
+    - name: Dar permisos de ejecución a Gradle
+      run: chmod +x gradlew
+
+    # 1. Generar el Keystore de firmas que exige el proyecto
     - name: Generar Keystore de depuración (debug.keystore)
       run: |
         keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
 
-    # 3. Generar google-services.json usando el nombre real de paquete de tu App
+    # 2. Generar google-services.json usando el nombre real de paquete de tu App
     - name: Generar google-services.json de prueba
       run: |
         echo '{"project_info":{"project_number":"123456789","project_id":"dummy-id"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789:android:123456","android_client_info":{"package_name":"utk.notes.ia"}},"api_key":[{"current_key":"dummy_key"}]}]}' > app/google-services.json
 
-    # 4. AUTO-GENERAR RECURSOS FALTANTES (Bypass para el error de AAPT)
+    # 3. AUTO-GENERAR RECURSOS FALTANTES (Bypass para el error de AAPT)
     - name: Generar recursos de Android faltantes (Placeholders)
       run: |
         mkdir -p app/src/main/res/values
@@ -62,11 +67,11 @@ jobs:
           echo '<?xml version="1.0" encoding="utf-8"?><paths></paths>' > app/src/main/res/xml/file_paths.xml
         fi
 
-    # 5. Compilar APK de forma limpia (usamos "gradle" global en vez de "./gradlew")
+    # 4. Compilar APK de forma limpia
     - name: Compilar APK de depuración (Debug)
-      run: gradle assembleDebug --no-daemon --no-configuration-cache
+      run: ./gradlew assembleDebug --no-daemon --no-configuration-cache
 
-    # 6. Guardar y subir el archivo APK resultante
+    # 5. Guardar y subir el archivo APK resultante
     - name: Subir el archivo APK resultante
       uses: actions/upload-artifact@v4
       with:
