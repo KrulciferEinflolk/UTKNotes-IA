@@ -30,9 +30,46 @@ jobs:
         run: |
           if [ -n "$GOOGLE_SERVICES_JSON" ]; then
             echo "$GOOGLE_SERVICES_JSON" > app/google-services.json
-            echo "Successfully wrote app/google-services.json"
+            echo "Successfully wrote app/google-services.json from secret"
           else
-            echo "WARNING: GOOGLE_SERVICES_JSON secret is not set. Google Sign-In might not work correctly."
+            echo "WARNING: GOOGLE_SERVICES_JSON secret is not set. Generating a placeholder/mock google-services.json to allow compilation..."
+            cat << 'EOF' > app/google-services.json
+            {
+              "project_info": {
+                "project_number": "1234567890",
+                "project_id": "mock-project-id",
+                "storage_bucket": "mock-project-id.appspot.com"
+              },
+              "client": [
+                {
+                  "client_info": {
+                    "mobilesdk_app_id": "1:1234567890:android:mockappid",
+                    "android_client_info": {
+                      "package_name": "utk.notes.ia"
+                    }
+                  },
+                  "oauth_client": [
+                    {
+                      "client_id": "mock-client-id.apps.googleusercontent.com",
+                      "client_type": 3
+                    }
+                  ],
+                  "api_key": [
+                    {
+                      "current_key": "mock-api-key"
+                    }
+                  ],
+                  "services": {
+                    "appinvite_service": {
+                      "other_platform_oauth_client": []
+                    }
+                  }
+                }
+              ],
+              "configuration_version": "1"
+            }
+            EOF
+            echo "Successfully generated dummy app/google-services.json"
           fi
 
       - name: Setup Release Keystore
