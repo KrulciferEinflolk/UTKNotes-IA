@@ -71,6 +71,7 @@ fun UTKNotesWelcomeScreen(
     val gso = remember {
         GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
+            .requestScopes(com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.file"))
             .build()
     }
     val googleSignInClient = remember {
@@ -88,6 +89,7 @@ fun UTKNotesWelcomeScreen(
                 if (!email.isNullOrEmpty()) {
                     Toast.makeText(context, "Sesión iniciada: $email", Toast.LENGTH_SHORT).show()
                     viewModel.syncManager.connectDrive(email)
+                    viewModel.triggerDriveSync()
                 }
             } catch (e: ApiException) {
                 Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed", e)
@@ -208,7 +210,7 @@ fun UTKNotesWelcomeScreen(
                 OutlinedButton(
                     onClick = {
                         Toast.makeText(context, "Iniciando en Modo Local (offline)", Toast.LENGTH_SHORT).show()
-                        viewModel.syncManager.connectDrive("usuario_local@utknotes.com")
+                        viewModel.syncManager.connectDrive("offline")
                     },
                     modifier = Modifier
                         .fillMaxWidth()

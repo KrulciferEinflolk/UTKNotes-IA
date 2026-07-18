@@ -119,7 +119,8 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onOpenChatbot = { citation ->
                                     viewModel.openChatbot(selectedNote, citation)
-                                }
+                                },
+                                syncManager = viewModel.syncManager
                             )
                         } else {
                             androidx.activity.compose.BackHandler {
@@ -1092,15 +1093,15 @@ sealed class EditorBlock {
 
     data class Image(
         override val id: String = UUID.randomUUID().toString(),
-        var urlOrPath: String, // Preset names: "Stoic Mind", "Silent Space", "Calm Nature", "Cyber Tech"
-        var caption: String = "", var width: String = "Match", var height: String = "Wrap",
+        var urlOrPath: String = "Mantener pulsado para editar",
+        var caption: String = "", var width: String = "Match", var height: String = "Wrap"
         
         
     ) : EditorBlock()
 
     data class Audio(
         override val id: String = UUID.randomUUID().toString(),
-        var name: String,
+        var name: String = "Mantener pulsado para editar",
         var duration: String = "02:30",
         var isPlaying: Boolean = false,
         var sourceUrl: String = ""
@@ -1108,7 +1109,7 @@ sealed class EditorBlock {
 
     data class Video(
         override val id: String = UUID.randomUUID().toString(),
-        var title: String,
+        var title: String = "Mantener pulsado para editar",
         var length: String = "05:15",
         var sourceUrl: String = "", var width: String = "Match", var height: String = "Wrap"
     ) : EditorBlock()
@@ -1403,7 +1404,7 @@ fun parseBlocks(content: String): List<EditorBlock> {
                     list.add(
                         EditorBlock.Image(
                             id = id,
-                            urlOrPath = obj.optString("urlOrPath", "Stoic Mind"),
+                            urlOrPath = obj.optString("urlOrPath", "Mantener pulsado para editar"),
                             caption = obj.optString("caption", ""),
                             width = obj.optString("width", "Match"),
                             height = obj.optString("height", "Wrap")
@@ -1414,7 +1415,7 @@ fun parseBlocks(content: String): List<EditorBlock> {
                     list.add(
                         EditorBlock.Audio(
                             id = id,
-                            name = obj.optString("name", "Grabación de Voz Stoic"),
+                            name = obj.optString("name", "Mantener pulsado para editar"),
                             duration = obj.optString("duration", "02:30"),
                             sourceUrl = obj.optString("sourceUrl", "")
                         )
@@ -1424,7 +1425,7 @@ fun parseBlocks(content: String): List<EditorBlock> {
                     list.add(
                         EditorBlock.Video(
                             id = id,
-                            title = obj.optString("title", "Clase Magistral de Autodisciplina"),
+                            title = obj.optString("title", "Mantener pulsado para editar"),
                             length = obj.optString("length", "05:15"),
                             sourceUrl = obj.optString("sourceUrl", ""),
                             width = obj.optString("width", "Match"),
@@ -1956,16 +1957,10 @@ fun ImageBlockView(
     block: EditorBlock.Image,
     onBlockChange: (EditorBlock.Image) -> Unit,
     onDelete: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    syncManager: com.example.data.remote.DriveSyncManager
 ) {
-    val presets = listOf(
-        "Stoic Mind" to Brush.linearGradient(listOf(Color(0xFF4285F4), Color(0xFF9B72F3))),
-        "Silent Space" to Brush.linearGradient(listOf(Color(0xFF0F0C20), Color(0xFF241442))),
-        "Calm Nature" to Brush.linearGradient(listOf(Color(0xFF1B4D3E), Color(0xFFC7E9B4))),
-        "Cyber Tech" to Brush.linearGradient(listOf(Color(0xFFD96570), Color(0xFFEBB074)))
-    )
-    val isPreset = presets.any { it.first == block.urlOrPath }
-    
+    val resolvedUrl = rememberDownloadedUri(block.urlOrPath, syncManager)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1982,21 +1977,22 @@ fun ImageBlockView(
                     onLongClick = onOpenSettings
                 )
             
-            if (isPreset || block.urlOrPath.isEmpty()) {
-                val currentBrush = presets.firstOrNull { it.first == block.urlOrPath }?.second ?: presets.first().second
+            val isPlaceholder = block.urlOrPath.isEmpty() || block.urlOrPath == "Mantener pulsado para editar"
+            
+            if (isPlaceholder) {
                 Box(
-                    modifier = mod.background(currentBrush),
+                    modifier = mod.background(Brush.linearGradient(listOf(Color(0xFF4285F4), Color(0xFF9B72F3)))),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(Icons.Default.Palette, null, tint = Color.White, modifier = Modifier.size(32.dp))
                         Spacer(modifier = Modifier.height(4.dp))
-                        Text(if (block.urlOrPath.isEmpty()) "VACÍO" else block.urlOrPath.uppercase(), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+                        Text("Mantener pulsado para editar", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     }
                 }
             } else {
                 coil.compose.AsyncImage(
-                    model = block.urlOrPath,
+                    model = if (resolvedUrl.isNotEmpty()) resolvedUrl else block.urlOrPath,
                     contentDescription = block.caption,
                     modifier = mod.background(Color.DarkGray),
                     contentScale = coil.size.Scale.FIT.let { androidx.compose.ui.layout.ContentScale.Fit }
@@ -2023,41 +2019,188 @@ fun AudioBlockView(
     block: EditorBlock.Audio,
     onBlockChange: (EditorBlock.Audio) -> Unit,
     onDelete: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    syncManager: com.example.data.remote.DriveSyncManager
 ) {
-    val context = LocalContext.current
+    val resolvedUrl = rememberDownloadedUri(block.sourceUrl, syncManager)
+    val baseContext = LocalContext.current
+    val context = remember(baseContext) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            baseContext.createAttributionContext("media")
+        } else {
+            baseContext
+        }
+    }
+    var isPlaying by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0f) }
+    var duration by remember { mutableStateOf(0) }
+    var currentPos by remember { mutableStateOf(0) }
+    var mediaPlayer by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
+
+    DisposableEffect(resolvedUrl) {
+        var mp: android.media.MediaPlayer? = null
+        val urlToUse = if (resolvedUrl.isNotEmpty()) resolvedUrl else block.sourceUrl
+        if (urlToUse.isNotEmpty()) {
+            try {
+                mp = android.media.MediaPlayer().apply {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+                        setAudioAttributes(
+                            android.media.AudioAttributes.Builder()
+                                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                                .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                                .build()
+                        )
+                    }
+                    setDataSource(context, android.net.Uri.parse(urlToUse))
+                    setOnPreparedListener { 
+                        duration = it.duration
+                    }
+                    setOnCompletionListener {
+                        isPlaying = false
+                        currentPos = 0
+                        progress = 0f
+                    }
+                    prepareAsync()
+                }
+                mediaPlayer = mp
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        onDispose {
+            mp?.release()
+            mediaPlayer = null
+            isPlaying = false
+        }
+    }
+
+    LaunchedEffect(isPlaying) {
+        if (isPlaying) {
+            mediaPlayer?.let { mp ->
+                try {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                        mp.playbackParams = mp.playbackParams.setSpeed(1.0f)
+                    }
+                } catch (e: Exception) {}
+            }
+            mediaPlayer?.start()
+            while (isPlaying) {
+                mediaPlayer?.let { mp ->
+                    if (duration > 0) {
+                        currentPos = mp.currentPosition
+                        progress = currentPos.toFloat() / duration.toFloat()
+                    }
+                }
+                kotlinx.coroutines.delay(100)
+            }
+        } else {
+            mediaPlayer?.pause()
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 8.dp)
-            .clip(RoundedCornerShape(32.dp))
-            .background(GeminiBlue.copy(alpha = 0.1f))
+            .clip(RoundedCornerShape(24.dp))
+            .background(Color(0xFF1E1E22)) // Dark gray/black background
             .combinedClickable(
                 onClick = {
-                    if (block.sourceUrl.isNotEmpty()) {
-                        try {
-                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)
-                            intent.setDataAndType(android.net.Uri.parse(block.sourceUrl), "audio/*")
-                            intent.flags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                            context.startActivity(intent)
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "No se puede reproducir", Toast.LENGTH_SHORT).show()
-                        }
+                    if (block.sourceUrl.isEmpty()) {
+                        onOpenSettings()
                     }
                 },
                 onLongClick = onOpenSettings
             )
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .padding(horizontal = 16.dp, vertical = 16.dp)
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Icon(Icons.Default.AudioFile, null, tint = GeminiBlue, modifier = Modifier.size(24.dp))
-            Column {
-                Text(block.name, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                if (block.sourceUrl.isEmpty()) {
-                    Text("Sin archivo configurado", color = TextSecondary, fontSize = 12.sp)
+        if (block.sourceUrl.isEmpty()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(GeminiBlue.copy(alpha = 0.2f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.AudioFile, null, tint = GeminiBlue, modifier = Modifier.size(24.dp))
+                }
+                Column {
+                    Text(block.name, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text("Sin archivo configurado", color = Color.Gray, fontSize = 12.sp)
+                }
+            }
+        } else {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Play button with purple circle
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF907CFF))
+                        .clickable { isPlaying = !isPlaying },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = "Play/Pause",
+                        tint = Color.White,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+
+                // Info column
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        block.name, 
+                        color = Color.White, 
+                        fontSize = 14.sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    
+                    Slider(
+                        value = progress,
+                        onValueChange = {
+                            progress = it
+                            val newPos = (it * duration).toInt()
+                            mediaPlayer?.seekTo(newPos)
+                            currentPos = newPos
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(24.dp), // Compact height
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFF907CFF), 
+                            activeTrackColor = Color(0xFF907CFF),
+                            inactiveTrackColor = Color(0xFF333333)
+                        )
+                    )
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            String.format("%d:%02d", currentPos / 1000 / 60, (currentPos / 1000) % 60), 
+                            color = Color.Gray, 
+                            fontSize = 12.sp
+                        )
+                        Text(
+                            String.format("%d:%02d", duration / 1000 / 60, (duration / 1000) % 60), 
+                            color = Color.Gray, 
+                            fontSize = 12.sp
+                        )
+                    }
                 }
             }
         }
@@ -2072,9 +2215,245 @@ fun VideoBlockView(
     block: EditorBlock.Video,
     onBlockChange: (EditorBlock.Video) -> Unit,
     onDelete: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    syncManager: com.example.data.remote.DriveSyncManager
 ) {
-    val context = LocalContext.current
+    val baseContext = LocalContext.current
+    val context = remember(baseContext) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            baseContext.createAttributionContext("media")
+        } else {
+            baseContext
+        }
+    }
+    val resolvedUrl = rememberDownloadedUri(block.sourceUrl, syncManager)
+    val urlToUse = if (resolvedUrl.isNotEmpty()) resolvedUrl else block.sourceUrl
+
+    var isPlaying by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0f) }
+    var duration by remember { mutableStateOf(0) }
+    var currentPos by remember { mutableStateOf(0) }
+    var videoView: android.widget.VideoView? by remember { mutableStateOf(null) }
+    var isFullScreen by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isPlaying, videoView) {
+        if (isPlaying) {
+            videoView?.start()
+            while (isPlaying) {
+                videoView?.let { vv ->
+                    if (duration > 0) {
+                        currentPos = vv.currentPosition
+                        progress = currentPos.toFloat() / duration.toFloat()
+                    }
+                }
+                kotlinx.coroutines.delay(100)
+            }
+        } else {
+            videoView?.pause()
+        }
+    }
+
+    if (isFullScreen) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { isFullScreen = false },
+            properties = androidx.compose.ui.window.DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = true,
+                dismissOnClickOutside = false
+            )
+        ) {
+            var fsIsPlaying by remember { mutableStateOf(isPlaying) }
+            var fsProgress by remember { mutableStateOf(0f) }
+            var fsDuration by remember { mutableStateOf(duration) }
+            var fsCurrentPos by remember { mutableStateOf(currentPos) }
+            var fsVideoView: android.widget.VideoView? by remember { mutableStateOf(null) }
+
+            LaunchedEffect(fsIsPlaying, fsVideoView) {
+                if (fsIsPlaying) {
+                    fsVideoView?.start()
+                    while (fsIsPlaying) {
+                        fsVideoView?.let { vv ->
+                            if (fsDuration > 0) {
+                                fsCurrentPos = vv.currentPosition
+                                fsProgress = fsCurrentPos.toFloat() / fsDuration.toFloat()
+                            }
+                        }
+                        kotlinx.coroutines.delay(100)
+                    }
+                } else {
+                    fsVideoView?.pause()
+                }
+            }
+
+            LaunchedEffect(Unit) {
+                isPlaying = false
+                videoView?.pause()
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black),
+                contentAlignment = Alignment.Center
+            ) {
+                if (urlToUse.isNotEmpty()) {
+                    androidx.compose.ui.viewinterop.AndroidView(
+                        factory = { ctx ->
+                            val frameLayout = android.widget.FrameLayout(ctx).apply {
+                                layoutParams = android.view.ViewGroup.LayoutParams(
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                            }
+                            val vv = android.widget.VideoView(ctx).apply {
+                                layoutParams = android.widget.FrameLayout.LayoutParams(
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                    android.view.Gravity.CENTER
+                                )
+                                setVideoURI(android.net.Uri.parse(urlToUse))
+                                setOnPreparedListener { mp ->
+                                    fsDuration = mp.duration
+                                    seekTo(currentPos)
+                                    if (fsIsPlaying) {
+                                        start()
+                                    }
+                                }
+                                setOnCompletionListener {
+                                    fsIsPlaying = false
+                                    fsCurrentPos = 0
+                                    fsProgress = 0f
+                                    seekTo(0)
+                                }
+                                fsVideoView = this
+                            }
+                            frameLayout.addView(vv)
+                            frameLayout
+                        },
+                        update = { },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            androidx.compose.ui.graphics.Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Black.copy(alpha = 0.6f),
+                                    Color.Transparent,
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.6f)
+                                )
+                            )
+                        )
+                        .clickable { fsIsPlaying = !fsIsPlaying }
+                ) {
+                    IconButton(
+                        onClick = {
+                            currentPos = fsCurrentPos
+                            isPlaying = fsIsPlaying
+                            videoView?.seekTo(fsCurrentPos)
+                            isFullScreen = false
+                        },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(16.dp)
+                            .size(48.dp)
+                            .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                    ) {
+                        Icon(
+                            androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Salir de pantalla completa",
+                            tint = Color.White
+                        )
+                    }
+
+                    Text(
+                        text = block.title,
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 24.dp)
+                    )
+
+                    if (!fsIsPlaying) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .size(72.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.3f))
+                                .clickable { fsIsPlaying = true },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.PlayArrow,
+                                contentDescription = "Play",
+                                tint = Color.White,
+                                modifier = Modifier.size(48.dp)
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp, vertical = 24.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Text(
+                            text = String.format("%02d:%02d", fsCurrentPos / 1000 / 60, (fsCurrentPos / 1000) % 60),
+                            color = Color.White,
+                            fontSize = 14.sp
+                        )
+                        Slider(
+                            value = fsProgress,
+                            onValueChange = {
+                                fsProgress = it
+                                val newPos = (it * fsDuration).toInt()
+                                fsVideoView?.seekTo(newPos)
+                                fsCurrentPos = newPos
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color.White,
+                                activeTrackColor = Color.White,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                            )
+                        )
+                        Text(
+                            text = String.format("%02d:%02d", fsDuration / 1000 / 60, (fsDuration / 1000) % 60),
+                            color = Color.White,
+                            fontSize = 14.sp
+                        )
+                        IconButton(
+                            onClick = {
+                                currentPos = fsCurrentPos
+                                isPlaying = fsIsPlaying
+                                videoView?.seekTo(fsCurrentPos)
+                                isFullScreen = false
+                            },
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Fullscreen,
+                                contentDescription = "Minimizar",
+                                tint = Color.White,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -2085,43 +2464,162 @@ fun VideoBlockView(
             Box(
                 modifier = Modifier
                     .fillMaxWidth(if (block.width == "Match") 1f else 0.5f)
-                    .height(if (block.height == "Wrap") 140.dp else 250.dp)
-                    .clip(RoundedCornerShape(8.dp))
+                    .height(if (block.height == "Wrap") 200.dp else 250.dp)
+                    .clip(RoundedCornerShape(16.dp))
                     .background(Color(0xFF1E1C24))
                     .combinedClickable(
                         onClick = {
-                            if (block.sourceUrl.isNotEmpty()) {
-                                try {
-                                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)
-                                    intent.setDataAndType(android.net.Uri.parse(block.sourceUrl), "video/*")
-                                    intent.flags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                    context.startActivity(intent)
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "No se puede reproducir", Toast.LENGTH_SHORT).show()
-                                }
+                            if (block.sourceUrl.isEmpty()) {
+                                onOpenSettings()
                             }
                         },
                         onLongClick = onOpenSettings
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                if (block.sourceUrl.isNotEmpty()) {
-                    coil.compose.AsyncImage(
-                        model = block.sourceUrl, // Coil can sometimes extract a video frame, but usually works better with image. We'll just show the play button over a dark background, and maybe the frame if Coil supports it
-                        contentDescription = "Video",
-                        modifier = Modifier.fillMaxSize().alpha(0.5f),
-                        contentScale = coil.size.Scale.FIT.let { androidx.compose.ui.layout.ContentScale.Crop }
-                    )
+                if (block.sourceUrl.isEmpty()) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.VideoFile, null, tint = Color.White, modifier = Modifier.size(32.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(block.title, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    }
+                } else {
+                    androidx.compose.runtime.key(urlToUse) {
+                        androidx.compose.ui.viewinterop.AndroidView(
+                            factory = { _ ->
+                                val frameLayout = android.widget.FrameLayout(context).apply {
+                                    layoutParams = android.view.ViewGroup.LayoutParams(
+                                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                                    )
+                                }
+                                val vv = android.widget.VideoView(context).apply {
+                                    layoutParams = android.widget.FrameLayout.LayoutParams(
+                                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                        android.view.Gravity.CENTER
+                                    )
+                                    setVideoURI(android.net.Uri.parse(urlToUse))
+                                    setOnPreparedListener { mp ->
+                                        duration = mp.duration
+                                    }
+                                    setOnCompletionListener {
+                                        isPlaying = false
+                                        currentPos = 0
+                                        progress = 0f
+                                        seekTo(0)
+                                    }
+                                    videoView = this
+                                }
+                                frameLayout.addView(vv)
+                                frameLayout
+                            },
+                            update = { view ->
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                androidx.compose.ui.graphics.Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color.Black.copy(alpha = 0.6f),
+                                        Color.Transparent,
+                                        Color.Transparent,
+                                        Color.Black.copy(alpha = 0.6f)
+                                    )
+                                )
+                            )
+                            .combinedClickable(
+                                onClick = { isPlaying = !isPlaying },
+                                onLongClick = onOpenSettings
+                            )
+                    ) {
+                        Text(
+                            text = block.title,
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 16.dp)
+                        )
+
+                        if (!isPlaying) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .size(64.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(Color.White.copy(alpha = 0.3f))
+                                    .clickable { isPlaying = true },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.PlayArrow,
+                                    contentDescription = "Play",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(40.dp)
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                text = String.format("%02d:%02d", currentPos / 1000 / 60, (currentPos / 1000) % 60),
+                                color = Color.White,
+                                fontSize = 12.sp
+                            )
+                            Slider(
+                                value = progress,
+                                onValueChange = {
+                                    progress = it
+                                    val newPos = (it * duration).toInt()
+                                    videoView?.seekTo(newPos)
+                                    currentPos = newPos
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(24.dp),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = Color.White,
+                                    activeTrackColor = Color.White,
+                                    inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                                )
+                            )
+                            Text(
+                                text = String.format("%02d:%02d", duration / 1000 / 60, (duration / 1000) % 60),
+                                color = Color.White,
+                                fontSize = 12.sp
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .clickable {
+                                        isFullScreen = true
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Fullscreen,
+                                    contentDescription = "Maximizar",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                        }
+                    }
                 }
-                Icon(Icons.Default.PlayArrow, null, tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(48.dp))
-            }
-            if (block.title.isNotEmpty()) {
-                Text(
-                    text = block.title,
-                    color = TextSecondary,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 8.dp)
-                )
             }
         }
     }
@@ -2135,9 +2633,11 @@ fun FileBlockView(
     block: EditorBlock.File,
     onBlockChange: (EditorBlock.File) -> Unit,
     onDelete: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    syncManager: com.example.data.remote.DriveSyncManager
 ) {
     val context = LocalContext.current
+    val resolvedUrl = rememberDownloadedUri(block.sourceUrl, syncManager)
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -2147,11 +2647,14 @@ fun FileBlockView(
             .border(1.dp, CosmicBorder, RoundedCornerShape(8.dp))
             .combinedClickable(
                 onClick = {
-                    if (block.sourceUrl.isNotEmpty()) {
+                    val urlToUse = if (resolvedUrl.isNotEmpty()) resolvedUrl else block.sourceUrl
+                    if (urlToUse.isNotEmpty()) {
                         try {
-                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)
-                            intent.setDataAndType(android.net.Uri.parse(block.sourceUrl), "*/*")
-                            intent.flags = android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                setDataAndType(android.net.Uri.parse(urlToUse), "*/*")
+                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
                             context.startActivity(intent)
                         } catch (e: Exception) {
                             Toast.makeText(context, "No se puede abrir el archivo", Toast.LENGTH_SHORT).show()
@@ -2184,7 +2687,8 @@ fun NoteEditorWorkspace(
     onDismiss: () -> Unit,
     onSave: (NoteEntity) -> Unit,
     onAiModify: (String) -> Unit,
-    onOpenChatbot: (String?) -> Unit
+    onOpenChatbot: (String?) -> Unit,
+    syncManager: com.example.data.remote.DriveSyncManager
 ) {
     var title by remember(note.id) { mutableStateOf(note.title) }
     var blocks by remember(note.id) { mutableStateOf(parseBlocks(note.content)) }
@@ -2627,7 +3131,7 @@ fun NoteEditorWorkspace(
                                     onClick = {
                                         pushHistory()
                                         val newList = blocks.toMutableList()
-                                        newList.add(EditorBlock.Image(urlOrPath = "Stoic Mind"))
+                                        newList.add(EditorBlock.Image())
                                         updateBlocksAndSave(newList)
                                         Toast.makeText(context, "Imagen añadida", Toast.LENGTH_SHORT).show()
                                     },
@@ -2640,7 +3144,7 @@ fun NoteEditorWorkspace(
                                     onClick = {
                                         pushHistory()
                                         val newList = blocks.toMutableList()
-                                        newList.add(EditorBlock.Audio(name = "Grabación de Voz Estoica"))
+                                        newList.add(EditorBlock.Audio())
                                         updateBlocksAndSave(newList)
                                         Toast.makeText(context, "Audio añadido", Toast.LENGTH_SHORT).show()
                                     },
@@ -2653,7 +3157,7 @@ fun NoteEditorWorkspace(
                                     onClick = {
                                         pushHistory()
                                         val newList = blocks.toMutableList()
-                                        newList.add(EditorBlock.Video(title = "Clase Magistral de Autodisciplina"))
+                                        newList.add(EditorBlock.Video())
                                         updateBlocksAndSave(newList)
                                         Toast.makeText(context, "Video añadido", Toast.LENGTH_SHORT).show()
                                     },
@@ -3459,7 +3963,8 @@ fun NoteEditorWorkspace(
                                         updateBlocksAndSave(updated)
                                     },
                                     onDelete = {},
-                                    onOpenSettings = { editingBlockSettings = block }
+                                    onOpenSettings = { editingBlockSettings = block },
+                                    syncManager = syncManager
                                 )
                             }
 
@@ -3474,7 +3979,8 @@ fun NoteEditorWorkspace(
                                         updateBlocksAndSave(updated)
                                     },
                                     onDelete = {},
-                                    onOpenSettings = { editingBlockSettings = block }
+                                    onOpenSettings = { editingBlockSettings = block },
+                                    syncManager = syncManager
                                 )
                             }
 
@@ -3489,7 +3995,8 @@ fun NoteEditorWorkspace(
                                         updateBlocksAndSave(updated)
                                     },
                                     onDelete = {},
-                                    onOpenSettings = { editingBlockSettings = block }
+                                    onOpenSettings = { editingBlockSettings = block },
+                                    syncManager = syncManager
                                 )
                             }
                             is EditorBlock.File -> {
@@ -3503,9 +4010,9 @@ fun NoteEditorWorkspace(
                                         updateBlocksAndSave(updated)
                                     },
                                     onDelete = {},
-                                    onOpenSettings = { editingBlockSettings = block }
+                                    onOpenSettings = { editingBlockSettings = block },
+                                    syncManager = syncManager
                                 )
-                            }
                             }
                         } // Closing the Box we added
                     }
@@ -3567,7 +4074,25 @@ fun NoteEditorWorkspace(
 
         }
     }
-    
+}
+
+@Composable
+fun rememberDownloadedUri(
+    uriString: String,
+    syncManager: com.example.data.remote.DriveSyncManager
+): String {
+    if (!uriString.startsWith("gdrive://")) {
+        return uriString
+    }
+    var resolvedUri by remember(uriString) { mutableStateOf("") }
+    LaunchedEffect(uriString) {
+        val file = syncManager.getLocalFileForDriveUri(uriString)
+        if (file != null) {
+            resolvedUri = android.net.Uri.fromFile(file).toString()
+        }
+    }
+    return resolvedUri
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -3687,10 +4212,14 @@ fun TableSettingsContent(block: EditorBlock.Table, onBlockChange: (EditorBlock) 
 fun ImageSettingsContent(block: EditorBlock.Image, onBlockChange: (EditorBlock) -> Unit) {
     val context = LocalContext.current
     val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: SecurityException) {
+                // Ignore if persistable permission is not available
+            }
             onBlockChange(block.copy(urlOrPath = uri.toString()))
         }
     }
@@ -3703,24 +4232,13 @@ fun ImageSettingsContent(block: EditorBlock.Image, onBlockChange: (EditorBlock) 
             modifier = Modifier.fillMaxWidth()
         )
         Button(
-            onClick = { launcher.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+            onClick = { launcher.launch(arrayOf("image/*")) },
             colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
             modifier = Modifier.fillMaxWidth()
         ) {
             Icon(Icons.Default.PhotoLibrary, null, tint = Color.White)
             Spacer(Modifier.width(8.dp))
-            Text("Seleccionar Imagen (Galería/Fotos)", color = Color.White)
-        }
-        Text("Origen Preset (Opcional)", color = TextPrimary)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
-            listOf("Stoic Mind", "Silent Space", "Calm Nature", "Cyber Tech").forEach { src ->
-                FilterChip(
-                    selected = block.urlOrPath == src,
-                    onClick = { onBlockChange(block.copy(urlOrPath = src)) },
-                    label = { Text(src, fontSize = 10.sp) },
-                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = Color.White)
-                )
-            }
+            Text("Seleccionar Imagen (Archivos)", color = Color.White)
         }
         Text("Ancho", color = TextPrimary)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3753,10 +4271,14 @@ fun ImageSettingsContent(block: EditorBlock.Image, onBlockChange: (EditorBlock) 
 fun AudioSettingsContent(block: EditorBlock.Audio, onBlockChange: (EditorBlock) -> Unit) {
     val context = LocalContext.current
     val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.GetContent()
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: SecurityException) {
+                // Ignore
+            }
             val name = getFileName(context, uri) ?: "Audio"
             onBlockChange(block.copy(sourceUrl = uri.toString(), name = name))
         }
@@ -3770,7 +4292,7 @@ fun AudioSettingsContent(block: EditorBlock.Audio, onBlockChange: (EditorBlock) 
             modifier = Modifier.fillMaxWidth()
         )
         Button(
-            onClick = { launcher.launch("audio/*") },
+            onClick = { launcher.launch(arrayOf("audio/*")) },
             colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -3787,10 +4309,14 @@ fun AudioSettingsContent(block: EditorBlock.Audio, onBlockChange: (EditorBlock) 
 fun VideoSettingsContent(block: EditorBlock.Video, onBlockChange: (EditorBlock) -> Unit) {
     val context = LocalContext.current
     val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: SecurityException) {
+                // Ignore
+            }
             onBlockChange(block.copy(sourceUrl = uri.toString()))
         }
     }
@@ -3803,13 +4329,13 @@ fun VideoSettingsContent(block: EditorBlock.Video, onBlockChange: (EditorBlock) 
             modifier = Modifier.fillMaxWidth()
         )
         Button(
-            onClick = { launcher.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.VideoOnly)) },
+            onClick = { launcher.launch(arrayOf("video/*")) },
             colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
             modifier = Modifier.fillMaxWidth()
         ) {
             Icon(Icons.Default.VideoFile, null, tint = Color.White)
             Spacer(Modifier.width(8.dp))
-            Text("Seleccionar Vídeo (Galería/Fotos)", color = Color.White)
+            Text("Seleccionar Vídeo (Archivos)", color = Color.White)
         }
         Text("Ancho", color = TextPrimary)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3841,10 +4367,14 @@ fun VideoSettingsContent(block: EditorBlock.Video, onBlockChange: (EditorBlock) 
 fun FileSettingsContent(block: EditorBlock.File, onBlockChange: (EditorBlock) -> Unit) {
     val context = LocalContext.current
     val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri: android.net.Uri? ->
         if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: SecurityException) {
+                // Ignore
+            }
             val name = getFileName(context, uri) ?: "Archivo"
             val size = getFileSize(context, uri)
             onBlockChange(block.copy(sourceUrl = uri.toString(), name = name, size = size))
@@ -3859,7 +4389,7 @@ fun FileSettingsContent(block: EditorBlock.File, onBlockChange: (EditorBlock) ->
             modifier = Modifier.fillMaxWidth()
         )
         Button(
-            onClick = { launcher.launch("*/*") },
+            onClick = { launcher.launch(arrayOf("*/*")) },
             colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -4138,9 +4668,12 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
 
     // Pick visual media launcher
     val imagePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: Exception) {}
             attachedImageUri = uri
             val result = getUriBase64AndMime(context, uri)
             if (result != null) {
@@ -4152,10 +4685,13 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
 
     // Pick document file launcher
     val filePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri: android.net.Uri? ->
         if (uri != null) {
             try {
+                try {
+                    context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } catch (e: Exception) {}
                 val contentResolver = context.contentResolver
                 var name = "archivo.txt"
                 contentResolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -4679,11 +5215,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                         leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, tint = Color(0xFF907CFF)) },
                         onClick = {
                             showAttachmentMenu = false
-                            imagePickerLauncher.launch(
-                                androidx.activity.result.PickVisualMediaRequest(
-                                    androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly
-                                )
-                            )
+                            imagePickerLauncher.launch(arrayOf("image/*"))
                         }
                     )
                     DropdownMenuItem(
@@ -4691,7 +5223,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                         leadingIcon = { Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = Color(0xFF907CFF)) },
                         onClick = {
                             showAttachmentMenu = false
-                            filePickerLauncher.launch("*/*")
+                            filePickerLauncher.launch(arrayOf("*/*"))
                         }
                     )
                 }

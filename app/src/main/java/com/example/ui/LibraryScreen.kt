@@ -162,6 +162,7 @@ fun BookCustomizationDialog(
         offsetY: Float
     ) -> Unit
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     var title by remember { mutableStateOf(editingBook?.title ?: "") }
     var selectedColor by remember {
         mutableStateOf(
@@ -182,9 +183,17 @@ fun BookCustomizationDialog(
     var coverOffsetY by remember { mutableStateOf(editingBook?.coverOffsetY ?: 0f) }
 
     val imagePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+                // Ignore
+            }
             coverUri = uri.toString()
             coverScale = 1.0f
             coverOffsetX = 0f
@@ -407,7 +416,7 @@ fun BookCustomizationDialog(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Button(
-                                        onClick = { imagePickerLauncher.launch("image/*") },
+                                        onClick = { imagePickerLauncher.launch(arrayOf("image/*")) },
                                         colors = ButtonDefaults.buttonColors(containerColor = CosmicSurface),
                                         border = BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.5f))
                                     ) {
@@ -600,7 +609,7 @@ fun BookCustomizationDialog(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Button(
-                                    onClick = { imagePickerLauncher.launch("image/*") },
+                                    onClick = { imagePickerLauncher.launch(arrayOf("image/*")) },
                                     colors = ButtonDefaults.buttonColors(containerColor = CosmicSurface),
                                     border = BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.5f))
                                 ) {

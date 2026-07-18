@@ -10,11 +10,11 @@ import kotlinx.coroutines.flow.Flow
 interface NotesDao {
 
     // --- BOOKS ---
-    @Query("SELECT * FROM books ORDER BY title ASC")
-    fun getAllBooksFlow(): Flow<List<BookEntity>>
+    @Query("SELECT * FROM books WHERE userEmail = :userEmail ORDER BY title ASC")
+    fun getAllBooksFlow(userEmail: String): Flow<List<BookEntity>>
 
-    @Query("SELECT * FROM books ORDER BY title ASC")
-    suspend fun getAllBooks(): List<BookEntity>
+    @Query("SELECT * FROM books WHERE userEmail = :userEmail ORDER BY title ASC")
+    suspend fun getAllBooks(userEmail: String): List<BookEntity>
 
     @Query("SELECT * FROM books WHERE id = :id")
     suspend fun getBookById(id: String): BookEntity?
@@ -75,39 +75,42 @@ interface NotesDao {
     // --- SEARCH & AI ---
     @Query("""
         SELECT * FROM notes 
-        WHERE isDeleted = 0 AND (title LIKE :query OR content LIKE :query OR tags LIKE :query)
+        WHERE userEmail = :userEmail AND isDeleted = 0 AND (title LIKE :query OR content LIKE :query OR tags LIKE :query)
         ORDER BY updatedAt DESC
     """)
-    fun searchNotesFlow(query: String): Flow<List<NoteEntity>>
+    fun searchNotesFlow(query: String, userEmail: String): Flow<List<NoteEntity>>
 
     @Query("""
         SELECT * FROM notes 
-        WHERE isDeleted = 0 AND (title LIKE :query OR content LIKE :query OR tags LIKE :query)
+        WHERE userEmail = :userEmail AND isDeleted = 0 AND (title LIKE :query OR content LIKE :query OR tags LIKE :query)
         ORDER BY updatedAt DESC
     """)
-    suspend fun searchNotes(query: String): List<NoteEntity>
+    suspend fun searchNotes(query: String, userEmail: String): List<NoteEntity>
 
     // Get all notes with active reminders
-    @Query("SELECT * FROM notes WHERE isDeleted = 0 AND reminderTime IS NOT NULL AND reminderStatus = 'pending' ORDER BY reminderTime ASC")
-    fun getPendingRemindersFlow(): Flow<List<NoteEntity>>
+    @Query("SELECT * FROM notes WHERE userEmail = :userEmail AND isDeleted = 0 AND reminderTime IS NOT NULL AND reminderStatus = 'pending' ORDER BY reminderTime ASC")
+    fun getPendingRemindersFlow(userEmail: String): Flow<List<NoteEntity>>
 
-    @Query("SELECT * FROM notes WHERE isDeleted = 0 AND reminderTime IS NOT NULL AND reminderStatus = 'pending' ORDER BY reminderTime ASC")
-    suspend fun getPendingReminders(): List<NoteEntity>
+    @Query("SELECT * FROM notes WHERE userEmail = :userEmail AND isDeleted = 0 AND reminderTime IS NOT NULL AND reminderStatus = 'pending' ORDER BY reminderTime ASC")
+    suspend fun getPendingReminders(userEmail: String): List<NoteEntity>
 
 
     // --- SYNC QUERIES ---
-    @Query("SELECT * FROM books WHERE updatedAt > :lastSync")
-    suspend fun getModifiedBooks(lastSync: Long): List<BookEntity>
+    @Query("SELECT * FROM books WHERE userEmail = :userEmail AND updatedAt > :lastSync")
+    suspend fun getModifiedBooks(lastSync: Long, userEmail: String): List<BookEntity>
 
-    @Query("SELECT * FROM pages WHERE updatedAt > :lastSync")
-    suspend fun getModifiedPages(lastSync: Long): List<PageEntity>
+    @Query("SELECT * FROM pages WHERE userEmail = :userEmail AND updatedAt > :lastSync")
+    suspend fun getModifiedPages(lastSync: Long, userEmail: String): List<PageEntity>
 
-    @Query("SELECT * FROM notes WHERE updatedAt > :lastSync")
-    suspend fun getModifiedNotes(lastSync: Long): List<NoteEntity>
+    @Query("SELECT * FROM notes WHERE userEmail = :userEmail AND updatedAt > :lastSync")
+    suspend fun getModifiedNotes(lastSync: Long, userEmail: String): List<NoteEntity>
 
     // --- CHAT SESSIONS ---
-    @Query("SELECT * FROM chat_sessions ORDER BY createdAt DESC")
-    fun getAllChatSessionsFlow(): Flow<List<com.example.data.model.ChatSessionEntity>>
+    @Query("SELECT * FROM chat_sessions WHERE userEmail = :userEmail ORDER BY createdAt DESC")
+    fun getAllChatSessionsFlow(userEmail: String): Flow<List<com.example.data.model.ChatSessionEntity>>
+
+    @Query("SELECT * FROM chat_sessions WHERE userEmail = :userEmail ORDER BY createdAt DESC")
+    suspend fun getAllChatSessions(userEmail: String): List<com.example.data.model.ChatSessionEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertChatSession(session: com.example.data.model.ChatSessionEntity)

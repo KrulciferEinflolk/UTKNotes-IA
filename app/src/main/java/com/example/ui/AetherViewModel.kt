@@ -79,8 +79,13 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         _chatbotPreAttachedText.value = null
     }
 
+    val currentEmail: StateFlow<String> = syncManager.userEmail
+        .map { it ?: "offline" }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "offline")
+
     // --- DATABASE LISTS FLOWS ---
-    val books: StateFlow<List<BookEntity>> = repository.allBooks
+    val books: StateFlow<List<BookEntity>> = currentEmail
+        .flatMapLatest { email -> repository.getBooksForUser(email) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val pages: StateFlow<List<PageEntity>> = _selectedBook
@@ -98,24 +103,28 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Search Results Flow
-    val searchResults: StateFlow<List<NoteEntity>> = _searchQuery
-        .debounce(300)
-        .flatMapLatest { query ->
-            if (query.isNotEmpty()) repository.searchNotes(query)
-            else flowOf(emptyList())
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val searchResults: StateFlow<List<NoteEntity>> = combine(_searchQuery.debounce(300), currentEmail) { query, email ->
+        query to email
+    }
+    .flatMapLatest { (query, email) ->
+        if (query.isNotEmpty()) repository.searchNotes(query, email)
+        else flowOf(emptyList())
+    }
+    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Active pending reminders
-    val pendingReminders: StateFlow<List<NoteEntity>> = repository.pendingReminders
+    val pendingReminders: StateFlow<List<NoteEntity>> = currentEmail
+        .flatMapLatest { email -> repository.getPendingReminders(email) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // All active notes in the app (for mention lookup)
-    val allNotes: StateFlow<List<NoteEntity>> = repository.searchNotes("")
+    val allNotes: StateFlow<List<NoteEntity>> = currentEmail
+        .flatMapLatest { email -> repository.searchNotes("", email) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // All chat history sessions
-    val allChatSessions: StateFlow<List<com.example.data.model.ChatSessionEntity>> = repository.allChatSessions
+    val allChatSessions: StateFlow<List<com.example.data.model.ChatSessionEntity>> = currentEmail
+        .flatMapLatest { email -> repository.getChatSessions(email) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun saveChatSession(id: String, title: String, messagesJson: String) {
@@ -125,7 +134,8 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     id = id,
                     title = title,
                     messagesJson = messagesJson,
-                    createdAt = System.currentTimeMillis()
+                    createdAt = System.currentTimeMillis(),
+                    userEmail = currentEmail.value
                 )
             )
         }
@@ -141,20 +151,18 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         // Create Notification Channel for reminders
         NotificationHelper.createNotificationChannel(application)
 
-        // Seed initial data if the database is empty
+        // Clear select state on account changes to avoid data leak
         viewModelScope.launch {
-            val existingBooks = repository.getAllBooksList()
-            if (existingBooks.isEmpty()) {
-                seedInitialData()
-            } else {
-                // Always start in the main Library/Home screen (selectedBook = null)
+            currentEmail.collect { email ->
                 _selectedBook.value = null
                 _selectedPage.value = null
+                _selectedNote.value = null
+                geminiService.customApiKey = syncManager.geminiApiKey
             }
-
-            // Start reminder poll trigger
-            startReminderPoll()
         }
+
+        // Start reminder poll trigger
+        startReminderPoll()
     }
 
     private suspend fun seedInitialData() {
@@ -169,7 +177,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             while (true) {
                 kotlinx.coroutines.delay(10000) // check every 10 seconds
                 val now = System.currentTimeMillis()
-                val pending = repository.getPendingRemindersList()
+                val pending = repository.getPendingRemindersList(currentEmail.value)
                 for (note in pending) {
                     val time = note.reminderTime ?: continue
                     if (now >= time) {
@@ -199,7 +207,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             val bookPages = repository.getPagesForBookList(book.id)
             android.util.Log.d("AetherViewModel", "Fetched pages: ${bookPages.size}")
             if (bookPages.isEmpty()) {
-                val newPage = repository.createPage(book.id, "Notas")
+                val newPage = repository.createPage(book.id, "Notas", userEmail = currentEmail.value)
                 _selectedPage.value = newPage
             } else {
                 _selectedPage.value = bookPages.firstOrNull()
@@ -223,11 +231,12 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 coverUri = coverUri,
                 coverScale = coverScale,
                 coverOffsetX = coverOffsetX,
-                coverOffsetY = coverOffsetY
+                coverOffsetY = coverOffsetY,
+                userEmail = currentEmail.value
             )
             android.util.Log.d("AetherViewModel", "Book added: ${book.id}")
             _selectedBook.value = book
-            val page = repository.createPage(book.id, "Notas")
+            val page = repository.createPage(book.id, "Notas", userEmail = currentEmail.value)
             _selectedPage.value = page
             _selectedNote.value = null
         }
@@ -255,7 +264,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             repository.deleteBook(book)
             if (_selectedBook.value?.id == book.id) {
-                val remaining = repository.getAllBooksList()
+                val remaining = repository.getAllBooksList(currentEmail.value)
                 val nextBook = remaining.firstOrNull()
                 _selectedBook.value = nextBook
                 _selectedPage.value = null
@@ -263,7 +272,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 nextBook?.let { b ->
                     val pagesList = repository.getPagesForBookList(b.id)
                     if (pagesList.isEmpty()) {
-                        val newPage = repository.createPage(b.id, "Notas")
+                        val newPage = repository.createPage(b.id, "Notas", userEmail = currentEmail.value)
                         _selectedPage.value = newPage
                     } else {
                         _selectedPage.value = pagesList.firstOrNull()
@@ -283,7 +292,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     fun addPage(title: String) {
         val currentBook = _selectedBook.value ?: return
         viewModelScope.launch {
-            val page = repository.createPage(currentBook.id, title)
+            val page = repository.createPage(currentBook.id, title, userEmail = currentEmail.value)
             _selectedPage.value = page
             _selectedNote.value = null
         }
@@ -325,7 +334,8 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 content = content,
                 tags = tags,
                 attachments = attachments,
-                reminderTime = reminderTime
+                reminderTime = reminderTime,
+                userEmail = currentEmail.value
             )
             _selectedNote.value = note
         }
@@ -333,9 +343,16 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
 
     fun saveNote(note: NoteEntity) {
         viewModelScope.launch {
-            repository.updateNote(note)
-            if (_selectedNote.value?.id == note.id) {
-                _selectedNote.value = note
+            var finalNote = note
+            if (syncManager.isConnected.value) {
+                finalNote = syncManager.uploadAttachmentsForNote(note)
+            }
+            repository.updateNote(finalNote)
+            if (_selectedNote.value?.id == finalNote.id) {
+                _selectedNote.value = finalNote
+            }
+            if (syncManager.isConnected.value) {
+                triggerDriveSync()
             }
         }
     }
@@ -448,7 +465,8 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     pageId = currentPage.id,
                     title = result.first,
                     content = result.second,
-                    tags = "Generado, IA"
+                    tags = "Generado, IA",
+                    userEmail = currentEmail.value
                 )
                 _selectedNote.value = newNote
                 _aiMessage.value = "Nueva nota generada con IA!"

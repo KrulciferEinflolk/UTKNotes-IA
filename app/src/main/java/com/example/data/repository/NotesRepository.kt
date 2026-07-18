@@ -10,9 +10,11 @@ import java.util.UUID
 class NotesRepository(private val notesDao: NotesDao) {
 
     // --- BOOKS ---
-    val allBooks: Flow<List<BookEntity>> = notesDao.getAllBooksFlow()
+    fun getBooksForUser(userEmail: String): Flow<List<BookEntity>> =
+        notesDao.getAllBooksFlow(userEmail)
 
-    suspend fun getAllBooksList(): List<BookEntity> = notesDao.getAllBooks()
+    suspend fun getAllBooksList(userEmail: String): List<BookEntity> =
+        notesDao.getAllBooks(userEmail)
 
     suspend fun getBook(id: String): BookEntity? = notesDao.getBookById(id)
 
@@ -22,7 +24,8 @@ class NotesRepository(private val notesDao: NotesDao) {
         coverUri: String? = null,
         coverScale: Float = 1.0f,
         coverOffsetX: Float = 0.0f,
-        coverOffsetY: Float = 0.0f
+        coverOffsetY: Float = 0.0f,
+        userEmail: String = "offline"
     ): BookEntity {
         val book = BookEntity(
             title = title,
@@ -30,7 +33,8 @@ class NotesRepository(private val notesDao: NotesDao) {
             coverUri = coverUri,
             coverScale = coverScale,
             coverOffsetX = coverOffsetX,
-            coverOffsetY = coverOffsetY
+            coverOffsetY = coverOffsetY,
+            userEmail = userEmail
         )
         notesDao.insertBook(book)
         return book
@@ -55,8 +59,8 @@ class NotesRepository(private val notesDao: NotesDao) {
 
     suspend fun getPage(id: String): PageEntity? = notesDao.getPageById(id)
 
-    suspend fun createPage(bookId: String, title: String, orderIndex: Int = 0): PageEntity {
-        val page = PageEntity(bookId = bookId, title = title, orderIndex = orderIndex)
+    suspend fun createPage(bookId: String, title: String, orderIndex: Int = 0, userEmail: String = "offline"): PageEntity {
+        val page = PageEntity(bookId = bookId, title = title, orderIndex = orderIndex, userEmail = userEmail)
         notesDao.insertPage(page)
         return page
     }
@@ -83,7 +87,8 @@ class NotesRepository(private val notesDao: NotesDao) {
         content: String,
         tags: String = "",
         attachments: String = "[]",
-        reminderTime: Long? = null
+        reminderTime: Long? = null,
+        userEmail: String = "offline"
     ): NoteEntity {
         val note = NoteEntity(
             pageId = pageId,
@@ -92,7 +97,8 @@ class NotesRepository(private val notesDao: NotesDao) {
             tags = tags,
             attachments = attachments,
             reminderTime = reminderTime,
-            reminderStatus = if (reminderTime != null) "pending" else "none"
+            reminderStatus = if (reminderTime != null) "pending" else "none",
+            userEmail = userEmail
         )
         notesDao.insertNote(note)
         return note
@@ -116,19 +122,21 @@ class NotesRepository(private val notesDao: NotesDao) {
 
 
     // --- SEARCH & REMINDERS ---
-    fun searchNotes(query: String): Flow<List<NoteEntity>> {
+    fun searchNotes(query: String, userEmail: String): Flow<List<NoteEntity>> {
         val formattedQuery = "%$query%"
-        return notesDao.searchNotesFlow(formattedQuery)
+        return notesDao.searchNotesFlow(formattedQuery, userEmail)
     }
 
-    suspend fun searchNotesList(query: String): List<NoteEntity> {
+    suspend fun searchNotesList(query: String, userEmail: String): List<NoteEntity> {
         val formattedQuery = "%$query%"
-        return notesDao.searchNotes(formattedQuery)
+        return notesDao.searchNotes(formattedQuery, userEmail)
     }
 
-    val pendingReminders: Flow<List<NoteEntity>> = notesDao.getPendingRemindersFlow()
+    fun getPendingReminders(userEmail: String): Flow<List<NoteEntity>> =
+        notesDao.getPendingRemindersFlow(userEmail)
 
-    suspend fun getPendingRemindersList(): List<NoteEntity> = notesDao.getPendingReminders()
+    suspend fun getPendingRemindersList(userEmail: String): List<NoteEntity> =
+        notesDao.getPendingReminders(userEmail)
 
     suspend fun completeReminder(noteId: String) {
         val note = notesDao.getNoteById(noteId) ?: return
@@ -142,10 +150,10 @@ class NotesRepository(private val notesDao: NotesDao) {
     }
 
     // --- SYNC EXPORTS ---
-    suspend fun getModifiedDataSince(lastSync: Long): Triple<List<BookEntity>, List<PageEntity>, List<NoteEntity>> {
-        val books = notesDao.getModifiedBooks(lastSync)
-        val pages = notesDao.getModifiedPages(lastSync)
-        val notes = notesDao.getModifiedNotes(lastSync)
+    suspend fun getModifiedDataSince(lastSync: Long, userEmail: String): Triple<List<BookEntity>, List<PageEntity>, List<NoteEntity>> {
+        val books = notesDao.getModifiedBooks(lastSync, userEmail)
+        val pages = notesDao.getModifiedPages(lastSync, userEmail)
+        val notes = notesDao.getModifiedNotes(lastSync, userEmail)
         return Triple(books, pages, notes)
     }
 
@@ -166,7 +174,8 @@ class NotesRepository(private val notesDao: NotesDao) {
     }
 
     // --- CHAT SESSIONS ---
-    val allChatSessions: Flow<List<com.example.data.model.ChatSessionEntity>> = notesDao.getAllChatSessionsFlow()
+    fun getChatSessions(userEmail: String): Flow<List<com.example.data.model.ChatSessionEntity>> =
+        notesDao.getAllChatSessionsFlow(userEmail)
 
     suspend fun insertChatSession(session: com.example.data.model.ChatSessionEntity) {
         notesDao.insertChatSession(session)
@@ -180,4 +189,3 @@ class NotesRepository(private val notesDao: NotesDao) {
         return notesDao.getChatSessionById(id)
     }
 }
-

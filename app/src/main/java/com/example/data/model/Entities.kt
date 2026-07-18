@@ -16,7 +16,8 @@ data class BookEntity(
     val coverOffsetX: Float = 0.0f,
     val coverOffsetY: Float = 0.0f,
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val userEmail: String = "offline"
 )
 
 @Entity(
@@ -37,7 +38,8 @@ data class PageEntity(
     val title: String,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
-    val orderIndex: Int = 0
+    val orderIndex: Int = 0,
+    val userEmail: String = "offline"
 )
 
 @Entity(
@@ -65,7 +67,8 @@ data class NoteEntity(
     val isSynced: Boolean = false,
     val isDeleted: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val userEmail: String = "offline"
 )
 
 @Entity(tableName = "chat_sessions")
@@ -73,6 +76,7 @@ data class ChatSessionEntity(
     @PrimaryKey val id: String = java.util.UUID.randomUUID().toString(),
     val title: String,
     val messagesJson: String, // JSON string of message list
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val userEmail: String = "offline"
 )
 
