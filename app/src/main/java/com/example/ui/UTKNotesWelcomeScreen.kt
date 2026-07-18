@@ -81,31 +81,25 @@ fun UTKNotesWelcomeScreen(
     val googleSignInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        isSigningIn = false
         if (result.resultCode == Activity.RESULT_OK) {
-            val accountName = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
-            if (!accountName.isNullOrEmpty()) {
-                Toast.makeText(context, "Sesión iniciada: $accountName", Toast.LENGTH_SHORT).show()
-                viewModel.syncManager.connectDrive(accountName)
-                viewModel.triggerDriveSync()
-            } else {
-                val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-                try {
-                    val account = task.getResult(ApiException::class.java)
-                    val email = account?.email
-                    if (!email.isNullOrEmpty()) {
-                        Toast.makeText(context, "Sesión iniciada: $email", Toast.LENGTH_SHORT).show()
-                        viewModel.syncManager.connectDrive(email)
-                        viewModel.triggerDriveSync()
-                    } else {
-                        Toast.makeText(context, "Error: No se pudo obtener el correo de la cuenta", Toast.LENGTH_LONG).show()
-                    }
-                } catch (e: ApiException) {
-                    Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed", e)
-                    Toast.makeText(context, "Error al iniciar sesión: ${e.statusCode}", Toast.LENGTH_LONG).show()
-                } catch (e: Exception) {
-                    Log.e("UTKNotesWelcomeScreen", "Sign-In fallback failed", e)
-                    Toast.makeText(context, "Error al iniciar sesión con Google", Toast.LENGTH_LONG).show()
+            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+            try {
+                val account = task.getResult(ApiException::class.java)
+                val email = account?.email
+                if (!email.isNullOrEmpty()) {
+                    Toast.makeText(context, "Sesión iniciada: $email", Toast.LENGTH_SHORT).show()
+                    viewModel.syncManager.connectDrive(email)
+                    viewModel.triggerDriveSync()
+                } else {
+                    Toast.makeText(context, "Error: No se pudo obtener el correo de la cuenta", Toast.LENGTH_LONG).show()
                 }
+            } catch (e: ApiException) {
+                Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed", e)
+                Toast.makeText(context, "Error al iniciar sesión: ${e.statusCode}", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Log.e("UTKNotesWelcomeScreen", "Sign-In fallback failed", e)
+                Toast.makeText(context, "Error al iniciar sesión con Google", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -181,38 +175,22 @@ fun UTKNotesWelcomeScreen(
                 // Customized Google Sign-In Button
                 Surface(
                     onClick = {
-                        try {
-                            val intent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                                AccountManager.newChooseAccountIntent(
-                                    null,
-                                    null,
-                                    arrayOf("com.google"),
-                                    null,
-                                    null,
-                                    null,
-                                    null
-                                )
-                            } else {
-                                @Suppress("DEPRECATION")
-                                AccountManager.newChooseAccountIntent(
-                                    null,
-                                    null,
-                                    arrayOf("com.google"),
-                                    false,
-                                    null,
-                                    null,
-                                    null,
-                                    null
-                                )
-                            }
-                            googleSignInLauncher.launch(intent)
-                        } catch (e: Exception) {
-                            Log.e("UTKNotesWelcomeScreen", "Failed to launch AccountManager intent, trying GoogleSignIn", e)
+                        isSigningIn = true
+                        googleSignInClient.signOut().addOnCompleteListener {
                             try {
                                 googleSignInLauncher.launch(googleSignInClient.signInIntent)
-                            } catch (fallbackEx: Exception) {
-                                Log.e("UTKNotesWelcomeScreen", "Failed to launch Google Sign-In fallback", fallbackEx)
-                                Toast.makeText(context, "Error al abrir el selector de cuentas", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) {
+                                Log.e("UTKNotesWelcomeScreen", "Failed to launch Google Sign-In intent", e)
+                                Toast.makeText(context, "Error al abrir el selector de cuentas de Google", Toast.LENGTH_SHORT).show()
+                                isSigningIn = false
+                            }
+                        }.addOnFailureListener {
+                            try {
+                                googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                            } catch (e: Exception) {
+                                Log.e("UTKNotesWelcomeScreen", "Failed to launch Google Sign-In intent", e)
+                                Toast.makeText(context, "Error al abrir el selector de cuentas de Google", Toast.LENGTH_SHORT).show()
+                                isSigningIn = false
                             }
                         }
                     },
@@ -228,20 +206,35 @@ fun UTKNotesWelcomeScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
-                        // Google Icon representation
-                        Icon(
-                            imageVector = Icons.Default.CloudDone,
-                            contentDescription = null,
-                            tint = Color(0xFF4285F4),
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(
-                            text = "Iniciar sesión con Google",
-                            color = Color(0xFF1F1F1F),
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        if (isSigningIn) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = Color(0xFF4285F4),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = "Iniciando sesión...",
+                                color = Color(0xFF1F1F1F),
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        } else {
+                            // Google Icon representation
+                            Icon(
+                                imageVector = Icons.Default.CloudDone,
+                                contentDescription = null,
+                                tint = Color(0xFF4285F4),
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = "Iniciar sesión con Google",
+                                color = Color(0xFF1F1F1F),
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
 
