@@ -186,7 +186,7 @@ fun UTKNotesWelcomeScreen(
                                 // User cancelled
                             } catch (e: Exception) {
                                 Log.e("UTKNotesWelcomeScreen", "Error de inicio de sesión", e)
-                                Toast.makeText(context, "Requiere configuración de Firebase (google-services.json)", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, "Iniciando en Modo Local (Sincronización en la nube desactivada)", Toast.LENGTH_LONG).show()
                                 // Simulación de inicio de sesión elegante en caso de que falte Firebase
                                 viewModel.syncManager.connectDrive("usuario_simulado@gmail.com")
                             }
@@ -220,6 +220,31 @@ fun UTKNotesWelcomeScreen(
                         )
                     }
                 }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                OutlinedButton(
+                    onClick = {
+                        Toast.makeText(context, "Iniciando en Modo Local (offline)", Toast.LENGTH_SHORT).show()
+                        viewModel.syncManager.connectDrive("usuario_local@utknotes.com")
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color.White
+                    ),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.4f)),
+                    shape = RoundedCornerShape(25.dp)
+                ) {
+                    Text(
+                        text = "Omitir y Usar Modo Local (Offline)",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
 
                 Text(
                     text = "Tus datos se guardarán de forma segura en tu cuenta personal de Google Drive.",
