@@ -82,18 +82,30 @@ fun UTKNotesWelcomeScreen(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-            try {
-                val account = task.getResult(ApiException::class.java)
-                val email = account?.email
-                if (!email.isNullOrEmpty()) {
-                    Toast.makeText(context, "Sesión iniciada: $email", Toast.LENGTH_SHORT).show()
-                    viewModel.syncManager.connectDrive(email)
-                    viewModel.triggerDriveSync()
+            val accountName = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
+            if (!accountName.isNullOrEmpty()) {
+                Toast.makeText(context, "Sesión iniciada: $accountName", Toast.LENGTH_SHORT).show()
+                viewModel.syncManager.connectDrive(accountName)
+                viewModel.triggerDriveSync()
+            } else {
+                val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+                try {
+                    val account = task.getResult(ApiException::class.java)
+                    val email = account?.email
+                    if (!email.isNullOrEmpty()) {
+                        Toast.makeText(context, "Sesión iniciada: $email", Toast.LENGTH_SHORT).show()
+                        viewModel.syncManager.connectDrive(email)
+                        viewModel.triggerDriveSync()
+                    } else {
+                        Toast.makeText(context, "Error: No se pudo obtener el correo de la cuenta", Toast.LENGTH_LONG).show()
+                    }
+                } catch (e: ApiException) {
+                    Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed", e)
+                    Toast.makeText(context, "Error al iniciar sesión: ${e.statusCode}", Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    Log.e("UTKNotesWelcomeScreen", "Sign-In fallback failed", e)
+                    Toast.makeText(context, "Error al iniciar sesión con Google", Toast.LENGTH_LONG).show()
                 }
-            } catch (e: ApiException) {
-                Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed", e)
-                Toast.makeText(context, "Error al iniciar sesión con Google: ${e.statusCode}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -170,10 +182,38 @@ fun UTKNotesWelcomeScreen(
                 Surface(
                     onClick = {
                         try {
-                            googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                            val intent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                                AccountManager.newChooseAccountIntent(
+                                    null,
+                                    null,
+                                    arrayOf("com.google"),
+                                    null,
+                                    null,
+                                    null,
+                                    null
+                                )
+                            } else {
+                                @Suppress("DEPRECATION")
+                                AccountManager.newChooseAccountIntent(
+                                    null,
+                                    null,
+                                    arrayOf("com.google"),
+                                    false,
+                                    null,
+                                    null,
+                                    null,
+                                    null
+                                )
+                            }
+                            googleSignInLauncher.launch(intent)
                         } catch (e: Exception) {
-                            Log.e("UTKNotesWelcomeScreen", "Failed to launch Google Sign-In intent", e)
-                            Toast.makeText(context, "Error al abrir el selector de cuentas de Google", Toast.LENGTH_SHORT).show()
+                            Log.e("UTKNotesWelcomeScreen", "Failed to launch AccountManager intent, trying GoogleSignIn", e)
+                            try {
+                                googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                            } catch (fallbackEx: Exception) {
+                                Log.e("UTKNotesWelcomeScreen", "Failed to launch Google Sign-In fallback", fallbackEx)
+                                Toast.makeText(context, "Error al abrir el selector de cuentas", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     },
                     modifier = Modifier
