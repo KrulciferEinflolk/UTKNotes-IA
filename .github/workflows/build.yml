@@ -182,14 +182,18 @@ jobs:
               else:
                   print(f"Resource file already exists: {path}")
 
-          # Check for img_app_icon_1784256719197.png and write fallback 1x1 png if missing
-          png_path = "app/src/main/res/drawable/img_app_icon_1784256719197.png"
-          if not os.path.exists(png_path):
+          # Check for img_app_icon_1784256719197 with any extension to avoid duplicates
+          img_base = "app/src/main/res/drawable/img_app_icon_1784256719197"
+          has_icon = any(os.path.exists(f"{img_base}.{ext}") for ext in ["png", "webp", "jpg", "jpeg", "xml"])
+          if not has_icon:
+              png_path = f"{img_base}.png"
               os.makedirs(os.path.dirname(png_path), exist_ok=True)
               fallback_png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
               with open(png_path, "wb") as f:
                   f.write(base64.b64decode(fallback_png_b64.encode("utf-8")))
               print(f"Restored missing app icon image file: {png_path}")
+          else:
+              print("App icon image file already exists (with webp, png, or other extension).")
           '
 
       - name: Setup Release Keystore
