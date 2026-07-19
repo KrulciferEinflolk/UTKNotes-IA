@@ -159,8 +159,15 @@ class GeminiService {
      */
     suspend fun generateSuggestions(notesSummary: String): List<String> {
         val systemPrompt = """
-            Eres un organizador de notas inteligente. Analiza el resumen de las notas del usuario y genera de 3 a 4 sugerencias rápidas, ideas de continuación, preguntas de reflexión o tareas pendientes lógicas.
-            Responde únicamente con líneas de texto separadas por saltos de línea. Cada línea debe comenzar directamente con la sugerencia, sin números ni viñetas.
+            Eres un organizador de notas inteligente y creativo de Gemini. Tu tarea es analizar el resumen de las notas del usuario y generar de 3 a 4 sugerencias concisas y accionables de los siguientes dos tipos:
+            1. Ideas creativas para crear NUEVAS notas que complementen o expandan las temáticas existentes (ej. "Crear una nueva nota sobre el plan de acción comercial para el trimestre").
+            2. Recomendaciones directas de cómo CONTINUAR o expandir las notas ya existentes (ej. "Continuar la nota de Recetas agregando un apartado de postres navideños").
+            
+            Reglas de respuesta:
+            - Devuelve únicamente de 3 a 4 sugerencias en total.
+            - Cada sugerencia debe ser una sola línea de texto plano.
+            - No incluyas números, viñetas, guiones, asteriscos, negrita, ni explicaciones preliminares.
+            - Responde en español de forma directa y elegante.
         """.trimIndent()
 
         val userPrompt = "Resumen de mis notas actuales:\n$notesSummary"

@@ -199,6 +199,456 @@ fun AetherAppScreen(
     var showAiCustomDialog by remember { mutableStateOf(false) }
     var aiCustomPrompt by remember { mutableStateOf("") }
 
+    var isImportingPdf by remember { mutableStateOf(false) }
+    val pdfPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri: android.net.Uri? ->
+        if (uri != null) {
+            isImportingPdf = true
+            scope.launch {
+                try {
+                    val originalName = getFileName(context, uri) ?: "Documento"
+                    val sizeString = getFileSize(context, uri) ?: "Desconocido"
+                    val mimeType = context.contentResolver.getType(uri) ?: ""
+                    
+                    val cleanName = originalName.replace("[^a-zA-Z0-9._-]".toRegex(), "_")
+                    val destFile = java.io.File(
+                        java.io.File(context.filesDir, "imported_pdfs").apply { mkdirs() },
+                        "${System.currentTimeMillis()}_$cleanName"
+                    )
+                    
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        java.io.FileOutputStream(destFile).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+
+                    val isPdf = originalName.endsWith(".pdf", ignoreCase = true) || mimeType == "application/pdf"
+                    val isTextFile = originalName.endsWith(".txt", ignoreCase = true) || 
+                                     originalName.endsWith(".md", ignoreCase = true) || 
+                                     originalName.endsWith(".json", ignoreCase = true) || 
+                                     originalName.endsWith(".html", ignoreCase = true) || 
+                                     originalName.endsWith(".xml", ignoreCase = true) || 
+                                     mimeType.startsWith("text/", ignoreCase = true) || 
+                                     mimeType == "application/json" || 
+                                     mimeType == "application/javascript"
+
+                    val isImageFile = mimeType.startsWith("image/", ignoreCase = true) ||
+                                      originalName.endsWith(".png", ignoreCase = true) ||
+                                      originalName.endsWith(".jpg", ignoreCase = true) ||
+                                      originalName.endsWith(".jpeg", ignoreCase = true) ||
+                                      originalName.endsWith(".webp", ignoreCase = true) ||
+                                      originalName.endsWith(".gif", ignoreCase = true)
+
+                    val blocks = mutableListOf<EditorBlock>()
+
+                    if (isPdf) {
+                        val coverPath = renderPdfFirstPage(context, destFile)
+                        blocks.add(
+                            EditorBlock.Text(
+                                content = "PDF Importado: $originalName",
+                                isBold = true,
+                                fontSize = 20,
+                                isHeader = true
+                            )
+                        )
+                        if (coverPath != null) {
+                            blocks.add(
+                                EditorBlock.Image(
+                                    urlOrPath = coverPath,
+                                    caption = "Portada de $originalName",
+                                    width = "Match",
+                                    height = "Wrap"
+                                )
+                            )
+                        }
+                        blocks.add(
+                            EditorBlock.File(
+                                name = originalName,
+                                sourceUrl = destFile.absolutePath,
+                                size = sizeString
+                            )
+                        )
+                        blocks.add(
+                            EditorBlock.Text(
+                                content = "Contenido extraído del PDF:",
+                                isBold = true,
+                                fontSize = 16,
+                                isHeader = true
+                            )
+                        )
+
+                        var totalElementsExtracted = 0
+                        val imageDir = java.io.File(context.filesDir, "extracted_pdf_images").apply { mkdirs() }
+                        try {
+                            val reader = com.itextpdf.text.pdf.PdfReader(destFile.absolutePath)
+                            val numPages = reader.numberOfPages
+                            val parser = com.itextpdf.text.pdf.parser.PdfReaderContentParser(reader)
+                            for (page in 1..numPages) {
+                                val extractor = PageElementExtractor(context, imageDir, totalElementsExtracted)
+                                parser.processContent(page, extractor)
+                                val pageBlocks = processPageElements(extractor.elements)
+                                if (pageBlocks.isNotEmpty()) {
+                                    totalElementsExtracted += extractor.elements.size
+                                    blocks.add(
+                                        EditorBlock.Text(
+                                            content = "--- Página $page ---",
+                                            isBold = true,
+                                            fontSize = 12,
+                                            fontColor = "Purple"
+                                        )
+                                    )
+                                    blocks.addAll(pageBlocks)
+                                }
+                            }
+                            reader.close()
+                        } catch (e: Exception) {
+                            android.util.Log.e("PDFImport", "Error extracting PDF", e)
+                        }
+                        if (totalElementsExtracted == 0) {
+                            blocks.add(
+                                EditorBlock.Text(
+                                    content = "No se pudo extraer texto legible ni elementos gráficos de las páginas de este PDF. Puedes ver el archivo tocándolo arriba.",
+                                    isItalic = true,
+                                    fontSize = 13,
+                                    fontColor = "Red"
+                                )
+                            )
+                        } else {
+                            blocks.add(
+                                EditorBlock.Text(
+                                    content = "Puedes pulsar prolongadamente el archivo de arriba para cambiar su configuración, o tocarlo para abrirlo con el visor de PDF de tu dispositivo.",
+                                    isItalic = true,
+                                    fontSize = 13,
+                                    fontColor = "Normal"
+                                )
+                            )
+                        }
+                    } else if (isTextFile) {
+                        val textContent = try {
+                            context.contentResolver.openInputStream(uri)?.use { input ->
+                                input.bufferedReader().use { it.readText() }
+                            } ?: ""
+                        } catch (e: Exception) {
+                            ""
+                        }
+                        
+                        blocks.add(
+                            EditorBlock.Text(
+                                content = "Archivo Importado: $originalName",
+                                isBold = true,
+                                fontSize = 20,
+                                isHeader = true
+                            )
+                        )
+                        blocks.add(
+                            EditorBlock.File(
+                                name = originalName,
+                                sourceUrl = destFile.absolutePath,
+                                size = sizeString
+                            )
+                        )
+                        
+                        if (textContent.isNotEmpty()) {
+                            val paragraphs = textContent.split(Regex("(\\r?\\n){2,}"))
+                            paragraphs.forEach { paragraph ->
+                                val trimmed = paragraph.trim()
+                                if (trimmed.isNotEmpty()) {
+                                    blocks.add(
+                                        EditorBlock.Text(
+                                            content = trimmed,
+                                            fontSize = 14
+                                        )
+                                    )
+                                }
+                            }
+                        } else {
+                            blocks.add(
+                                EditorBlock.Text(
+                                    content = "(Archivo de texto vacío)",
+                                    isItalic = true,
+                                    fontSize = 13,
+                                    fontColor = "Normal"
+                                )
+                            )
+                        }
+                    } else if (isImageFile) {
+                        blocks.add(
+                            EditorBlock.Text(
+                                content = "Imagen Importada: $originalName",
+                                isBold = true,
+                                fontSize = 18,
+                                isHeader = true
+                            )
+                        )
+                        blocks.add(
+                            EditorBlock.Image(
+                                urlOrPath = destFile.absolutePath,
+                                caption = originalName,
+                                width = "Match",
+                                height = "Wrap"
+                            )
+                        )
+                        blocks.add(
+                            EditorBlock.File(
+                                name = originalName,
+                                sourceUrl = destFile.absolutePath,
+                                size = sizeString
+                            )
+                        )
+                    } else {
+                        // General file
+                        blocks.add(
+                            EditorBlock.Text(
+                                content = "Archivo Importado: $originalName",
+                                isBold = true,
+                                fontSize = 18,
+                                isHeader = true
+                            )
+                        )
+                        blocks.add(
+                            EditorBlock.File(
+                                name = originalName,
+                                sourceUrl = destFile.absolutePath,
+                                size = sizeString
+                            )
+                        )
+                        blocks.add(
+                            EditorBlock.Text(
+                                content = "Puedes pulsar prolongadamente el archivo de arriba para cambiar su configuración, o tocarlo para abrirlo.",
+                                isItalic = true,
+                                fontSize = 13,
+                                fontColor = "Normal"
+                            )
+                        )
+                    }
+                    
+                    val serialized = serializeBlocks(blocks)
+                    
+                    val titleWithoutExtension = if (originalName.contains(".")) {
+                        originalName.substringBeforeLast(".")
+                    } else {
+                        originalName
+                    }
+                    
+                    viewModel.addNote(
+                        title = titleWithoutExtension,
+                        content = serialized,
+                        tags = if (isPdf) "PDF, Importado" else if (isTextFile) "Texto, Importado" else "Archivo, Importado"
+                    )
+                    
+                    Toast.makeText(context, "Archivo importado correctamente: $originalName", Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    android.util.Log.e("PDFImport", "Error importing file", e)
+                    Toast.makeText(context, "Error al importar archivo: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                } finally {
+                    isImportingPdf = false
+                }
+            }
+        }
+    }
+
+    if (isImportingPdf) {
+        Dialog(onDismissRequest = {}) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = CosmicSurface,
+                border = BorderStroke(1.dp, CosmicBorder)
+            ) {
+                Row(
+                    modifier = Modifier.padding(24.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    CircularProgressIndicator(color = GeminiBlue)
+                    Text("Importando archivo...", color = TextPrimary, fontSize = 16.sp)
+                }
+            }
+        }
+    }
+
+    if (showAiCustomDialog) {
+        var selectedNoteToContinue by remember { mutableStateOf<NoteEntity?>(notes.firstOrNull()) }
+        var dropdownExpanded by remember { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { showAiCustomDialog = false },
+            containerColor = CosmicSurface,
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    tint = GeminiBlue,
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = {
+                Text(
+                    "Sugerencia de Gemini",
+                    color = TextPrimary,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Display the suggestion
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = CosmicSurfaceVariant),
+                        border = BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.3f)),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Lightbulb,
+                                contentDescription = null,
+                                tint = GeminiCyanAccent,
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .padding(top = 2.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = aiCustomPrompt,
+                                color = TextPrimary,
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp
+                            )
+                        }
+                    }
+
+                    Text(
+                        "¿Cómo te gustaría aplicar esta idea?",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    // Selection for note to continue
+                    if (notes.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "Continuar o modificar nota existente:",
+                                color = TextTertiary,
+                                fontSize = 11.sp
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { dropdownExpanded = true }
+                                    .background(CosmicSurfaceVariant, RoundedCornerShape(8.dp))
+                                    .border(1.dp, CosmicBorder, RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = selectedNoteToContinue?.title ?: "Seleccionar una nota",
+                                        color = if (selectedNoteToContinue != null) TextPrimary else TextTertiary,
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Default.ArrowDropDown,
+                                        contentDescription = null,
+                                        tint = TextPrimary
+                                    )
+                                }
+
+                                DropdownMenu(
+                                    expanded = dropdownExpanded,
+                                    onDismissRequest = { dropdownExpanded = false },
+                                    modifier = Modifier
+                                        .background(CosmicSurface)
+                                        .border(1.dp, CosmicBorder)
+                                        .width(280.dp)
+                                ) {
+                                    notes.forEach { note ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    note.title,
+                                                    color = TextPrimary,
+                                                    fontSize = 13.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            },
+                                            onClick = {
+                                                selectedNoteToContinue = note
+                                                dropdownExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                ) {
+                    TextButton(
+                        onClick = {
+                            viewModel.openChatbot(preAttachedText = aiCustomPrompt)
+                            showAiCustomDialog = false
+                        }
+                    ) {
+                        Text("Chat", color = GeminiCyanAccent, fontSize = 13.sp)
+                    }
+
+                    if (notes.isNotEmpty() && selectedNoteToContinue != null) {
+                        Button(
+                            onClick = {
+                                val targetNote = selectedNoteToContinue!!
+                                viewModel.applyAiModificationToNote(
+                                    note = targetNote,
+                                    instruction = "Modifica o continúa esta nota aplicando la siguiente idea o sugerencia de manera natural y detallada: $aiCustomPrompt"
+                                )
+                                showAiCustomDialog = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = CosmicBorder)
+                        ) {
+                            Text("Continuar nota", color = TextPrimary, fontSize = 13.sp)
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            viewModel.createNoteWithAI(aiCustomPrompt)
+                            showAiCustomDialog = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
+                    ) {
+                        Text("Crear nota", color = GeminiOnPrimary, fontSize = 13.sp)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showAiCustomDialog = false }
+                ) {
+                    Text("Cancelar", color = TextSecondary, fontSize = 13.sp)
+                }
+            }
+        )
+    }
+
     // Toast-like message for AI
     LaunchedEffect(aiMessage) {
         aiMessage?.let {
@@ -222,7 +672,16 @@ fun AetherAppScreen(
                     onBack = { viewModel.clearSelectedBook() },
                     onSyncClick = { viewModel.triggerDriveSync() },
                     onChatClick = { viewModel.openChatbot() },
-                    selectedNote = selectedNote
+                    selectedNote = selectedNote,
+                    onImportPdfClick = {
+                        if (!isImportingPdf) {
+                            try {
+                                pdfPickerLauncher.launch(arrayOf("*/*"))
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "No se pudo abrir el selector de archivos", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
                 )
             },
             floatingActionButton = {
@@ -346,7 +805,8 @@ fun AetherTopBar(
     onBack: (() -> Unit)? = null,
     onSyncClick: () -> Unit,
     onChatClick: () -> Unit,
-    selectedNote: NoteEntity? = null
+    selectedNote: NoteEntity? = null,
+    onImportPdfClick: (() -> Unit)? = null
 ) {
     Surface(
         color = CosmicSurface,
@@ -385,6 +845,20 @@ fun AetherTopBar(
 
                 // Cloud backup indicator / button
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (onImportPdfClick != null && selectedPage != null) {
+                        IconButton(
+                            onClick = onImportPdfClick,
+                            modifier = Modifier.testTag("import_pdf_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AttachFile,
+                                contentDescription = "Importar archivo",
+                                tint = GeminiBlue
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
+
                     val rotationAnimation = rememberInfiniteTransition()
                     val rotation by rotationAnimation.animateFloat(
                         initialValue = 0f,
@@ -1115,7 +1589,7 @@ sealed class EditorBlock {
     ) : EditorBlock()
     data class File(
         override val id: String = java.util.UUID.randomUUID().toString(),
-        var name: String = "Documento",
+        var name: String = "Mantener pulsado para editar",
         var sourceUrl: String = "",
         var size: String = "Desconocido"
     ) : EditorBlock()
@@ -1968,16 +2442,32 @@ fun ImageBlockView(
         horizontalArrangement = Arrangement.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            val isPlaceholder = block.urlOrPath.isEmpty() || block.urlOrPath == "Mantener pulsado para editar"
+            var imageAspectRatio by remember(block.urlOrPath) { mutableStateOf<Float?>(null) }
+            
             val mod = Modifier
                 .fillMaxWidth(if (block.width == "Match") 1f else 0.5f)
-                .height(if (block.height == "Wrap") 140.dp else 250.dp)
+                .let { modifier ->
+                    if (isPlaceholder) {
+                        modifier.height(if (block.height == "Wrap") 140.dp else 250.dp)
+                    } else {
+                        if (block.height == "Wrap") {
+                            val ratio = imageAspectRatio
+                            if (ratio != null) {
+                                modifier.aspectRatio(ratio)
+                            } else {
+                                modifier.wrapContentHeight().heightIn(min = 100.dp)
+                            }
+                        } else {
+                            modifier.height(250.dp)
+                        }
+                    }
+                }
                 .clip(RoundedCornerShape(8.dp))
                 .combinedClickable(
                     onClick = {},
                     onLongClick = onOpenSettings
                 )
-            
-            val isPlaceholder = block.urlOrPath.isEmpty() || block.urlOrPath == "Mantener pulsado para editar"
             
             if (isPlaceholder) {
                 Box(
@@ -1995,7 +2485,19 @@ fun ImageBlockView(
                     model = if (resolvedUrl.isNotEmpty()) resolvedUrl else block.urlOrPath,
                     contentDescription = block.caption,
                     modifier = mod.background(Color.DarkGray),
-                    contentScale = coil.size.Scale.FIT.let { androidx.compose.ui.layout.ContentScale.Fit }
+                    onSuccess = { state ->
+                        val drawable = state.result.drawable
+                        val w = drawable.intrinsicWidth
+                        val h = drawable.intrinsicHeight
+                        if (w > 0 && h > 0) {
+                            imageAspectRatio = w.toFloat() / h.toFloat()
+                        }
+                    },
+                    contentScale = if (block.height == "Wrap") {
+                        androidx.compose.ui.layout.ContentScale.FillWidth
+                    } else {
+                        androidx.compose.ui.layout.ContentScale.Crop
+                    }
                 )
             }
             
@@ -2732,6 +3234,272 @@ fun NoteEditorWorkspace(
     var showInsertionPanel by remember { mutableStateOf(false) }
     var showAiPanel by remember { mutableStateOf(false) }
 
+    var isImportingPdfInNote by remember { mutableStateOf(false) }
+    val pdfPickerLauncherInNote = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri: android.net.Uri? ->
+        if (uri != null) {
+            isImportingPdfInNote = true
+            scope.launch {
+                try {
+                    val originalName = getFileName(context, uri) ?: "Documento"
+                    val sizeString = getFileSize(context, uri) ?: "Desconocido"
+                    val mimeType = context.contentResolver.getType(uri) ?: ""
+                    
+                    val cleanName = originalName.replace("[^a-zA-Z0-9._-]".toRegex(), "_")
+                    val destFile = java.io.File(
+                        java.io.File(context.filesDir, "imported_pdfs").apply { mkdirs() },
+                        "${System.currentTimeMillis()}_$cleanName"
+                    )
+                    
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        java.io.FileOutputStream(destFile).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    
+                    val isPdf = originalName.endsWith(".pdf", ignoreCase = true) || mimeType == "application/pdf"
+                    val isTextFile = originalName.endsWith(".txt", ignoreCase = true) || 
+                                     originalName.endsWith(".md", ignoreCase = true) || 
+                                     originalName.endsWith(".json", ignoreCase = true) || 
+                                     originalName.endsWith(".html", ignoreCase = true) || 
+                                     originalName.endsWith(".xml", ignoreCase = true) || 
+                                     mimeType.startsWith("text/", ignoreCase = true) || 
+                                     mimeType == "application/json" || 
+                                     mimeType == "application/javascript"
+
+                    val isImageFile = mimeType.startsWith("image/", ignoreCase = true) ||
+                                      originalName.endsWith(".png", ignoreCase = true) ||
+                                      originalName.endsWith(".jpg", ignoreCase = true) ||
+                                      originalName.endsWith(".jpeg", ignoreCase = true) ||
+                                      originalName.endsWith(".webp", ignoreCase = true) ||
+                                      originalName.endsWith(".gif", ignoreCase = true)
+
+                    val newExtractedBlocks = mutableListOf<EditorBlock>()
+                    
+                    if (isPdf) {
+                        val coverPath = renderPdfFirstPage(context, destFile)
+                        newExtractedBlocks.add(
+                            EditorBlock.Text(
+                                content = "PDF Importado: $originalName",
+                                isBold = true,
+                                fontSize = 20,
+                                isHeader = true
+                            )
+                        )
+                        
+                        if (coverPath != null) {
+                            newExtractedBlocks.add(
+                                EditorBlock.Image(
+                                    urlOrPath = coverPath,
+                                    caption = "Portada de $originalName",
+                                    width = "Match",
+                                    height = "Wrap"
+                                )
+                            )
+                        }
+                        
+                        newExtractedBlocks.add(
+                            EditorBlock.File(
+                                name = originalName,
+                                sourceUrl = destFile.absolutePath,
+                                size = sizeString
+                            )
+                        )
+                        
+                        newExtractedBlocks.add(
+                            EditorBlock.Text(
+                                content = "Contenido extraído del PDF:",
+                                isBold = true,
+                                fontSize = 16,
+                                isHeader = true
+                            )
+                        )
+
+                        var totalElementsExtracted = 0
+                        val imageDir = java.io.File(context.filesDir, "extracted_pdf_images").apply { mkdirs() }
+                        
+                        try {
+                            val reader = com.itextpdf.text.pdf.PdfReader(destFile.absolutePath)
+                            val numPages = reader.numberOfPages
+                            val parser = com.itextpdf.text.pdf.parser.PdfReaderContentParser(reader)
+                            
+                            for (page in 1..numPages) {
+                                val extractor = PageElementExtractor(context, imageDir, totalElementsExtracted)
+                                parser.processContent(page, extractor)
+                                
+                                val pageBlocks = processPageElements(extractor.elements)
+                                if (pageBlocks.isNotEmpty()) {
+                                    totalElementsExtracted += extractor.elements.size
+                                    newExtractedBlocks.add(
+                                        EditorBlock.Text(
+                                            content = "--- Página $page ---",
+                                            isBold = true,
+                                            fontSize = 12,
+                                            fontColor = "Purple"
+                                        )
+                                    )
+                                    newExtractedBlocks.addAll(pageBlocks)
+                                }
+                            }
+                            reader.close()
+                        } catch (e: Exception) {
+                            android.util.Log.e("PDFImport", "Error extracting content with iTextG in-note flow", e)
+                        }
+
+                        if (totalElementsExtracted == 0) {
+                            newExtractedBlocks.add(
+                                EditorBlock.Text(
+                                    content = "No se pudo extraer texto legible ni elementos gráficos de las páginas de este PDF. Puedes ver el archivo tocándolo arriba.",
+                                    isItalic = true,
+                                    fontSize = 13,
+                                    fontColor = "Red"
+                                )
+                            )
+                        } else {
+                            newExtractedBlocks.add(
+                                EditorBlock.Text(
+                                    content = "Puedes pulsar prolongadamente el archivo de arriba para cambiar su configuración, o tocarlo para abrirlo con el visor de PDF de tu dispositivo.",
+                                    isItalic = true,
+                                    fontSize = 13,
+                                    fontColor = "Normal"
+                                )
+                            )
+                        }
+                    } else if (isTextFile) {
+                        val textContent = try {
+                            context.contentResolver.openInputStream(uri)?.use { input ->
+                                input.bufferedReader().use { it.readText() }
+                            } ?: ""
+                        } catch (e: Exception) {
+                            ""
+                        }
+                        
+                        newExtractedBlocks.add(
+                            EditorBlock.Text(
+                                content = "Archivo Importado: $originalName",
+                                isBold = true,
+                                fontSize = 20,
+                                isHeader = true
+                            )
+                        )
+                        newExtractedBlocks.add(
+                            EditorBlock.File(
+                                name = originalName,
+                                sourceUrl = destFile.absolutePath,
+                                size = sizeString
+                            )
+                        )
+                        
+                        if (textContent.isNotEmpty()) {
+                            val paragraphs = textContent.split(Regex("(\\r?\\n){2,}"))
+                            paragraphs.forEach { paragraph ->
+                                val trimmed = paragraph.trim()
+                                if (trimmed.isNotEmpty()) {
+                                    newExtractedBlocks.add(
+                                        EditorBlock.Text(
+                                            content = trimmed,
+                                            fontSize = 14
+                                        )
+                                    )
+                                }
+                            }
+                        } else {
+                            newExtractedBlocks.add(
+                                EditorBlock.Text(
+                                    content = "(Archivo de texto vacío)",
+                                    isItalic = true,
+                                    fontSize = 13,
+                                    fontColor = "Normal"
+                                )
+                            )
+                        }
+                    } else if (isImageFile) {
+                        newExtractedBlocks.add(
+                            EditorBlock.Text(
+                                content = "Imagen Importada: $originalName",
+                                isBold = true,
+                                fontSize = 18,
+                                isHeader = true
+                            )
+                        )
+                        newExtractedBlocks.add(
+                            EditorBlock.Image(
+                                urlOrPath = destFile.absolutePath,
+                                caption = originalName,
+                                width = "Match",
+                                height = "Wrap"
+                            )
+                        )
+                        newExtractedBlocks.add(
+                            EditorBlock.File(
+                                name = originalName,
+                                sourceUrl = destFile.absolutePath,
+                                size = sizeString
+                            )
+                        )
+                    } else {
+                        // General file
+                        newExtractedBlocks.add(
+                            EditorBlock.Text(
+                                content = "Archivo Importado: $originalName",
+                                isBold = true,
+                                fontSize = 18,
+                                isHeader = true
+                            )
+                        )
+                        newExtractedBlocks.add(
+                            EditorBlock.File(
+                                name = originalName,
+                                sourceUrl = destFile.absolutePath,
+                                size = sizeString
+                            )
+                        )
+                        newExtractedBlocks.add(
+                            EditorBlock.Text(
+                                content = "Puedes pulsar prolongadamente el archivo de arriba para cambiar su configuración, o tocarlo para abrirlo.",
+                                isItalic = true,
+                                fontSize = 13,
+                                fontColor = "Normal"
+                            )
+                        )
+                    }
+                    
+                    pushHistory()
+                    val newList = blocks.toMutableList()
+                    newList.addAll(newExtractedBlocks)
+                    updateBlocksAndSave(newList)
+                    
+                    Toast.makeText(context, "Archivo importado correctamente: $originalName", Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    android.util.Log.e("PDFImportInNote", "Error importing file", e)
+                    Toast.makeText(context, "Error al importar archivo: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                } finally {
+                    isImportingPdfInNote = false
+                }
+            }
+        }
+    }
+
+    if (isImportingPdfInNote) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = {}) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = CosmicSurface,
+                border = BorderStroke(1.dp, CosmicBorder)
+            ) {
+                Row(
+                    modifier = Modifier.padding(24.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    CircularProgressIndicator(color = GeminiBlue)
+                    Text("Importando archivo...", color = TextPrimary, fontSize = 16.sp)
+                }
+            }
+        }
+    }
+
     Scaffold(
         containerColor = CosmicBackground,
         topBar = {
@@ -3165,6 +3933,19 @@ fun NoteEditorWorkspace(
                                     leadingIcon = { Icon(Icons.Default.PlayCircle, null, modifier = Modifier.size(14.dp), tint = GeminiBlue) }
                                 )
                             }
+                            item {
+                                AssistChip(
+                                    onClick = {
+                                        pushHistory()
+                                        val newList = blocks.toMutableList()
+                                        newList.add(EditorBlock.File())
+                                        updateBlocksAndSave(newList)
+                                        Toast.makeText(context, "Archivo añadido", Toast.LENGTH_SHORT).show()
+                                    },
+                                    label = { Text("Importar archivo", fontSize = 11.sp, color = TextPrimary) },
+                                    leadingIcon = { Icon(Icons.Default.AttachFile, null, modifier = Modifier.size(14.dp), tint = GeminiBlue) }
+                                )
+                            }
                         }
                     }
 
@@ -3223,6 +4004,7 @@ fun NoteEditorWorkspace(
                                     )
                                 }
                             }
+
                             
                             // Separator
                             item {
@@ -5457,3 +6239,175 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
         }
     }
 }
+
+fun renderPdfFirstPage(context: android.content.Context, pdfFile: java.io.File): String? {
+    try {
+        val parcelFileDescriptor = android.os.ParcelFileDescriptor.open(pdfFile, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+        val pdfRenderer = android.graphics.pdf.PdfRenderer(parcelFileDescriptor)
+        if (pdfRenderer.pageCount > 0) {
+            val page = pdfRenderer.openPage(0)
+            val targetWidth = 600
+            val aspectRatio = page.height.toFloat() / page.width.toFloat()
+            val targetHeight = (targetWidth * aspectRatio).toInt()
+            
+            val bitmap = android.graphics.Bitmap.createBitmap(targetWidth, targetHeight, android.graphics.Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bitmap)
+            canvas.drawColor(android.graphics.Color.WHITE)
+            page.render(bitmap, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            page.close()
+            
+            val coverDir = java.io.File(context.filesDir, "pdf_covers").apply { mkdirs() }
+            val coverFile = java.io.File(coverDir, "cover_${System.currentTimeMillis()}.jpg")
+            java.io.FileOutputStream(coverFile).use { out ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+            }
+            pdfRenderer.close()
+            parcelFileDescriptor.close()
+            return coverFile.absolutePath
+        }
+        pdfRenderer.close()
+        parcelFileDescriptor.close()
+    } catch (e: Exception) {
+        android.util.Log.e("PDFRender", "Failed to render PDF cover", e)
+    }
+    return null
+}
+
+sealed class ExtractedElement {
+    abstract val y: Float
+    
+    data class Text(
+        val text: String,
+        val x: Float,
+        override val y: Float
+    ) : ExtractedElement()
+    
+    data class Image(
+        val imagePath: String,
+        override val y: Float
+    ) : ExtractedElement()
+}
+
+class PageElementExtractor(
+    private val context: android.content.Context,
+    private val imageDir: java.io.File,
+    private var imgCounter: Int = 0
+) : com.itextpdf.text.pdf.parser.RenderListener {
+    
+    val elements = mutableListOf<ExtractedElement>()
+    
+    override fun beginTextBlock() {}
+    
+    override fun renderText(renderInfo: com.itextpdf.text.pdf.parser.TextRenderInfo) {
+        val text = renderInfo.getText()
+        if (!text.isNullOrEmpty()) {
+            val startPoint = renderInfo.getBaseline()?.getStartPoint()
+            val x = startPoint?.get(0) ?: 0f
+            val y = startPoint?.get(1) ?: 0f
+            elements.add(ExtractedElement.Text(text, x, y))
+        }
+    }
+    
+    override fun endTextBlock() {}
+    
+    override fun renderImage(renderInfo: com.itextpdf.text.pdf.parser.ImageRenderInfo) {
+        try {
+            val imageObj = renderInfo.getImage()
+            if (imageObj != null) {
+                val imageBytes = imageObj.getImageAsBytes()
+                if (imageBytes != null && imageBytes.isNotEmpty()) {
+                    val fileType = imageObj.getFileType() ?: "png"
+                    val ext = if (fileType.equals("jpg", ignoreCase = true) || fileType.equals("jpeg", ignoreCase = true)) "jpg" else "png"
+                    
+                    val imageFile = java.io.File(imageDir, "img_${System.currentTimeMillis()}_${imgCounter++}.$ext")
+                    java.io.FileOutputStream(imageFile).use { out ->
+                        out.write(imageBytes)
+                    }
+                    
+                    val startPoint = renderInfo.getStartPoint()
+                    val y = startPoint?.get(1) ?: 0f
+                    
+                    elements.add(ExtractedElement.Image(imageFile.absolutePath, y))
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("PDFImport", "Error extracting image in PageElementExtractor", e)
+        }
+    }
+}
+
+fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
+    val textElements = elements.filterIsInstance<ExtractedElement.Text>()
+    val imageElements = elements.filterIsInstance<ExtractedElement.Image>()
+    
+    val lines = mutableListOf<ExtractedElement.Text>()
+    val sortedTexts = textElements.sortedWith(compareByDescending<ExtractedElement.Text> { it.y }.thenBy { it.x })
+    
+    val currentLineChunks = mutableListOf<ExtractedElement.Text>()
+    for (chunk in sortedTexts) {
+        if (currentLineChunks.isEmpty()) {
+            currentLineChunks.add(chunk)
+        } else {
+            val lastY = currentLineChunks.last().y
+            if (Math.abs(lastY - chunk.y) < 5.0f) {
+                currentLineChunks.add(chunk)
+            } else {
+                lines.add(mergeChunksToLine(currentLineChunks))
+                currentLineChunks.clear()
+                currentLineChunks.add(chunk)
+            }
+        }
+    }
+    if (currentLineChunks.isNotEmpty()) {
+        lines.add(mergeChunksToLine(currentLineChunks))
+    }
+    
+    val combinedList = mutableListOf<ExtractedElement>()
+    combinedList.addAll(lines)
+    combinedList.addAll(imageElements)
+    
+    val sortedCombined = combinedList.sortedByDescending { it.y }
+    val blocks = mutableListOf<EditorBlock>()
+    
+    val currentParagraph = java.lang.StringBuilder()
+    for (element in sortedCombined) {
+        when (element) {
+            is ExtractedElement.Text -> {
+                if (currentParagraph.isNotEmpty()) {
+                    currentParagraph.append("\n")
+                }
+                currentParagraph.append(element.text)
+            }
+            is ExtractedElement.Image -> {
+                if (currentParagraph.isNotEmpty()) {
+                    blocks.add(EditorBlock.Text(content = currentParagraph.toString(), fontSize = 14))
+                    currentParagraph.setLength(0)
+                }
+                blocks.add(
+                    EditorBlock.Image(
+                        urlOrPath = element.imagePath,
+                        caption = "Elemento gráfico extraído",
+                        width = "Match",
+                        height = "Wrap"
+                    )
+                )
+            }
+        }
+    }
+    
+    if (currentParagraph.isNotEmpty()) {
+        blocks.add(EditorBlock.Text(content = currentParagraph.toString(), fontSize = 14))
+    }
+    
+    return blocks
+}
+
+private fun mergeChunksToLine(chunks: List<ExtractedElement.Text>): ExtractedElement.Text {
+    val sortedChunks = chunks.sortedBy { it.x }
+    val lineText = sortedChunks.joinToString("") { it.text }
+    val avgY = sortedChunks.map { it.y }.average().toFloat()
+    val minX = sortedChunks.minOfOrNull { it.x } ?: 0f
+    return ExtractedElement.Text(lineText, minX, avgY)
+}
+
+

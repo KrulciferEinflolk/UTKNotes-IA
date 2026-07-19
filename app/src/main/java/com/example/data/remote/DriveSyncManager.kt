@@ -440,8 +440,48 @@ class DriveSyncManager(
 
     private suspend fun uploadFileToDrive(context: Context, uriString: String, token: String): String? = withContext(Dispatchers.IO) {
         try {
-            val uri = Uri.parse(uriString)
-            val (name, mime) = getFileInfo(context, uri)
+            val fileObj = if (!uriString.startsWith("content://") && !uriString.startsWith("file://")) {
+                val f = File(uriString)
+                if (f.exists()) f else null
+            } else if (uriString.startsWith("file://")) {
+                val path = Uri.parse(uriString).path
+                val f = if (path != null) File(path) else null
+                if (f != null && f.exists()) f else null
+            } else {
+                null
+            }
+
+            val name: String
+            val mime: String
+            val bytes: ByteArray
+
+            if (fileObj != null) {
+                name = fileObj.name
+                val ext = fileObj.extension.lowercase()
+                mime = when (ext) {
+                    "pdf" -> "application/pdf"
+                    "png" -> "image/png"
+                    "jpg", "jpeg" -> "image/jpeg"
+                    "webp" -> "image/webp"
+                    "gif" -> "image/gif"
+                    "txt" -> "text/plain"
+                    "md" -> "text/markdown"
+                    "mp3" -> "audio/mpeg"
+                    "wav" -> "audio/wav"
+                    "m4a" -> "audio/mp4"
+                    "mp4" -> "video/mp4"
+                    else -> "application/octet-stream"
+                }
+                bytes = fileObj.readBytes()
+            } else {
+                val uri = Uri.parse(uriString)
+                val (n, m) = getFileInfo(context, uri)
+                name = n
+                mime = m
+                bytes = context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                    inputStream.readBytes()
+                } ?: return@withContext null
+            }
             
             // 1. Create file metadata
             val metaUrl = "https://www.googleapis.com/drive/v3/files"
@@ -471,10 +511,6 @@ class DriveSyncManager(
 
             // 2. Upload file content bytes
             val uploadUrl = "https://www.googleapis.com/upload/drive/v3/files/$createdFileId?uploadType=media"
-            
-            val bytes = context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                inputStream.readBytes()
-            } ?: return@withContext null
             
             val requestBody = bytes.toRequestBody(mime.toMediaTypeOrNull())
             val uploadRequest = Request.Builder()
