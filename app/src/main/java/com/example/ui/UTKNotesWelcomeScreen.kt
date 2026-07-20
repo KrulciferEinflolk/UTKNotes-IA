@@ -71,34 +71,71 @@ fun UTKNotesWelcomeScreen(
     val gso = remember {
         GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
-            .requestScopes(com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.file"))
             .build()
     }
     val googleSignInClient = remember {
         GoogleSignIn.getClient(context, gso)
     }
 
-    val googleSignInLauncher = rememberLauncherForActivityResult(
+    var showCustomAccountChooser by remember { mutableStateOf(false) }
+    var deviceAccounts by remember { mutableStateOf<List<android.accounts.Account>>(emptyList()) }
+
+    val accountChooserLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         isSigningIn = false
         if (result.resultCode == Activity.RESULT_OK) {
-            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-            try {
-                val account = task.getResult(ApiException::class.java)
-                val email = account?.email
-                if (!email.isNullOrEmpty()) {
-                    Toast.makeText(context, "Sesión iniciada: $email", Toast.LENGTH_SHORT).show()
-                    viewModel.syncManager.connectDrive(email)
-                    viewModel.triggerDriveSync()
+            val email = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
+            if (!email.isNullOrEmpty()) {
+                Toast.makeText(context, "Sesión iniciada: $email", Toast.LENGTH_SHORT).show()
+                viewModel.syncManager.connectDrive(email)
+                viewModel.triggerDriveSync()
+            } else {
+                Toast.makeText(context, "Error: No se pudo obtener el correo de la cuenta", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        isSigningIn = false
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        try {
+            val account = task.getResult(ApiException::class.java)
+            val email = account?.email
+            if (!email.isNullOrEmpty()) {
+                Toast.makeText(context, "Sesión iniciada: $email", Toast.LENGTH_SHORT).show()
+                viewModel.syncManager.connectDrive(email)
+                viewModel.triggerDriveSync()
+            } else {
+                val am = AccountManager.get(context)
+                val accounts = am.getAccountsByType("com.google").toList()
+                if (accounts.isNotEmpty()) {
+                    deviceAccounts = accounts
+                    showCustomAccountChooser = true
                 } else {
                     Toast.makeText(context, "Error: No se pudo obtener el correo de la cuenta", Toast.LENGTH_LONG).show()
                 }
-            } catch (e: ApiException) {
-                Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed", e)
+            }
+        } catch (e: ApiException) {
+            Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed, code: ${e.statusCode}", e)
+            val am = AccountManager.get(context)
+            val accounts = am.getAccountsByType("com.google").toList()
+            if (accounts.isNotEmpty()) {
+                deviceAccounts = accounts
+                showCustomAccountChooser = true
+            } else {
                 Toast.makeText(context, "Error al iniciar sesión: ${e.statusCode}", Toast.LENGTH_LONG).show()
-            } catch (e: Exception) {
-                Log.e("UTKNotesWelcomeScreen", "Sign-In fallback failed", e)
+            }
+        } catch (e: Exception) {
+            Log.e("UTKNotesWelcomeScreen", "Sign-In fallback failed", e)
+            val am = AccountManager.get(context)
+            val accounts = am.getAccountsByType("com.google").toList()
+            if (accounts.isNotEmpty()) {
+                deviceAccounts = accounts
+                showCustomAccountChooser = true
+            } else {
                 Toast.makeText(context, "Error al iniciar sesión con Google", Toast.LENGTH_LONG).show()
             }
         }
@@ -168,7 +205,8 @@ fun UTKNotesWelcomeScreen(
 
             // Google Sign-In Button Container
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
@@ -181,7 +219,14 @@ fun UTKNotesWelcomeScreen(
                                 googleSignInLauncher.launch(googleSignInClient.signInIntent)
                             } catch (e: Exception) {
                                 Log.e("UTKNotesWelcomeScreen", "Failed to launch Google Sign-In intent", e)
-                                Toast.makeText(context, "Error al abrir el selector de cuentas de Google", Toast.LENGTH_SHORT).show()
+                                val am = AccountManager.get(context)
+                                val accounts = am.getAccountsByType("com.google").toList()
+                                if (accounts.isNotEmpty()) {
+                                    deviceAccounts = accounts
+                                    showCustomAccountChooser = true
+                                } else {
+                                    Toast.makeText(context, "Error al abrir el selector de cuentas de Google", Toast.LENGTH_SHORT).show()
+                                }
                                 isSigningIn = false
                             }
                         }.addOnFailureListener {
@@ -189,7 +234,14 @@ fun UTKNotesWelcomeScreen(
                                 googleSignInLauncher.launch(googleSignInClient.signInIntent)
                             } catch (e: Exception) {
                                 Log.e("UTKNotesWelcomeScreen", "Failed to launch Google Sign-In intent", e)
-                                Toast.makeText(context, "Error al abrir el selector de cuentas de Google", Toast.LENGTH_SHORT).show()
+                                val am = AccountManager.get(context)
+                                val accounts = am.getAccountsByType("com.google").toList()
+                                if (accounts.isNotEmpty()) {
+                                    deviceAccounts = accounts
+                                    showCustomAccountChooser = true
+                                } else {
+                                    Toast.makeText(context, "Error al abrir el selector de cuentas de Google", Toast.LENGTH_SHORT).show()
+                                }
                                 isSigningIn = false
                             }
                         }
@@ -238,7 +290,7 @@ fun UTKNotesWelcomeScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
                 OutlinedButton(
                     onClick = {
@@ -273,6 +325,197 @@ fun UTKNotesWelcomeScreen(
             }
             
             Spacer(modifier = Modifier.height(32.dp))
+        }
+
+        if (showCustomAccountChooser) {
+            Dialog(
+                onDismissRequest = { showCustomAccountChooser = false },
+                properties = DialogProperties(usePlatformDefaultWidth = false)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.6f))
+                        .clickable { showCustomAccountChooser = false },
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = false) { }
+                            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)),
+                        colors = CardDefaults.cardColors(containerColor = CosmicSurface),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 24.dp, horizontal = 20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(40.dp)
+                                    .height(4.dp)
+                                    .background(Color.Gray.copy(alpha = 0.5f), RoundedCornerShape(2.dp))
+                            )
+                            Spacer(modifier = Modifier.height(20.dp))
+
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .background(Color.White, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = GeminiBlue,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Elige una cuenta",
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+
+                            Text(
+                                text = "para continuar usando UTK Notes",
+                                fontSize = 14.sp,
+                                color = TextTertiary,
+                                modifier = Modifier.padding(top = 4.dp, bottom = 24.dp)
+                            )
+
+                            Column(
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                deviceAccounts.forEach { account ->
+                                    val email = account.name
+                                    val username = email.substringBefore("@")
+                                    val displayName = username.replace(".", " ")
+                                        .replace("_", " ")
+                                        .split(" ")
+                                        .joinToString(" ") { it.replaceFirstChar { char -> char.uppercase() } }
+
+                                    val initial = displayName.firstOrNull()?.uppercase() ?: "G"
+                                    val avatarColors = listOf(
+                                        Color(0xFF3F51B5),
+                                        Color(0xFFE91E63),
+                                        Color(0xFF4CAF50),
+                                        Color(0xFFFF9800),
+                                        Color(0xFF9C27B0),
+                                        Color(0xFF00BCD4),
+                                        Color(0xFFE53935),
+                                        Color(0xFF009688)
+                                    )
+                                    val avatarBg = avatarColors[kotlin.math.abs(email.hashCode()) % avatarColors.size]
+
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                showCustomAccountChooser = false
+                                                Toast.makeText(context, "Sesión iniciada: $email", Toast.LENGTH_SHORT).show()
+                                                viewModel.syncManager.connectDrive(email)
+                                                viewModel.triggerDriveSync()
+                                            }
+                                            .padding(vertical = 12.dp, horizontal = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(40.dp)
+                                                .background(avatarBg, CircleShape),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = initial,
+                                                color = Color.White,
+                                                fontSize = 18.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+
+                                        Spacer(modifier = Modifier.width(16.dp))
+
+                                        Column(
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text(
+                                                text = displayName,
+                                                color = Color.White,
+                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                text = email,
+                                                color = TextTertiary,
+                                                fontSize = 13.sp
+                                            )
+                                        }
+                                    }
+                                    HorizontalDivider(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = CosmicBorder.copy(alpha = 0.5f)
+                                    )
+                                }
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            showCustomAccountChooser = false
+                                            try {
+                                                val intent = AccountManager.newChooseAccountIntent(
+                                                    null,
+                                                    null,
+                                                    arrayOf("com.google"),
+                                                    null,
+                                                    null,
+                                                    null,
+                                                    null
+                                                )
+                                                accountChooserLauncher.launch(intent)
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "Error al abrir agregar cuenta", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                        .padding(vertical = 16.dp, horizontal = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .background(CosmicSurfaceVariant, CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Add,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(16.dp))
+
+                                    Text(
+                                        text = "Añadir cuenta",
+                                        color = Color.White,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

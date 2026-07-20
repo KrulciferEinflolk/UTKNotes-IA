@@ -10,7 +10,7 @@ import com.example.data.model.PageEntity
 
 @Database(
     entities = [BookEntity::class, PageEntity::class, NoteEntity::class, com.example.data.model.ChatSessionEntity::class],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

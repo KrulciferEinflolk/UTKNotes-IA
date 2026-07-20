@@ -11,6 +11,7 @@ data class BookEntity(
     @PrimaryKey val id: String = UUID.randomUUID().toString(),
     val title: String,
     val colorHex: String = "#907CFF",
+    val textColorHex: String = "#FFFFFF",
     val coverUri: String? = null,
     val coverScale: Float = 1.0f,
     val coverOffsetX: Float = 0.0f,

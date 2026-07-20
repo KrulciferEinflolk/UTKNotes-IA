@@ -16,6 +16,8 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.animation.*
@@ -84,6 +86,27 @@ class MainActivity : ComponentActivity() {
         setContent {
             MyApplicationTheme {
                 val showChatbotGlobal by viewModel.showChatbot.collectAsStateWithLifecycle()
+
+                val recoveryIntent by viewModel.syncManager.recoveryIntent.collectAsStateWithLifecycle()
+                val recoveryLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.StartActivityForResult()
+                ) { result ->
+                    viewModel.syncManager.clearRecoveryIntent()
+                    if (result.resultCode == android.app.Activity.RESULT_OK) {
+                        viewModel.triggerDriveSync()
+                    }
+                }
+
+                LaunchedEffect(recoveryIntent) {
+                    recoveryIntent?.let { intent ->
+                        try {
+                            recoveryLauncher.launch(intent)
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "Failed to launch recovery intent", e)
+                            viewModel.syncManager.clearRecoveryIntent()
+                        }
+                    }
+                }
 
                 Box(modifier = Modifier.fillMaxSize()) {
                     Scaffold(
@@ -224,14 +247,7 @@ fun AetherAppScreen(
                     }
 
                     val isPdf = originalName.endsWith(".pdf", ignoreCase = true) || mimeType == "application/pdf"
-                    val isTextFile = originalName.endsWith(".txt", ignoreCase = true) || 
-                                     originalName.endsWith(".md", ignoreCase = true) || 
-                                     originalName.endsWith(".json", ignoreCase = true) || 
-                                     originalName.endsWith(".html", ignoreCase = true) || 
-                                     originalName.endsWith(".xml", ignoreCase = true) || 
-                                     mimeType.startsWith("text/", ignoreCase = true) || 
-                                     mimeType == "application/json" || 
-                                     mimeType == "application/javascript"
+                    val isTextFile = isSupportedTextExtension(originalName, mimeType)
 
                     val isImageFile = mimeType.startsWith("image/", ignoreCase = true) ||
                                       originalName.endsWith(".png", ignoreCase = true) ||
@@ -350,18 +366,7 @@ fun AetherAppScreen(
                         )
                         
                         if (textContent.isNotEmpty()) {
-                            val paragraphs = textContent.split(Regex("(\\r?\\n){2,}"))
-                            paragraphs.forEach { paragraph ->
-                                val trimmed = paragraph.trim()
-                                if (trimmed.isNotEmpty()) {
-                                    blocks.add(
-                                        EditorBlock.Text(
-                                            content = trimmed,
-                                            fontSize = 14
-                                        )
-                                    )
-                                }
-                            }
+                            blocks.addAll(parseTextContentToBlocks(textContent))
                         } else {
                             blocks.add(
                                 EditorBlock.Text(
@@ -3259,14 +3264,7 @@ fun NoteEditorWorkspace(
                     }
                     
                     val isPdf = originalName.endsWith(".pdf", ignoreCase = true) || mimeType == "application/pdf"
-                    val isTextFile = originalName.endsWith(".txt", ignoreCase = true) || 
-                                     originalName.endsWith(".md", ignoreCase = true) || 
-                                     originalName.endsWith(".json", ignoreCase = true) || 
-                                     originalName.endsWith(".html", ignoreCase = true) || 
-                                     originalName.endsWith(".xml", ignoreCase = true) || 
-                                     mimeType.startsWith("text/", ignoreCase = true) || 
-                                     mimeType == "application/json" || 
-                                     mimeType == "application/javascript"
+                    val isTextFile = isSupportedTextExtension(originalName, mimeType)
 
                     val isImageFile = mimeType.startsWith("image/", ignoreCase = true) ||
                                       originalName.endsWith(".png", ignoreCase = true) ||
@@ -3392,18 +3390,7 @@ fun NoteEditorWorkspace(
                         )
                         
                         if (textContent.isNotEmpty()) {
-                            val paragraphs = textContent.split(Regex("(\\r?\\n){2,}"))
-                            paragraphs.forEach { paragraph ->
-                                val trimmed = paragraph.trim()
-                                if (trimmed.isNotEmpty()) {
-                                    newExtractedBlocks.add(
-                                        EditorBlock.Text(
-                                            content = trimmed,
-                                            fontSize = 14
-                                        )
-                                    )
-                                }
-                            }
+                            newExtractedBlocks.addAll(parseTextContentToBlocks(textContent))
                         } else {
                             newExtractedBlocks.add(
                                 EditorBlock.Text(
@@ -6409,5 +6396,95 @@ private fun mergeChunksToLine(chunks: List<ExtractedElement.Text>): ExtractedEle
     val minX = sortedChunks.minOfOrNull { it.x } ?: 0f
     return ExtractedElement.Text(lineText, minX, avgY)
 }
+
+fun isSupportedTextExtension(fileName: String, mimeType: String): Boolean {
+    val textExtensions = setOf(
+        "txt", "text", "md", "markdown", "ini", "cfg", "conf", "json", "jsonc", "xml", "yaml", "yml", "toml", "csv", "tsv", "log", "err", "bak", "rtf", "doc", "docx", "docm", "dot", "dotx", "dotm", "wps", "wpd", "msg", "eml",
+        "bat", "cmd", "ps1", "psm1", "psd1", "vbs", "vbe", "reg", "inf", "config", "resx", "sln", "csproj", "vbproj", "vba", "bas", "cls", "frm",
+        "html", "htm", "xhtml", "css", "scss", "sass", "less", "js", "jsx", "ts", "tsx", "c", "cpp", "h", "hpp", "cs", "java", "kt", "kts", "py",
+        "rb", "pl", "sh", "bash", "zsh", "sql", "php", "asp", "aspx", "jsp", "go", "rs", "lua", "r", "swift", "asc", "nfo", "diz", "srt", "vtt",
+        "sub", "cue", "m3u", "m3u8", "diff", "patch", "rst", "tex", "ltx", "sty", "bib", "asciidoc", "adoc", "env", "dist", "properties",
+        "gitignore", "gitconfig", "dockerfile", "makefile", "po", "pot", "readme", "ans", "1st", "me"
+    )
+    val ext = fileName.substringAfterLast('.', "").lowercase()
+    return textExtensions.contains(ext) || 
+           mimeType.startsWith("text/", ignoreCase = true) || 
+           mimeType == "application/json" || 
+           mimeType == "application/javascript"
+}
+
+fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
+    val blocks = mutableListOf<EditorBlock>()
+    if (textContent.isBlank()) return blocks
+
+    val lines = textContent.split("\n")
+    val currentParagraph = java.lang.StringBuilder()
+
+    fun flushParagraph() {
+        if (currentParagraph.isNotEmpty()) {
+            val trimmed = currentParagraph.toString().trim()
+            if (trimmed.isNotEmpty()) {
+                blocks.add(EditorBlock.Text(content = trimmed, fontSize = 14))
+            }
+            currentParagraph.setLength(0)
+        }
+    }
+
+    val mdImageRegex = Regex("!\\[(.*?)\\]\\((.*?)\\)")
+    val htmlImageRegex = Regex("<img[^>]+src=[\\\"']([^\\\"']+)[\\\"'][^>]*>")
+
+    for (line in lines) {
+        var remainingLine = line
+        while (remainingLine.isNotEmpty()) {
+            val mdMatch = mdImageRegex.find(remainingLine)
+            val htmlMatch = htmlImageRegex.find(remainingLine)
+
+            if (mdMatch != null && (htmlMatch == null || mdMatch.range.first < htmlMatch.range.first)) {
+                val beforeText = remainingLine.substring(0, mdMatch.range.first)
+                if (beforeText.isNotEmpty()) {
+                    currentParagraph.append(beforeText)
+                }
+                flushParagraph()
+
+                val caption = mdMatch.groupValues[1]
+                val url = mdMatch.groupValues[2]
+                blocks.add(EditorBlock.Image(
+                    urlOrPath = url,
+                    caption = caption.ifEmpty { "Imagen de Markdown" },
+                    width = "Match",
+                    height = "Wrap"
+                ))
+
+                remainingLine = remainingLine.substring(mdMatch.range.last + 1)
+            } else if (htmlMatch != null) {
+                val beforeText = remainingLine.substring(0, htmlMatch.range.first)
+                if (beforeText.isNotEmpty()) {
+                    currentParagraph.append(beforeText)
+                }
+                flushParagraph()
+
+                val url = htmlMatch.groupValues[1]
+                val altRegex = Regex("alt=[\\\"']([^\\\"']+)[\\\"']")
+                val altMatch = altRegex.find(htmlMatch.value)
+                val caption = altMatch?.groupValues?.get(1) ?: "Imagen de HTML"
+
+                blocks.add(EditorBlock.Image(
+                    urlOrPath = url,
+                    caption = caption,
+                    width = "Match",
+                    height = "Wrap"
+                ))
+
+                remainingLine = remainingLine.substring(htmlMatch.range.last + 1)
+            } else {
+                currentParagraph.append(remainingLine).append("\n")
+                break
+            }
+        }
+    }
+    flushParagraph()
+    return blocks
+}
+
 
 

@@ -218,6 +218,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     fun addBook(
         title: String,
         colorHex: String = "#907CFF",
+        textColorHex: String = "#FFFFFF",
         coverUri: String? = null,
         coverScale: Float = 1.0f,
         coverOffsetX: Float = 0.0f,
@@ -228,6 +229,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             val book = repository.createBook(
                 title = title,
                 colorHex = colorHex,
+                textColorHex = textColorHex,
                 coverUri = coverUri,
                 coverScale = coverScale,
                 coverOffsetX = coverOffsetX,

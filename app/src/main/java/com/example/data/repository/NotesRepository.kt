@@ -21,6 +21,7 @@ class NotesRepository(private val notesDao: NotesDao) {
     suspend fun createBook(
         title: String,
         colorHex: String = "#907CFF",
+        textColorHex: String = "#FFFFFF",
         coverUri: String? = null,
         coverScale: Float = 1.0f,
         coverOffsetX: Float = 0.0f,
@@ -30,6 +31,7 @@ class NotesRepository(private val notesDao: NotesDao) {
         val book = BookEntity(
             title = title,
             colorHex = colorHex,
+            textColorHex = textColorHex,
             coverUri = coverUri,
             coverScale = coverScale,
             coverOffsetX = coverOffsetX,

@@ -59,6 +59,13 @@ class DriveSyncManager(
     private val _userEmail = MutableStateFlow<String?>(null)
     val userEmail: StateFlow<String?> = _userEmail
 
+    private val _recoveryIntent = MutableStateFlow<android.content.Intent?>(null)
+    val recoveryIntent: StateFlow<android.content.Intent?> = _recoveryIntent
+
+    fun clearRecoveryIntent() {
+        _recoveryIntent.value = null
+    }
+
     private val moshi = Moshi.Builder()
         .addLast(KotlinJsonAdapterFactory())
         .build()
@@ -151,6 +158,10 @@ class DriveSyncManager(
                 try {
                     token = GoogleAuthUtil.getToken(context, account, scope)
                     Log.d("DriveSyncManager", "OAuth Token obtenido correctamente")
+                } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
+                    Log.w("DriveSyncManager", "Se requiere autorización del usuario para acceder a Drive", recoverable)
+                    _recoveryIntent.value = recoverable.intent
+                    _syncState.value = SyncState.Error("Se requiere autorización para acceder a Google Drive.")
                 } catch (authEx: Exception) {
                     Log.e("DriveSyncManager", "No se pudo obtener el token de Google. Se usará respaldo local.", authEx)
                 }
@@ -416,7 +427,7 @@ class DriveSyncManager(
         }
 
         // 5. Merge Gemini API Key
-        if (!remote.apiKey.isNullOrEmpty() && geminiApiKey.isNullOrEmpty()) {
+        if (!remote.apiKey.isNullOrEmpty()) {
             geminiApiKey = remote.apiKey
         }
     }
@@ -544,6 +555,9 @@ class DriveSyncManager(
             val account = Account(email, "com.google")
             val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
             token = GoogleAuthUtil.getToken(context, account, scope)
+        } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
+            Log.w("DriveSyncManager", "Se requiere autorización del usuario para subir adjuntos", recoverable)
+            _recoveryIntent.value = recoverable.intent
         } catch (authEx: Exception) {
             Log.e("DriveSyncManager", "Failed to get token for uploading attachments", authEx)
         }
@@ -639,6 +653,9 @@ class DriveSyncManager(
             val account = Account(email, "com.google")
             val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
             token = GoogleAuthUtil.getToken(context, account, scope)
+        } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
+            Log.w("DriveSyncManager", "Se requiere autorización del usuario para descargar adjuntos", recoverable)
+            _recoveryIntent.value = recoverable.intent
         } catch (authEx: Exception) {
             Log.e("DriveSyncManager", "Failed to get token for downloading", authEx)
         }
