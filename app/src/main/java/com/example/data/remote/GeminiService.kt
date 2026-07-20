@@ -105,7 +105,36 @@ class GeminiService {
             response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
         } catch (e: Exception) {
             Log.e("GeminiService", "Failed to contact Gemini API", e)
-            "Error al conectar con la inteligencia artificial: ${e.localizedMessage}"
+            formatGeminiError(e)
+        }
+    }
+
+    private fun formatGeminiError(e: Throwable): String {
+        val msg = e.message ?: ""
+        return when {
+            msg.contains("Unable to resolve host", ignoreCase = true) || 
+            msg.contains("UnknownHost", ignoreCase = true) -> {
+                "No se pudo establecer conexión con la IA.\n\n" +
+                "Por favor, verifica lo siguiente:\n" +
+                "1. ¿Tu dispositivo tiene una conexión a Internet activa (Wi-Fi o datos móviles)?\n" +
+                "2. ¿Estás usando una VPN, proxy o cortafuegos que pueda estar bloqueando el tráfico hacia Google?\n" +
+                "3. Si te encuentras en un país o región donde los servicios de Google están restringidos geográficamente, es posible que necesites usar una VPN configurada en una ubicación compatible para poder acceder a la API de Gemini."
+            }
+            msg.contains("503") -> {
+                "El servidor de Gemini está temporalmente sobrecargado o en mantenimiento (Error HTTP 503).\n\n" +
+                "Por favor, espera unos segundos e intenta de nuevo. Este error suele solucionarse rápidamente por sí solo."
+            }
+            msg.contains("403") -> {
+                "Acceso prohibido (Error HTTP 403).\n\n" +
+                "Por favor, asegúrate de que la clave de API de Gemini sea válida y esté activa, o que tu región sea compatible con el servicio."
+            }
+            msg.contains("400") -> {
+                "Solicitud incorrecta o modelo no disponible (Error HTTP 400).\n\n" +
+                "Por favor, verifica la configuración de tu cuenta y la clave API."
+            }
+            else -> {
+                "Error al conectar con la inteligencia artificial: ${e.localizedMessage}"
+            }
         }
     }
 
@@ -201,7 +230,7 @@ class GeminiService {
             response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
         } catch (e: Exception) {
             Log.e("GeminiService", "Failed to contact Gemini API", e)
-            "Error al conectar con la inteligencia artificial: ${e.localizedMessage}"
+            formatGeminiError(e)
         }
     }
 }
