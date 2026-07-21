@@ -389,6 +389,19 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     fun triggerDriveSync() {
         viewModelScope.launch {
             syncManager.synchronize()
+            // After sync completes, if there is no selected book, automatically select the first available restored book and its first page!
+            if (_selectedBook.value == null) {
+                val email = currentEmail.value
+                val availableBooks = repository.getAllBooksList(email)
+                if (availableBooks.isNotEmpty()) {
+                    val firstBook = availableBooks.first()
+                    _selectedBook.value = firstBook
+                    val bookPages = repository.getPagesForBookList(firstBook.id)
+                    if (bookPages.isNotEmpty()) {
+                        _selectedPage.value = bookPages.first()
+                    }
+                }
+            }
         }
     }
 
@@ -479,7 +492,139 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private val moshi = com.squareup.moshi.Moshi.Builder()
+        .addLast(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
+        .build()
+
+    fun parseAndApplyChatbotUpdates(response: String): String {
+        var cleanResponse = response
+        
+        // 1. Check for UPDATE_NOTE
+        val startTagUpdate = "[UPDATE_NOTE_START]"
+        val endTagUpdate = "[UPDATE_NOTE_END]"
+        if (cleanResponse.contains(startTagUpdate) && cleanResponse.contains(endTagUpdate)) {
+            try {
+                val startIndex = cleanResponse.indexOf(startTagUpdate)
+                val endIndex = cleanResponse.indexOf(endTagUpdate)
+                val blockContent = cleanResponse.substring(startIndex + startTagUpdate.length, endIndex).trim()
+                
+                // Parse ID
+                val idRegex = Regex("^ID:\\s*(.*)", RegexOption.MULTILINE)
+                val idMatch = idRegex.find(blockContent)
+                val id = idMatch?.groupValues?.get(1)?.trim()
+                
+                // Parse TITLE
+                val titleRegex = Regex("^TITLE:\\s*(.*)", RegexOption.MULTILINE)
+                val titleMatch = titleRegex.find(blockContent)
+                val title = titleMatch?.groupValues?.get(1)?.trim()
+                
+                // Parse CONTENT between CONTENT_START and CONTENT_END
+                val contentStartMarker = "CONTENT_START"
+                val contentEndMarker = "CONTENT_END"
+                var noteContent: String? = null
+                if (blockContent.contains(contentStartMarker) && blockContent.contains(contentEndMarker)) {
+                    val cStartIdx = blockContent.indexOf(contentStartMarker)
+                    val cEndIdx = blockContent.indexOf(contentEndMarker)
+                    noteContent = blockContent.substring(cStartIdx + contentStartMarker.length, cEndIdx).trim()
+                }
+                
+                if (!id.isNullOrEmpty() && !title.isNullOrEmpty() && noteContent != null) {
+                    viewModelScope.launch {
+                        val existingNote = repository.getNote(id)
+                        if (existingNote != null) {
+                            val parsedBlocks = com.example.parseTextContentToBlocks(noteContent)
+                            val serializedContent = com.example.serializeBlocks(parsedBlocks)
+                            val updatedNote = existingNote.copy(
+                                title = title,
+                                content = serializedContent,
+                                updatedAt = System.currentTimeMillis(),
+                                isSynced = false
+                            )
+                            repository.updateNote(updatedNote)
+                            if (_selectedNote.value?.id == id) {
+                                _selectedNote.value = updatedNote
+                            }
+                            if (syncManager.isConnected.value) {
+                                triggerDriveSync()
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("AetherViewModel", "Failed to parse UPDATE_NOTE tag block", e)
+            }
+            
+            // Clean response of the tag block
+            val updateIdx = cleanResponse.indexOf(startTagUpdate)
+            val endUpdateIdx = cleanResponse.indexOf(endTagUpdate)
+            cleanResponse = cleanResponse.substring(0, updateIdx).trim() + 
+                            "\n" + 
+                            cleanResponse.substring(endUpdateIdx + endTagUpdate.length).trim()
+        }
+
+        // 2. Check for CREATE_NOTE
+        val startTagCreate = "[CREATE_NOTE_START]"
+        val endTagCreate = "[CREATE_NOTE_END]"
+        if (cleanResponse.contains(startTagCreate) && cleanResponse.contains(endTagCreate)) {
+            try {
+                val startIndex = cleanResponse.indexOf(startTagCreate)
+                val endIndex = cleanResponse.indexOf(endTagCreate)
+                val blockContent = cleanResponse.substring(startIndex + startTagCreate.length, endIndex).trim()
+                
+                // Parse TITLE
+                val titleRegex = Regex("^TITLE:\\s*(.*)", RegexOption.MULTILINE)
+                val titleMatch = titleRegex.find(blockContent)
+                val title = titleMatch?.groupValues?.get(1)?.trim()
+                
+                // Parse CONTENT between CONTENT_START and CONTENT_END
+                val contentStartMarker = "CONTENT_START"
+                val contentEndMarker = "CONTENT_END"
+                var noteContent: String? = null
+                if (blockContent.contains(contentStartMarker) && blockContent.contains(contentEndMarker)) {
+                    val cStartIdx = blockContent.indexOf(contentStartMarker)
+                    val cEndIdx = blockContent.indexOf(contentEndMarker)
+                    noteContent = blockContent.substring(cStartIdx + contentStartMarker.length, cEndIdx).trim()
+                }
+                
+                if (!title.isNullOrEmpty() && noteContent != null) {
+                    val currentPage = _selectedPage.value
+                    if (currentPage != null) {
+                        viewModelScope.launch {
+                            val parsedBlocks = com.example.parseTextContentToBlocks(noteContent)
+                            val serializedContent = com.example.serializeBlocks(parsedBlocks)
+                            val note = repository.createNote(
+                                pageId = currentPage.id,
+                                title = title,
+                                content = serializedContent,
+                                tags = "Generado, IA",
+                                attachments = "[]",
+                                reminderTime = null,
+                                userEmail = currentEmail.value
+                            )
+                            _selectedNote.value = note
+                            if (syncManager.isConnected.value) {
+                                triggerDriveSync()
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("AetherViewModel", "Failed to parse CREATE_NOTE tag block", e)
+            }
+            
+            // Clean response of the tag block
+            val createIdx = cleanResponse.indexOf(startTagCreate)
+            val endCreateIdx = cleanResponse.indexOf(endTagCreate)
+            cleanResponse = cleanResponse.substring(0, createIdx).trim() + 
+                            "\n" + 
+                            cleanResponse.substring(endCreateIdx + endTagCreate.length).trim()
+        }
+        
+        return cleanResponse.trim()
+    }
+
     suspend fun sendMessage(message: String, imageBase64: String? = null, mimeType: String? = null): String? {
-        return geminiService.sendMessage(message, imageBase64, mimeType)
+        val rawResponse = geminiService.sendMessage(message, imageBase64, mimeType) ?: return null
+        return parseAndApplyChatbotUpdates(rawResponse)
     }
 }

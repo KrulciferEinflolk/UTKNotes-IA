@@ -39,6 +39,7 @@ import android.util.Log
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.Scope
 
 
 import androidx.compose.ui.Alignment
@@ -57,6 +58,8 @@ import com.example.R
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.remote.SyncState
 
 @Composable
 fun UTKNotesWelcomeScreen(
@@ -64,34 +67,38 @@ fun UTKNotesWelcomeScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-
     val scope = rememberCoroutineScope()
     var isSigningIn by remember { mutableStateOf(false) }
+
+    val isConnected by viewModel.syncManager.isConnected.collectAsStateWithLifecycle()
+    val userEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
+    val syncState by viewModel.syncManager.syncState.collectAsStateWithLifecycle()
 
     val gso = remember {
         GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
+            .requestScopes(Scope("https://www.googleapis.com/auth/drive.file"))
             .build()
     }
     val googleSignInClient = remember {
         GoogleSignIn.getClient(context, gso)
     }
 
-    var showCustomAccountChooser by remember { mutableStateOf(false) }
-    var deviceAccounts by remember { mutableStateOf<List<android.accounts.Account>>(emptyList()) }
-
-    val accountChooserLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        isSigningIn = false
-        if (result.resultCode == Activity.RESULT_OK) {
-            val email = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
-            if (!email.isNullOrEmpty()) {
-                Toast.makeText(context, "Sesión iniciada: $email", Toast.LENGTH_SHORT).show()
-                viewModel.syncManager.connectDrive(email)
+    // Automatic sign-in flow on startup!
+    LaunchedEffect(Unit) {
+        if (!isConnected && userEmail == null && !viewModel.syncManager.isAutoLoginDisabled()) {
+            val lastAccount = GoogleSignIn.getLastSignedInAccount(context)
+            if (lastAccount != null && !lastAccount.email.isNullOrEmpty()) {
+                isSigningIn = true
+                viewModel.syncManager.connectDrive(lastAccount.email!!)
                 viewModel.triggerDriveSync()
             } else {
-                Toast.makeText(context, "Error: No se pudo obtener el correo de la cuenta", Toast.LENGTH_LONG).show()
+                val detectedEmail = viewModel.syncManager.getPrimaryGoogleAccount()
+                if (!detectedEmail.isNullOrEmpty()) {
+                    isSigningIn = true
+                    viewModel.syncManager.connectDrive(detectedEmail)
+                    viewModel.triggerDriveSync()
+                }
             }
         }
     }
@@ -100,67 +107,39 @@ fun UTKNotesWelcomeScreen(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         isSigningIn = false
-        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-        try {
-            val account = task.getResult(ApiException::class.java)
-            val email = account?.email
-            if (!email.isNullOrEmpty()) {
-                Toast.makeText(context, "Sesión iniciada: $email", Toast.LENGTH_SHORT).show()
-                viewModel.syncManager.connectDrive(email)
-                viewModel.triggerDriveSync()
-            } else {
-                val am = AccountManager.get(context)
-                val accounts = am.getAccountsByType("com.google").toList()
-                if (accounts.isNotEmpty()) {
-                    deviceAccounts = accounts
-                    showCustomAccountChooser = true
+        if (result.resultCode == Activity.RESULT_OK) {
+            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+            try {
+                val account = task.getResult(ApiException::class.java)
+                val email = account?.email
+                if (!email.isNullOrEmpty()) {
+                    isSigningIn = true
+                    viewModel.syncManager.connectDrive(email)
+                    viewModel.triggerDriveSync()
                 } else {
                     Toast.makeText(context, "Error: No se pudo obtener el correo de la cuenta", Toast.LENGTH_LONG).show()
                 }
-            }
-        } catch (e: ApiException) {
-            Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed, code: ${e.statusCode}", e)
-            val am = AccountManager.get(context)
-            val accounts = am.getAccountsByType("com.google").toList()
-            if (accounts.isNotEmpty()) {
-                deviceAccounts = accounts
-                showCustomAccountChooser = true
-            } else {
-                Toast.makeText(context, "Error al iniciar sesión: ${e.statusCode}", Toast.LENGTH_LONG).show()
-            }
-        } catch (e: Exception) {
-            Log.e("UTKNotesWelcomeScreen", "Sign-In fallback failed", e)
-            val am = AccountManager.get(context)
-            val accounts = am.getAccountsByType("com.google").toList()
-            if (accounts.isNotEmpty()) {
-                deviceAccounts = accounts
-                showCustomAccountChooser = true
-            } else {
-                Toast.makeText(context, "Error al iniciar sesión con Google", Toast.LENGTH_LONG).show()
+            } catch (e: ApiException) {
+                Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed, code: ${e.statusCode}", e)
+                Toast.makeText(context, "Inicio de sesión cancelado o fallido: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
             }
         }
     }
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(CosmicBackground),
-        contentAlignment = Alignment.Center
-    ) {
-        // Minimalist Header & Button Layout
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+    if (isSigningIn || userEmail != null) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(CosmicBackground),
+            contentAlignment = Alignment.Center
         ) {
-            Spacer(modifier = Modifier.weight(1f))
-
-            // App Brand Name & Subtitle
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(32.dp)
+                    .verticalScroll(rememberScrollState())
             ) {
                 Icon(
                     imageVector = Icons.Default.AutoAwesome,
@@ -169,109 +148,193 @@ fun UTKNotesWelcomeScreen(
                     modifier = Modifier.size(72.dp)
                 )
                 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Text(
-                        text = "UTK Notes",
-                        fontSize = 38.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color.White,
-                        letterSpacing = 1.sp
+                Spacer(modifier = Modifier.height(24.dp))
+                
+                if (syncState is SyncState.Error) {
+                    Icon(
+                        imageVector = Icons.Default.CloudDone,
+                        contentDescription = null,
+                        tint = Color.Red,
+                        modifier = Modifier.size(40.dp)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "IA",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.SemiBold,
+                } else {
+                    CircularProgressIndicator(
                         color = GeminiBlue,
-                        modifier = Modifier
-                            .background(GeminiBlue.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
-                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                        strokeWidth = 4.dp,
+                        modifier = Modifier.size(48.dp)
                     )
                 }
                 
+                Spacer(modifier = Modifier.height(24.dp))
+                
                 Text(
-                    text = "Tu biblioteca inteligente de notas y resúmenes automáticos respaldada de manera segura en la nube.",
-                    fontSize = 15.sp,
+                    text = "Sincronizando biblioteca inteligente",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    textAlign = TextAlign.Center
+                )
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                Text(
+                    text = "Recuperando de forma segura tus libros, notas e historial de IA desde Google Drive para:\n${userEmail ?: ""}",
+                    fontSize = 14.sp,
                     color = TextSecondary,
                     textAlign = TextAlign.Center,
+                    lineHeight = 20.sp
+                )
+                
+                Spacer(modifier = Modifier.height(20.dp))
+                
+                // Show status message
+                val statusText = when (val state = syncState) {
+                    is SyncState.Syncing -> "Descargando y fusionando archivos de la nube..."
+                    is SyncState.Success -> state.message
+                    is SyncState.Error -> state.message
+                    else -> "Iniciando conexión..."
+                }
+                
+                Text(
+                    text = statusText,
+                    fontSize = 13.sp,
+                    color = if (syncState is SyncState.Error) Color.Red else GeminiBlue,
+                    textAlign = TextAlign.Center,
+                    fontWeight = FontWeight.Medium,
                     modifier = Modifier.padding(horizontal = 16.dp)
                 )
+                
+                Spacer(modifier = Modifier.height(32.dp))
+                
+                // If there's an error or we need authorization, offer manual controls so the user never gets stuck!
+                if (syncState is SyncState.Error) {
+                    Button(
+                        onClick = {
+                            viewModel.triggerDriveSync()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
+                        shape = RoundedCornerShape(24.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                    ) {
+                        Text("Reintentar Sincronización", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                    
+                    Spacer(modifier = Modifier.height(12.dp))
+                    
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.syncManager.disconnectDrive()
+                            isSigningIn = false
+                        },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.4f)),
+                        shape = RoundedCornerShape(24.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                    ) {
+                        Text("Cancelar / Usar Otro Correo")
+                    }
+                }
             }
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            // Google Sign-In Button Container
+        }
+    } else {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(CosmicBackground),
+            contentAlignment = Alignment.Center
+        ) {
+            // Minimalist Header & Button Layout
             Column(
                 modifier = Modifier
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .padding(32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.Center
             ) {
-                // Customized Google Sign-In Button
-                Surface(
-                    onClick = {
-                        isSigningIn = true
-                        googleSignInClient.signOut().addOnCompleteListener {
-                            try {
-                                googleSignInLauncher.launch(googleSignInClient.signInIntent)
-                            } catch (e: Exception) {
-                                Log.e("UTKNotesWelcomeScreen", "Failed to launch Google Sign-In intent", e)
-                                val am = AccountManager.get(context)
-                                val accounts = am.getAccountsByType("com.google").toList()
-                                if (accounts.isNotEmpty()) {
-                                    deviceAccounts = accounts
-                                    showCustomAccountChooser = true
-                                } else {
-                                    Toast.makeText(context, "Error al abrir el selector de cuentas de Google", Toast.LENGTH_SHORT).show()
-                                }
-                                isSigningIn = false
-                            }
-                        }.addOnFailureListener {
-                            try {
-                                googleSignInLauncher.launch(googleSignInClient.signInIntent)
-                            } catch (e: Exception) {
-                                Log.e("UTKNotesWelcomeScreen", "Failed to launch Google Sign-In intent", e)
-                                val am = AccountManager.get(context)
-                                val accounts = am.getAccountsByType("com.google").toList()
-                                if (accounts.isNotEmpty()) {
-                                    deviceAccounts = accounts
-                                    showCustomAccountChooser = true
-                                } else {
-                                    Toast.makeText(context, "Error al abrir el selector de cuentas de Google", Toast.LENGTH_SHORT).show()
-                                }
-                                isSigningIn = false
-                            }
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(54.dp),
-                    shape = RoundedCornerShape(27.dp),
-                    color = Color.White,
-                    tonalElevation = 6.dp
+                Spacer(modifier = Modifier.weight(1f))
+
+                // App Brand Name & Subtitle
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = GeminiBlue,
+                        modifier = Modifier.size(72.dp)
+                    )
+                    
                     Row(
-                        modifier = Modifier.fillMaxSize(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
-                        if (isSigningIn) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                color = Color(0xFF4285F4),
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text(
-                                text = "Iniciando sesión...",
-                                color = Color(0xFF1F1F1F),
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        } else {
+                        Text(
+                            text = "UTK Notes",
+                            fontSize = 38.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White,
+                            letterSpacing = 1.sp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "IA",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = GeminiBlue,
+                            modifier = Modifier
+                                .background(GeminiBlue.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        )
+                    }
+                    
+                    Text(
+                        text = "Tu biblioteca inteligente de notas y resúmenes automáticos respaldada de manera segura en la nube.",
+                        fontSize = 15.sp,
+                        color = TextSecondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                // Google Sign-In Button Container
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Customized Google Sign-In Button
+                    Surface(
+                        onClick = {
+                            isSigningIn = true
+                            try {
+                                val signInIntent = googleSignInClient.signInIntent
+                                googleSignInLauncher.launch(signInIntent)
+                            } catch (e: Exception) {
+                                Log.e("UTKNotesWelcomeScreen", "Failed to launch google sign-in client", e)
+                                Toast.makeText(context, "Error al iniciar Google Sign-In", Toast.LENGTH_SHORT).show()
+                                isSigningIn = false
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(54.dp),
+                        shape = RoundedCornerShape(27.dp),
+                        color = Color.White,
+                        tonalElevation = 6.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
                             // Google Icon representation
                             Icon(
                                 imageVector = Icons.Default.CloudDone,
@@ -288,233 +351,42 @@ fun UTKNotesWelcomeScreen(
                             )
                         }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                OutlinedButton(
-                    onClick = {
-                        Toast.makeText(context, "Iniciando en Modo Local (offline)", Toast.LENGTH_SHORT).show()
-                        viewModel.syncManager.connectDrive("offline")
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color.White
-                    ),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.4f)),
-                    shape = RoundedCornerShape(25.dp)
-                ) {
-                    Text(
-                        text = "Omitir y Usar Modo Local (Offline)",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = "Tus datos se guardarán de forma segura en tu cuenta personal de Google Drive.",
-                    fontSize = 12.sp,
-                    color = TextTertiary,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = 24.dp)
-                )
-            }
-            
-            Spacer(modifier = Modifier.height(32.dp))
-        }
-
-        if (showCustomAccountChooser) {
-            Dialog(
-                onDismissRequest = { showCustomAccountChooser = false },
-                properties = DialogProperties(usePlatformDefaultWidth = false)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.6f))
-                        .clickable { showCustomAccountChooser = false },
-                    contentAlignment = Alignment.BottomCenter
-                ) {
-                    Card(
+                    OutlinedButton(
+                        onClick = {
+                            Toast.makeText(context, "Iniciando en Modo Local (offline)", Toast.LENGTH_SHORT).show()
+                            viewModel.syncManager.connectDrive("offline")
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable(enabled = false) { }
-                            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)),
-                        colors = CardDefaults.cardColors(containerColor = CosmicSurface),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                            .height(50.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color.White
+                        ),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.4f)),
+                        shape = RoundedCornerShape(25.dp)
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 24.dp, horizontal = 20.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .width(40.dp)
-                                    .height(4.dp)
-                                    .background(Color.Gray.copy(alpha = 0.5f), RoundedCornerShape(2.dp))
-                            )
-                            Spacer(modifier = Modifier.height(20.dp))
-
-                            Box(
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .background(Color.White, CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.AutoAwesome,
-                                    contentDescription = null,
-                                    tint = GeminiBlue,
-                                    modifier = Modifier.size(28.dp)
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            Text(
-                                text = "Elige una cuenta",
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-
-                            Text(
-                                text = "para continuar usando UTK Notes",
-                                fontSize = 14.sp,
-                                color = TextTertiary,
-                                modifier = Modifier.padding(top = 4.dp, bottom = 24.dp)
-                            )
-
-                            Column(
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                deviceAccounts.forEach { account ->
-                                    val email = account.name
-                                    val username = email.substringBefore("@")
-                                    val displayName = username.replace(".", " ")
-                                        .replace("_", " ")
-                                        .split(" ")
-                                        .joinToString(" ") { it.replaceFirstChar { char -> char.uppercase() } }
-
-                                    val initial = displayName.firstOrNull()?.uppercase() ?: "G"
-                                    val avatarColors = listOf(
-                                        Color(0xFF3F51B5),
-                                        Color(0xFFE91E63),
-                                        Color(0xFF4CAF50),
-                                        Color(0xFFFF9800),
-                                        Color(0xFF9C27B0),
-                                        Color(0xFF00BCD4),
-                                        Color(0xFFE53935),
-                                        Color(0xFF009688)
-                                    )
-                                    val avatarBg = avatarColors[kotlin.math.abs(email.hashCode()) % avatarColors.size]
-
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                showCustomAccountChooser = false
-                                                Toast.makeText(context, "Sesión iniciada: $email", Toast.LENGTH_SHORT).show()
-                                                viewModel.syncManager.connectDrive(email)
-                                                viewModel.triggerDriveSync()
-                                            }
-                                            .padding(vertical = 12.dp, horizontal = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(40.dp)
-                                                .background(avatarBg, CircleShape),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = initial,
-                                                color = Color.White,
-                                                fontSize = 18.sp,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                        }
-
-                                        Spacer(modifier = Modifier.width(16.dp))
-
-                                        Column(
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Text(
-                                                text = displayName,
-                                                color = Color.White,
-                                                fontSize = 15.sp,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                            Text(
-                                                text = email,
-                                                color = TextTertiary,
-                                                fontSize = 13.sp
-                                            )
-                                        }
-                                    }
-                                    HorizontalDivider(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        color = CosmicBorder.copy(alpha = 0.5f)
-                                    )
-                                }
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            showCustomAccountChooser = false
-                                            try {
-                                                val intent = AccountManager.newChooseAccountIntent(
-                                                    null,
-                                                    null,
-                                                    arrayOf("com.google"),
-                                                    null,
-                                                    null,
-                                                    null,
-                                                    null
-                                                )
-                                                accountChooserLauncher.launch(intent)
-                                            } catch (e: Exception) {
-                                                Toast.makeText(context, "Error al abrir agregar cuenta", Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                        .padding(vertical = 16.dp, horizontal = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(40.dp)
-                                            .background(CosmicSurfaceVariant, CircleShape),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Add,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(24.dp)
-                                        )
-                                    }
-
-                                    Spacer(modifier = Modifier.width(16.dp))
-
-                                    Text(
-                                        text = "Añadir cuenta",
-                                        color = Color.White,
-                                        fontSize = 15.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                            }
-                        }
+                        Text(
+                            text = "Omitir y Usar Modo Local (Offline)",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium
+                        )
                     }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = "Tus datos se guardarán de forma segura en tu cuenta personal de Google Drive.",
+                        fontSize = 12.sp,
+                        color = TextTertiary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 24.dp)
+                    )
                 }
+                
+                Spacer(modifier = Modifier.height(32.dp))
             }
         }
     }

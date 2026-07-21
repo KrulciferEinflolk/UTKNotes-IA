@@ -25,7 +25,9 @@ import org.json.JSONObject
 import java.io.File
 import com.google.android.gms.auth.GoogleAuthUtil
 import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import android.accounts.Account
+import android.accounts.AccountManager
 
 @JsonClass(generateAdapter = true)
 data class DriveBackupPayload(
@@ -94,18 +96,63 @@ class DriveSyncManager(
         }
     }
 
+    fun getPrimaryGoogleAccount(): String? {
+        try {
+            val am = AccountManager.get(context)
+            val accounts = am.getAccountsByType("com.google")
+            if (accounts.isNotEmpty()) {
+                return accounts[0].name
+            }
+        } catch (e: Exception) {
+            Log.e("DriveSyncManager", "Error getting accounts from AccountManager", e)
+        }
+        
+        try {
+            val account = GoogleSignIn.getLastSignedInAccount(context)
+            if (account != null && !account.email.isNullOrEmpty()) {
+                return account.email
+            }
+        } catch (e: Exception) {
+            Log.e("DriveSyncManager", "Error getting GoogleSignIn last signed in account", e)
+        }
+        
+        return null
+    }
+
+    fun isAutoLoginDisabled(): Boolean {
+        return prefs.getBoolean("auto_login_disabled", false)
+    }
+
     fun connectDrive(email: String) {
-        prefs.edit().putString("google_email", email).apply()
-        _userEmail.value = email
-        _isConnected.value = true
-        _syncState.value = SyncState.Success("Conectado con $email", System.currentTimeMillis())
+        prefs.edit().putBoolean("auto_login_disabled", false).apply()
+        if (email == "offline") {
+            prefs.edit().putString("google_email", "offline").apply()
+            _userEmail.value = "offline"
+            _isConnected.value = true
+            _syncState.value = SyncState.Success("Iniciado en Modo Local (offline)", System.currentTimeMillis())
+        } else {
+            _userEmail.value = email
+            _syncState.value = SyncState.Success("Conectando con $email...", System.currentTimeMillis())
+        }
     }
 
     fun disconnectDrive() {
-        prefs.edit().remove("google_email").apply()
+        prefs.edit()
+            .remove("google_email")
+            .putBoolean("auto_login_disabled", true)
+            .apply()
         _userEmail.value = null
         _isConnected.value = false
         _syncState.value = SyncState.Idle
+
+        // Also sign out from GoogleSignIn client so the user can choose another account!
+        try {
+            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
+            val googleSignInClient = GoogleSignIn.getClient(context, gso)
+            googleSignInClient.signOut()
+        } catch (e: Exception) {
+            Log.e("DriveSyncManager", "Error signing out of GoogleSignIn client", e)
+        }
     }
 
     /**
@@ -113,18 +160,13 @@ class DriveSyncManager(
      * Restores all books, pages, notes, multimedia metadata, chat agent history, and custom API key.
      */
     suspend fun synchronize(): Unit = withContext(Dispatchers.IO) {
-        if (!_isConnected.value) {
-            _syncState.value = SyncState.Error("Google Drive no está conectado.")
-            return@withContext
-        }
-
-        _syncState.value = SyncState.Syncing
-
         val email = _userEmail.value
         if (email.isNullOrEmpty()) {
             _syncState.value = SyncState.Error("No se encontró correo asociado.")
             return@withContext
         }
+
+        _syncState.value = SyncState.Syncing
 
         try {
             Log.d("DriveSyncManager", "Iniciando sincronización para: $email")
@@ -330,6 +372,10 @@ class DriveSyncManager(
 
                 val successMsg = "¡Sincronizado con éxito! Se respaldaron ${books.size} Libros, ${pages.size} Páginas, ${notes.size} Notas e historial de IA en Google Drive."
                 _syncState.value = SyncState.Success(successMsg, System.currentTimeMillis())
+                
+                // Save credentials and mark as connected now that restore is complete!
+                prefs.edit().putString("google_email", email).apply()
+                _isConnected.value = true
 
             } else {
                 // --- OFFLINE/LOCAL BACKUP MODE ---
@@ -373,6 +419,12 @@ class DriveSyncManager(
                     "Respaldo local completado para $email. Los cambios se sincronizarán en la nube al volver a estar en línea."
                 }
                 _syncState.value = SyncState.Success(successMsg, System.currentTimeMillis())
+                
+                // If we synced successfully using local fallback for a real account, mark as connected
+                if (email != "offline") {
+                    prefs.edit().putString("google_email", email).apply()
+                    _isConnected.value = true
+                }
             }
 
         } catch (e: Exception) {

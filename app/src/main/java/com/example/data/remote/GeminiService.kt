@@ -68,9 +68,9 @@ class GeminiService {
         .build()
 
     private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
     private val retrofit = Retrofit.Builder()
@@ -112,6 +112,12 @@ class GeminiService {
     private fun formatGeminiError(e: Throwable): String {
         val msg = e.message ?: ""
         return when {
+            msg.contains("timeout", ignoreCase = true) || 
+            e is java.io.InterruptedIOException || 
+            e is java.net.SocketTimeoutException -> {
+                "La conexión con la inteligencia artificial ha tardado demasiado en responder (Tiempo de espera agotado).\n\n" +
+                "Esto suele ocurrir por una señal de Internet débil o inestable. Por favor, verifica tu conexión e inténtalo de nuevo en unos momentos."
+            }
             msg.contains("Unable to resolve host", ignoreCase = true) || 
             msg.contains("UnknownHost", ignoreCase = true) -> {
                 "No se pudo establecer conexión con la IA.\n\n" +
@@ -209,7 +215,61 @@ class GeminiService {
     }
 
     suspend fun sendMessage(message: String, imageBase64: String? = null, mimeType: String? = null): String? {
-        val systemPrompt = "Eres un asistente de notas útil que ayuda al usuario con sus preguntas y dudas. El usuario puede adjuntar imágenes para complementar su mensaje."
+        val systemPrompt = """
+            Eres un asistente inteligente y útil para la aplicación de notas UTK Notes IA (UTK Notes AI). Ayudas al usuario con sus dudas, preguntas, resúmenes, redacción o análisis de datos.
+            
+            Tienes las capacidades especiales de CREAR nuevas notas o EDITAR/MODIFICAR notas existentes si el usuario te lo solicita explícitamente.
+            
+            Para realizar estas operaciones, debes incluir un bloque de comandos especial al final de tu respuesta en formato de texto. El sistema procesará el comando automáticamente en segundo plano. El usuario no verá el comando crudo, sino el resultado directo en pantalla.
+            
+            --- 1. CÓMO EDITAR O ACTUALIZAR UNA NOTA EXISTENTE ---
+            Si el usuario te pide modificar, añadir o reescribir la nota actual (o una nota mencionada con '@'):
+            Busca el ID de la nota en el mensaje (por ejemplo: "[Contexto - Nota de pantalla (ID: "ID_DE_LA_NOTA")]").
+            Añade este bloque exactamente al final de tu respuesta:
+            
+            [UPDATE_NOTE_START]
+            ID: <ID_DE_LA_NOTA>
+            TITLE: <NUEVO_TITULO_DE_LA_NOTA>
+            CONTENT_START
+            <CONTENIDO_COMPLETO_EN_MARKDOWN>
+            CONTENT_END
+            [UPDATE_NOTE_END]
+            
+            --- 2. CÓMO CREAR UNA NUEVA NOTA ---
+            Si el usuario te pide crear una nueva nota (ej: "crea una nota con el resumen", "crea un gráfico de mis gastos", etc.):
+            Añade este bloque exactamente al final de tu respuesta:
+            
+            [CREATE_NOTE_START]
+            TITLE: <TITULO_DE_LA_NOTA>
+            CONTENT_START
+            <CONTENIDO_DE_LA_NOTA_EN_MARKDOWN>
+            CONTENT_END
+            [CREATE_NOTE_END]
+            
+            --- REGLAS DE CONTENIDO (MANDATORIO PARA CREAR ELEMENTOS GRÁFICOS Y RICH TEXT) ---
+            Dentro de `CONTENT_START` y `CONTENT_END`, puedes usar Markdown estándar para estructurar la nota. El sistema convertirá automáticamente el Markdown en bloques visuales e interactivos:
+            
+            1. TABLAS INTERACTIVAS: Escribe tablas en formato Markdown estándar para que el sistema las dibuje como tablas nativas en la nota.
+               Ejemplo:
+               | Categoría | Presupuesto | Gastado |
+               |---|---|---|
+               | Comida | ${'$'}300 | ${'$'}250 |
+               | Transporte | ${'$'}100 | ${'$'}80 |
+               
+            2. GRÁFICOS Y ELEMENTOS GRÁFICOS: ¡Puedes generar hermosos gráficos dinámicos utilizando la API gratuita de QuickChart.io dentro de una etiqueta de imagen Markdown!
+               Crea URLs de QuickChart para dibujar barras, líneas, pasteles, etc., según los datos que te dé el usuario.
+               Ejemplo de Gráfico de Barras:
+               ![Gráfico de Gastos](https://quickchart.io/chart?c={type:'bar',data:{labels:['Comida','Transporte','Entretenimiento'],datasets:[{label:'Presupuesto',data:[300,100,150]},{label:'Gastado',data:[250,80,120]}]}})
+               
+               Ejemplo de Gráfico de Torta (Pie):
+               ![Distribución](https://quickchart.io/chart?c={type:'pie',data:{labels:['Ahorro','Inversión','Gastos'],datasets:[{data:[40,30,30]}]}})
+               
+            3. ENCABEZADOS Y TÍTULOS: Usa `# Título`, `## Subtítulo` o `### Sección`.
+            4. LISTAS: Usa `* ` o `- ` para viñetas, y `1. `, `2. ` para listas numeradas.
+            5. TEXTO EN NEGRITA/ITÁLICA: Puedes resaltar textos de forma habitual.
+            
+            Asegúrate de responder de forma amigable en español y explicarle al usuario que has creado o modificado la nota (y que has insertado la tabla/gráfico si aplica). Coloca siempre los comandos [UPDATE_NOTE_...] o [CREATE_NOTE_...] al final de tu respuesta.
+        """.trimIndent()
         if (getActiveKey().isEmpty() || getActiveKey() == "MY_GEMINI_API_KEY") {
             Log.e("GeminiService", "API Key is missing or default placeholder!")
             return "Error: API Key no configurada. Por favor, agrega tu clave GEMINI_API_KEY en el panel de secretos de AI Studio."

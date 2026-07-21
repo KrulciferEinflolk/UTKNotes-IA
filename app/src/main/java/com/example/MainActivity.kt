@@ -5312,6 +5312,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
 
         var showSettingsDialog by remember { mutableStateOf(false) }
     val currentEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
+    val selectedNote by viewModel.selectedNote.collectAsStateWithLifecycle()
     var tempApiKey by remember { mutableStateOf(viewModel.syncManager.geminiApiKey ?: "") }
     
     // Reset temp api key when dialog opens
@@ -6038,7 +6039,11 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
 
                     // Append screen note context
                     if (attachedNoteFromScreen != null) {
-                        finalMsgForApi += "\n\n[Contexto - Nota de pantalla: \"${attachedNoteFromScreen!!.title}\"\nContenido:\n${attachedNoteFromScreen!!.content}]"
+                        val mdContent = convertBlocksToMarkdown(attachedNoteFromScreen!!.content)
+                        finalMsgForApi += "\n\n[Contexto - Nota de pantalla (ID: \"${attachedNoteFromScreen!!.id}\"): \"${attachedNoteFromScreen!!.title}\"\nContenido en Markdown:\n$mdContent]"
+                    } else if (selectedNote != null) {
+                        val mdContent = convertBlocksToMarkdown(selectedNote!!.content)
+                        finalMsgForApi += "\n\n[Contexto - Nota de pantalla actual (ID: \"${selectedNote!!.id}\"): \"${selectedNote!!.title}\"\nContenido en Markdown:\n$mdContent]"
                     }
 
                     // Append paragraph citation context
@@ -6054,7 +6059,8 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     // Append inline @ mentioned notes context!
                     allNotes.forEach { note ->
                         if (userMsg.contains("@${note.title}", ignoreCase = true)) {
-                            finalMsgForApi += "\n\n[Contexto - Nota Mencionada \"${note.title}\":\n${note.content}]"
+                            val mdContent = convertBlocksToMarkdown(note.content)
+                            finalMsgForApi += "\n\n[Contexto - Nota Mencionada (ID: \"${note.id}\") \"${note.title}\":\n$mdContent]"
                         }
                     }
 
@@ -6430,11 +6436,94 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
         }
     }
 
-    val mdImageRegex = Regex("!\\[(.*?)\\]\\((.*?)\\)")
-    val htmlImageRegex = Regex("<img[^>]+src=[\\\"']([^\\\"']+)[\\\"'][^>]*>")
+    var i = 0
+    while (i < lines.size) {
+        val line = lines[i].trim()
 
-    for (line in lines) {
-        var remainingLine = line
+        // 1. Check if it's a Markdown Table
+        if (line.startsWith("|") && line.endsWith("|") && line.length > 2) {
+            flushParagraph()
+            val tableLines = mutableListOf<String>()
+            while (i < lines.size && lines[i].trim().startsWith("|") && lines[i].trim().endsWith("|")) {
+                tableLines.add(lines[i].trim())
+                i++
+            }
+            
+            // Parse table lines
+            val rows = mutableListOf<List<String>>()
+            for (tblLine in tableLines) {
+                // Check if it's a separator line like |---| or | :--- |
+                val isSeparator = tblLine.replace("|", "").replace("-", "").replace(":", "").replace(" ", "").trim().isEmpty()
+                if (isSeparator) continue
+                
+                // Split cells, removing first and last empty elements if they exist due to leading/trailing |
+                val parts = tblLine.split("|").map { it.trim() }
+                if (parts.size > 2) {
+                    val cells = parts.subList(1, parts.size - 1)
+                    rows.add(cells)
+                }
+            }
+            
+            if (rows.isNotEmpty()) {
+                val maxCols = rows.maxOf { it.size }.coerceAtLeast(1)
+                val numRows = rows.size
+                val paddedData = rows.map { row ->
+                    val padded = row.toMutableList()
+                    while (padded.size < maxCols) {
+                        padded.add("")
+                    }
+                    padded.toList()
+                }
+                blocks.add(EditorBlock.Table(
+                    rows = numRows,
+                    cols = maxCols,
+                    data = paddedData,
+                    headerColor = "Purple"
+                ))
+            }
+            continue
+        }
+
+        // 2. Check if it's a Markdown Header (#, ##, ###, ####)
+        if (line.startsWith("#")) {
+            flushParagraph()
+            val headerLevel = line.takeWhile { it == '#' }.length
+            val headerText = line.substring(headerLevel).trim()
+            val fontSize = when (headerLevel) {
+                1 -> 24
+                2 -> 20
+                3 -> 18
+                else -> 16
+            }
+            blocks.add(EditorBlock.Text(content = headerText, isHeader = true, fontSize = fontSize))
+            i++
+            continue
+        }
+
+        // 3. Check if it's a Bullet List item (*, -, +)
+        if (line.startsWith("* ") || line.startsWith("- ") || line.startsWith("+ ")) {
+            flushParagraph()
+            val bulletText = line.substring(2).trim()
+            blocks.add(EditorBlock.Text(content = bulletText, isBullet = true, fontSize = 14))
+            i++
+            continue
+        }
+
+        // 4. Check if it's a Numbered List item
+        val numberedMatch = Regex("^\\d+\\.\\s+(.*)").matchEntire(line)
+        if (numberedMatch != null) {
+            flushParagraph()
+            val numberedText = numberedMatch.groupValues[1].trim()
+            blocks.add(EditorBlock.Text(content = numberedText, isNumbered = true, fontSize = 14))
+            i++
+            continue
+        }
+
+        // 5. Parse inline Markdown Images or default Paragraph text
+        val mdImageRegex = Regex("!\\[(.*?)\\]\\((.*?)\\)")
+        val htmlImageRegex = Regex("<img[^>]+src=[\\\"']([^\\\"']+)[\\\"'][^>]*>")
+        
+        var remainingLine = lines[i]
         while (remainingLine.isNotEmpty()) {
             val mdMatch = mdImageRegex.find(remainingLine)
             val htmlMatch = htmlImageRegex.find(remainingLine)
@@ -6450,7 +6539,7 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
                 val url = mdMatch.groupValues[2]
                 blocks.add(EditorBlock.Image(
                     urlOrPath = url,
-                    caption = caption.ifEmpty { "Imagen de Markdown" },
+                    caption = caption.ifEmpty { "Imagen" },
                     width = "Match",
                     height = "Wrap"
                 ))
@@ -6466,7 +6555,7 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
                 val url = htmlMatch.groupValues[1]
                 val altRegex = Regex("alt=[\\\"']([^\\\"']+)[\\\"']")
                 val altMatch = altRegex.find(htmlMatch.value)
-                val caption = altMatch?.groupValues?.get(1) ?: "Imagen de HTML"
+                val caption = altMatch?.groupValues?.get(1) ?: "Imagen"
 
                 blocks.add(EditorBlock.Image(
                     urlOrPath = url,
@@ -6481,9 +6570,67 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
                 break
             }
         }
+        i++
     }
     flushParagraph()
     return blocks
+}
+
+fun convertBlocksToMarkdown(content: String): String {
+    val blocks = parseBlocks(content)
+    val sb = java.lang.StringBuilder()
+    for (block in blocks) {
+        when (block) {
+            is EditorBlock.Text -> {
+                val prefix = when {
+                    block.isHeader -> {
+                        val level = when (block.fontSize) {
+                            24 -> "# "
+                            20 -> "## "
+                            18 -> "### "
+                            else -> "#### "
+                        }
+                        level
+                    }
+                    block.isBullet -> "* "
+                    block.isNumbered -> "1. "
+                    else -> ""
+                }
+                sb.append(prefix).append(block.content).append("\n")
+            }
+            is EditorBlock.Table -> {
+                sb.append("\n")
+                val maxCols = block.cols
+                if (maxCols > 0) {
+                    val firstRow = block.data.getOrNull(0) ?: List(maxCols) { "" }
+                    sb.append("| ").append(firstRow.joinToString(" | ")).append(" |\n")
+                    sb.append("| ").append(List(maxCols) { "---" }.joinToString(" | ")).append(" |\n")
+                    for (r in 1 until block.rows) {
+                        val row = block.data.getOrNull(r) ?: List(maxCols) { "" }
+                        sb.append("| ").append(row.joinToString(" | ")).append(" |\n")
+                    }
+                }
+                sb.append("\n")
+            }
+            is EditorBlock.Image -> {
+                sb.append("\n![")
+                  .append(block.caption.ifEmpty { "Imagen" })
+                  .append("](")
+                  .append(block.urlOrPath)
+                  .append(")\n")
+            }
+            is EditorBlock.Audio -> {
+                sb.append("\n[Audio: ").append(block.name).append("]\n")
+            }
+            is EditorBlock.Video -> {
+                sb.append("\n[Video: ").append(block.title).append("]\n")
+            }
+            is EditorBlock.File -> {
+                sb.append("\n[Archivo: ").append(block.name).append("]\n")
+            }
+        }
+    }
+    return sb.toString().trim()
 }
 
 
