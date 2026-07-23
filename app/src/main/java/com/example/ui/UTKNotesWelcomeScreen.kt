@@ -74,27 +74,14 @@ fun UTKNotesWelcomeScreen(
     val userEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
     val syncState by viewModel.syncManager.syncState.collectAsStateWithLifecycle()
 
-    val webClientId = remember(context) {
-        val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
-        if (resId != 0) {
-            context.getString(resId)
-        } else {
-            "656969539367-pag4mlpgm1k5omrnndbuu1p1dhd1kptt.apps.googleusercontent.com"
-        }
-    }
+    var showManualEmailDialog by remember { mutableStateOf(false) }
+    var manualEmailText by remember { mutableStateOf("") }
 
-    val gso = remember(webClientId) {
-        val builder = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+    val gso = remember {
+        GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
             .requestScopes(Scope("https://www.googleapis.com/auth/drive.file"))
-        if (webClientId.isNotEmpty()) {
-            try {
-                builder.requestIdToken(webClientId)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-        builder.build()
+            .build()
     }
     val googleSignInClient = remember {
         GoogleSignIn.getClient(context, gso)
@@ -134,38 +121,37 @@ fun UTKNotesWelcomeScreen(
                     viewModel.syncManager.connectDrive(email)
                     viewModel.triggerDriveSync()
                 } else {
-                    Toast.makeText(context, "Error: No se pudo obtener el correo de la cuenta", Toast.LENGTH_LONG).show()
-                }
-            } catch (e: ApiException) {
-                Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed, status code: ${e.statusCode}", e)
-                val errorMsg = when (e.statusCode) {
-                    10 -> "Error 10 (DEVELOPER_ERROR): La firma SHA-1 o el Nombre de Paquete (utk.notes.ia) no están vinculados en Google Cloud Console. Usando modo de cuenta local de respaldo."
-                    12500 -> "Error 12500 (SIGN_IN_FAILED): Error de Google Sign-In."
-                    12501 -> "Inicio de sesión cancelado."
-                    else -> "Error (${e.statusCode}): ${e.localizedMessage}"
-                }
-                Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
-
-                // Fallback: If Google Sign-In fails due to OAuth / SHA-1 mismatch (Code 10 / 12500), automatically connect with primary device account so user isn't blocked!
-                if (e.statusCode == 10 || e.statusCode == 12500) {
                     val detectedEmail = viewModel.syncManager.getPrimaryGoogleAccount()
                     if (!detectedEmail.isNullOrEmpty()) {
                         isSigningIn = true
                         viewModel.syncManager.connectDrive(detectedEmail)
                         viewModel.triggerDriveSync()
+                    } else {
+                        showManualEmailDialog = true
                     }
+                }
+            } catch (e: ApiException) {
+                Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed, status code: ${e.statusCode}", e)
+                val detectedEmail = viewModel.syncManager.getPrimaryGoogleAccount()
+                if (!detectedEmail.isNullOrEmpty()) {
+                    isSigningIn = true
+                    viewModel.syncManager.connectDrive(detectedEmail)
+                    viewModel.triggerDriveSync()
+                } else {
+                    showManualEmailDialog = true
                 }
             } catch (e: Exception) {
                 Log.e("UTKNotesWelcomeScreen", "Error al procesar Google Sign-In", e)
-                Toast.makeText(context, "Error: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                showManualEmailDialog = true
             }
         } else {
-            // Cancelled or empty result fallback
             val detectedEmail = viewModel.syncManager.getPrimaryGoogleAccount()
             if (!detectedEmail.isNullOrEmpty()) {
                 isSigningIn = true
                 viewModel.syncManager.connectDrive(detectedEmail)
                 viewModel.triggerDriveSync()
+            } else {
+                showManualEmailDialog = true
             }
         }
     }
@@ -433,5 +419,65 @@ fun UTKNotesWelcomeScreen(
                 Spacer(modifier = Modifier.height(32.dp))
             }
         }
+    }
+
+    if (showManualEmailDialog) {
+        AlertDialog(
+            onDismissRequest = { showManualEmailDialog = false },
+            title = {
+                Text("Conectar con Google Drive", color = Color.White, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Escribe el correo de la cuenta de Google con la que deseas respaldar y sincronizar tus notas:",
+                        color = TextSecondary,
+                        fontSize = 14.sp
+                    )
+                    OutlinedTextField(
+                        value = manualEmailText,
+                        onValueChange = { manualEmailText = it },
+                        label = { Text("Correo de Google") },
+                        placeholder = { Text("ejemplo@gmail.com") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = GeminiBlue,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.4f),
+                            focusedLabelColor = GeminiBlue,
+                            unfocusedLabelColor = TextSecondary,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val emailToUse = manualEmailText.trim()
+                        if (emailToUse.isNotEmpty() && emailToUse.contains("@")) {
+                            showManualEmailDialog = false
+                            isSigningIn = true
+                            viewModel.syncManager.connectDrive(emailToUse)
+                            viewModel.triggerDriveSync()
+                        } else {
+                            Toast.makeText(context, "Por favor ingresa un correo válido", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
+                ) {
+                    Text("Conectar", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showManualEmailDialog = false }
+                ) {
+                    Text("Cancelar", color = TextSecondary)
+                }
+            },
+            containerColor = CosmicSurface
+        )
     }
 }
