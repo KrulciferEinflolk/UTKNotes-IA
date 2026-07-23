@@ -206,7 +206,7 @@ class DriveSyncManager(
 
             if (token != null && email != "offline") {
                 // --- ONLINE GOOGLE DRIVE SYNC ---
-                val searchUrl = "https://www.googleapis.com/drive/v3/files?q=" + java.net.URLEncoder.encode("name='utk_notes_ia_backup.json' and trashed=false", "UTF-8") + "&spaces=appDataFolder"
+                val searchUrl = "https://www.googleapis.com/drive/v3/files?spaces=appDataFolder"
                 val searchRequest = Request.Builder()
                     .url(searchUrl)
                     .header("Authorization", "Bearer $token")
@@ -218,13 +218,20 @@ class DriveSyncManager(
                         val body = response.body?.string() ?: ""
                         val json = JSONObject(body)
                         val files = json.optJSONArray("files")
-                        if (files != null && files.length() > 0) {
-                            fileId = files.getJSONObject(0).optString("id")
-                            Log.d("DriveSyncManager", "Archivo de respaldo encontrado en Drive: $fileId")
+                        if (files != null) {
+                            for (i in 0 until files.length()) {
+                                val fileObj = files.getJSONObject(i)
+                                if (fileObj.optString("name") == "utk_notes_ia_backup.json") {
+                                    fileId = fileObj.optString("id")
+                                    Log.d("DriveSyncManager", "Archivo de respaldo encontrado en Drive: $fileId")
+                                    break
+                                }
+                            }
                         }
-                    } else if (response.code == 401) {
+                    } else if (response.code == 401 || response.code == 403) {
                         GoogleAuthUtil.clearToken(context, token)
-                        Log.e("DriveSyncManager", "Token expirado, limpiado.")
+                        Log.e("DriveSyncManager", "Token expirado o sin permisos, limpiado.")
+                        throw Exception("Permisos de Drive inválidos o expirados. Intenta sincronizar de nuevo.")
                     } else {
                         Log.e("DriveSyncManager", "Búsqueda en Drive falló: ${response.code}")
                     }
@@ -311,6 +318,10 @@ class DriveSyncManager(
                         if (response.isSuccessful) {
                             Log.d("DriveSyncManager", "Copia de seguridad en Drive actualizada correctamente!")
                         } else {
+                            if (response.code == 401 || response.code == 403) {
+                                GoogleAuthUtil.clearToken(context, token)
+                                throw Exception("Permisos inválidos (actualizando). Token limpiado, intenta nuevamente.")
+                            }
                             throw Exception("Error de red al actualizar Drive: ${response.code} ${response.body?.string()}")
                         }
                     }
@@ -337,6 +348,10 @@ class DriveSyncManager(
                             createdFileId = JSONObject(resBody).optString("id")
                             Log.d("DriveSyncManager", "Nuevo archivo creado en Drive con ID: $createdFileId")
                         } else {
+                            if (response.code == 401 || response.code == 403) {
+                                GoogleAuthUtil.clearToken(context, token)
+                                throw Exception("Permisos inválidos (creando). Token limpiado, intenta nuevamente.")
+                            }
                             throw Exception("Error de red creando archivo en Drive: ${response.code} ${response.body?.string()}")
                         }
                     }
@@ -356,6 +371,10 @@ class DriveSyncManager(
                             if (response.isSuccessful) {
                                 Log.d("DriveSyncManager", "Nuevo respaldo subido con éxito!")
                             } else {
+                                if (response.code == 401 || response.code == 403) {
+                                    GoogleAuthUtil.clearToken(context, token)
+                                    throw Exception("Permisos inválidos (subiendo). Token limpiado, intenta nuevamente.")
+                                }
                                 throw Exception("Error de red subiendo contenido a Drive: ${response.code} ${response.body?.string()}")
                             }
                         }

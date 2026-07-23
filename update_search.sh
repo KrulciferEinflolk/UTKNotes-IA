@@ -1,0 +1,1 @@
+sed -i 's/val searchUrl = "https:\/\/www.googleapis.com\/drive\/v3\/files?q=" + java.net.URLEncoder.encode("name='\''utk_notes_ia_backup.json'\'' and trashed=false", "UTF-8").replace("+", "%20") + "&spaces=appDataFolder"/val searchUrl = "https:\/\/www.googleapis.com\/drive\/v3\/files?spaces=appDataFolder"/g' app/src/main/java/com/example/data/remote/DriveSyncManager.kt
