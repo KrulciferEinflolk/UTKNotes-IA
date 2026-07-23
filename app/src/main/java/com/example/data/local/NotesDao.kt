@@ -59,6 +59,9 @@ interface NotesDao {
     @Query("SELECT * FROM notes WHERE id = :id")
     suspend fun getNoteById(id: String): NoteEntity?
 
+    @Query("SELECT * FROM notes WHERE userEmail = :userEmail AND isDeleted = 0")
+    suspend fun getAllNotes(userEmail: String): List<NoteEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertNote(note: NoteEntity)
 

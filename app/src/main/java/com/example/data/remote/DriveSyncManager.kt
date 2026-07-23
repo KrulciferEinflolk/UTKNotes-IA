@@ -195,9 +195,12 @@ class DriveSyncManager(
                 } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
                     Log.w("DriveSyncManager", "Se requiere autorización del usuario para acceder a Drive", recoverable)
                     _recoveryIntent.value = recoverable.intent
-                    _syncState.value = SyncState.Error("Se requiere autorización para acceder a Google Drive.")
+                    _syncState.value = SyncState.Error("Se requiere permiso para acceder a Google Drive. Por favor concede la autorización.")
+                    return@withContext
                 } catch (authEx: Exception) {
-                    Log.e("DriveSyncManager", "No se pudo obtener el token de Google. Se usará respaldo local.", authEx)
+                    Log.e("DriveSyncManager", "No se pudo obtener token de Google para $email", authEx)
+                    _syncState.value = SyncState.Error("No se pudo autenticar con Google: ${authEx.localizedMessage}")
+                    return@withContext
                 }
             }
 
@@ -219,6 +222,9 @@ class DriveSyncManager(
                             fileId = files.getJSONObject(0).optString("id")
                             Log.d("DriveSyncManager", "Archivo de respaldo encontrado en Drive: $fileId")
                         }
+                    } else if (response.code == 401) {
+                        GoogleAuthUtil.clearToken(context, token)
+                        Log.e("DriveSyncManager", "Token expirado, limpiado.")
                     } else {
                         Log.e("DriveSyncManager", "Búsqueda en Drive falló: ${response.code}")
                     }
@@ -259,17 +265,17 @@ class DriveSyncManager(
                 for (book in books) {
                     pages.addAll(dao.getPagesForBook(book.id))
                 }
+                
+                // Process ALL notes owned by this email so attachments (images, drawings, audio, video) are uploaded
+                val rawNotes = dao.getAllNotes(email)
                 val notes = mutableListOf<NoteEntity>()
-                for (page in pages) {
-                    val pageNotes = dao.getNotesForPage(page.id)
-                    for (n in pageNotes) {
-                        val updatedNote = uploadAttachmentsForNote(n)
-                        if (updatedNote.content != n.content) {
-                            dao.insertNote(updatedNote)
-                            notes.add(updatedNote)
-                        } else {
-                            notes.add(n)
-                        }
+                for (n in rawNotes) {
+                    val updatedNote = uploadAttachmentsForNote(n)
+                    if (updatedNote.content != n.content) {
+                        dao.insertNote(updatedNote)
+                        notes.add(updatedNote)
+                    } else {
+                        notes.add(n)
                     }
                 }
                 val chatSessions = dao.getAllChatSessions(email)
