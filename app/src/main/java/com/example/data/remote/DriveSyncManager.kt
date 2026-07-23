@@ -41,7 +41,7 @@ sealed class SyncState {
     object Idle : SyncState()
     object Syncing : SyncState()
     data class Success(val message: String, val timestamp: Long) : SyncState()
-    data class Error(val message: String) : SyncState()
+    data class Error(val message: String, val timestamp: Long = System.currentTimeMillis()) : SyncState()
 }
 
 class DriveSyncManager(
@@ -206,7 +206,7 @@ class DriveSyncManager(
 
             if (token != null && email != "offline") {
                 // --- ONLINE GOOGLE DRIVE SYNC ---
-                val searchUrl = "https://www.googleapis.com/drive/v3/files?q=name='utk_notes_ia_backup.json' and trashed=false&spaces=appDataFolder"
+                val searchUrl = "https://www.googleapis.com/drive/v3/files?q=" + java.net.URLEncoder.encode("name='utk_notes_ia_backup.json' and trashed=false", "UTF-8") + "&spaces=appDataFolder"
                 val searchRequest = Request.Builder()
                     .url(searchUrl)
                     .header("Authorization", "Bearer $token")
@@ -311,7 +311,7 @@ class DriveSyncManager(
                         if (response.isSuccessful) {
                             Log.d("DriveSyncManager", "Copia de seguridad en Drive actualizada correctamente!")
                         } else {
-                            throw Exception("Error de red al actualizar Drive: ${response.code}")
+                            throw Exception("Error de red al actualizar Drive: ${response.code} ${response.body?.string()}")
                         }
                     }
                 } else {
@@ -337,7 +337,7 @@ class DriveSyncManager(
                             createdFileId = JSONObject(resBody).optString("id")
                             Log.d("DriveSyncManager", "Nuevo archivo creado en Drive con ID: $createdFileId")
                         } else {
-                            throw Exception("Error de red creando archivo en Drive: ${response.code}")
+                            throw Exception("Error de red creando archivo en Drive: ${response.code} ${response.body?.string()}")
                         }
                     }
 
@@ -356,7 +356,7 @@ class DriveSyncManager(
                             if (response.isSuccessful) {
                                 Log.d("DriveSyncManager", "Nuevo respaldo subido con éxito!")
                             } else {
-                                throw Exception("Error de red subiendo contenido a Drive: ${response.code}")
+                                throw Exception("Error de red subiendo contenido a Drive: ${response.code} ${response.body?.string()}")
                             }
                         }
                     }
@@ -429,6 +429,9 @@ class DriveSyncManager(
         } catch (e: Exception) {
             Log.e("DriveSyncManager", "Sincronización falló", e)
             _syncState.value = SyncState.Error("Error al sincronizar: ${e.localizedMessage}")
+            withContext(Dispatchers.Main) {
+                android.widget.Toast.makeText(context, "Error Sync: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            }
         }
     }
 
