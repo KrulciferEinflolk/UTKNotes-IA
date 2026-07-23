@@ -188,7 +188,7 @@ class DriveSyncManager(
             if (email != "offline") {
                 // Fetch OAuth Access Token from Google Play Services
                 val account = Account(email, "com.google")
-                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                val scope = "oauth2:https://www.googleapis.com/auth/drive.appdata"
                 try {
                     token = GoogleAuthUtil.getToken(context, account, scope)
                     Log.d("DriveSyncManager", "OAuth Token obtenido correctamente")
@@ -206,7 +206,7 @@ class DriveSyncManager(
 
             if (token != null && email != "offline") {
                 // --- ONLINE GOOGLE DRIVE SYNC ---
-                val searchUrl = "https://www.googleapis.com/drive/v3/files?q=name='utk_notes_ia_backup.json' and trashed=false&spaces=drive"
+                val searchUrl = "https://www.googleapis.com/drive/v3/files?q=name='utk_notes_ia_backup.json' and trashed=false&spaces=appDataFolder"
                 val searchRequest = Request.Builder()
                     .url(searchUrl)
                     .header("Authorization", "Bearer $token")
@@ -320,6 +320,7 @@ class DriveSyncManager(
                     val metaJson = JSONObject()
                         .put("name", "utk_notes_ia_backup.json")
                         .put("mimeType", "application/json")
+                        .put("parents", org.json.JSONArray().put("appDataFolder"))
                     val metaType = "application/json".toMediaTypeOrNull()
                     val metaBody = metaJson.toString().toRequestBody(metaType)
 
@@ -549,6 +550,7 @@ class DriveSyncManager(
             val metaJson = JSONObject()
                 .put("name", name)
                 .put("mimeType", mime)
+                .put("parents", org.json.JSONArray().put("appDataFolder"))
             val metaType = "application/json".toMediaTypeOrNull()
             val metaBody = metaJson.toString().toRequestBody(metaType)
 
@@ -603,7 +605,7 @@ class DriveSyncManager(
         var token: String? = null
         try {
             val account = Account(email, "com.google")
-            val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+            val scope = "oauth2:https://www.googleapis.com/auth/drive.appdata"
             token = GoogleAuthUtil.getToken(context, account, scope)
         } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
             Log.w("DriveSyncManager", "Se requiere autorización del usuario para subir adjuntos", recoverable)
@@ -701,7 +703,7 @@ class DriveSyncManager(
         var token: String? = null
         try {
             val account = Account(email, "com.google")
-            val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+            val scope = "oauth2:https://www.googleapis.com/auth/drive.appdata"
             token = GoogleAuthUtil.getToken(context, account, scope)
         } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
             Log.w("DriveSyncManager", "Se requiere autorización del usuario para descargar adjuntos", recoverable)
