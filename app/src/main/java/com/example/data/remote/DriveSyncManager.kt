@@ -24,8 +24,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
 import com.google.android.gms.auth.GoogleAuthUtil
-import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import android.accounts.Account
 import android.accounts.AccountManager
 
@@ -106,16 +104,6 @@ class DriveSyncManager(
         } catch (e: Exception) {
             Log.e("DriveSyncManager", "Error getting accounts from AccountManager", e)
         }
-        
-        try {
-            val account = GoogleSignIn.getLastSignedInAccount(context)
-            if (account != null && !account.email.isNullOrEmpty()) {
-                return account.email
-            }
-        } catch (e: Exception) {
-            Log.e("DriveSyncManager", "Error getting GoogleSignIn last signed in account", e)
-        }
-        
         return null
     }
 
@@ -144,15 +132,6 @@ class DriveSyncManager(
         _userEmail.value = null
         _isConnected.value = false
         _syncState.value = SyncState.Idle
-
-        // Also sign out from GoogleSignIn client so the user can choose another account!
-        try {
-            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
-            val googleSignInClient = GoogleSignIn.getClient(context, gso)
-            googleSignInClient.signOut()
-        } catch (e: Exception) {
-            Log.e("DriveSyncManager", "Error signing out of GoogleSignIn client", e)
-        }
     }
 
     /**

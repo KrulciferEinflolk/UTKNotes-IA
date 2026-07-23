@@ -1,13 +1,18 @@
 package com.example.ui
 
+import android.accounts.AccountManager
+import android.app.Activity
+import android.util.Log
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -15,33 +20,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CloudDone
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import android.accounts.AccountManager
-import android.app.Activity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-
-
-import androidx.credentials.CredentialManager
-import androidx.credentials.GetCredentialRequest
-import androidx.credentials.exceptions.GetCredentialException
-import com.google.android.libraries.identity.googleid.GetGoogleIdOption
-import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
-import java.security.MessageDigest
-import java.util.UUID
-import androidx.credentials.exceptions.GetCredentialCancellationException
-import android.util.Log
-import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.google.android.gms.auth.api.signin.GoogleSignInOptions
-import com.google.android.gms.common.api.ApiException
-import com.google.android.gms.common.api.Scope
-
-
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,12 +38,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.data.remote.SyncState
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.data.remote.SyncState
 
 @Composable
 fun UTKNotesWelcomeScreen(
@@ -74,84 +58,56 @@ fun UTKNotesWelcomeScreen(
     val userEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
     val syncState by viewModel.syncManager.syncState.collectAsStateWithLifecycle()
 
+    var showAccountSelectionDialog by remember { mutableStateOf(false) }
     var showManualEmailDialog by remember { mutableStateOf(false) }
     var manualEmailText by remember { mutableStateOf("") }
 
-    val gso = remember {
-        GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-            .requestEmail()
-            .requestScopes(Scope("https://www.googleapis.com/auth/drive.file"))
-            .build()
+    val deviceAccounts = remember(context) {
+        try {
+            AccountManager.get(context).getAccountsByType("com.google")
+        } catch (e: Exception) {
+            emptyArray()
+        }
     }
-    val googleSignInClient = remember {
-        GoogleSignIn.getClient(context, gso)
+
+    val accountPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        isSigningIn = false
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            val selectedAccount = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
+            if (!selectedAccount.isNullOrEmpty()) {
+                isSigningIn = true
+                viewModel.syncManager.connectDrive(selectedAccount)
+                viewModel.triggerDriveSync()
+            }
+        }
+    }
+
+    val launchSignIn = {
+        if (deviceAccounts.isNotEmpty()) {
+            showAccountSelectionDialog = true
+        } else {
+            try {
+                val intent = AccountManager.newChooseAccountIntent(
+                    null, null, arrayOf("com.google"),
+                    true, null, null, null, null
+                )
+                accountPickerLauncher.launch(intent)
+            } catch (e: Exception) {
+                showManualEmailDialog = true
+            }
+        }
     }
 
     // Automatic sign-in flow on startup!
     LaunchedEffect(Unit) {
         if (!isConnected && userEmail == null && !viewModel.syncManager.isAutoLoginDisabled()) {
-            val lastAccount = GoogleSignIn.getLastSignedInAccount(context)
-            if (lastAccount != null && !lastAccount.email.isNullOrEmpty()) {
-                isSigningIn = true
-                viewModel.syncManager.connectDrive(lastAccount.email!!)
-                viewModel.triggerDriveSync()
-            } else {
-                val detectedEmail = viewModel.syncManager.getPrimaryGoogleAccount()
-                if (!detectedEmail.isNullOrEmpty()) {
-                    isSigningIn = true
-                    viewModel.syncManager.connectDrive(detectedEmail)
-                    viewModel.triggerDriveSync()
-                }
-            }
-        }
-    }
-
-    val googleSignInLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        isSigningIn = false
-        val intentData = result.data
-        if (intentData != null) {
-            val task = GoogleSignIn.getSignedInAccountFromIntent(intentData)
-            try {
-                val account = task.getResult(ApiException::class.java)
-                val email = account?.email
-                if (!email.isNullOrEmpty()) {
-                    isSigningIn = true
-                    viewModel.syncManager.connectDrive(email)
-                    viewModel.triggerDriveSync()
-                } else {
-                    val detectedEmail = viewModel.syncManager.getPrimaryGoogleAccount()
-                    if (!detectedEmail.isNullOrEmpty()) {
-                        isSigningIn = true
-                        viewModel.syncManager.connectDrive(detectedEmail)
-                        viewModel.triggerDriveSync()
-                    } else {
-                        showManualEmailDialog = true
-                    }
-                }
-            } catch (e: ApiException) {
-                Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed, status code: ${e.statusCode}", e)
-                val detectedEmail = viewModel.syncManager.getPrimaryGoogleAccount()
-                if (!detectedEmail.isNullOrEmpty()) {
-                    isSigningIn = true
-                    viewModel.syncManager.connectDrive(detectedEmail)
-                    viewModel.triggerDriveSync()
-                } else {
-                    showManualEmailDialog = true
-                }
-            } catch (e: Exception) {
-                Log.e("UTKNotesWelcomeScreen", "Error al procesar Google Sign-In", e)
-                showManualEmailDialog = true
-            }
-        } else {
             val detectedEmail = viewModel.syncManager.getPrimaryGoogleAccount()
             if (!detectedEmail.isNullOrEmpty()) {
                 isSigningIn = true
                 viewModel.syncManager.connectDrive(detectedEmail)
                 viewModel.triggerDriveSync()
-            } else {
-                showManualEmailDialog = true
             }
         }
     }
@@ -343,15 +299,7 @@ fun UTKNotesWelcomeScreen(
                     // Customized Google Sign-In Button
                     Surface(
                         onClick = {
-                            isSigningIn = true
-                            try {
-                                val signInIntent = googleSignInClient.signInIntent
-                                googleSignInLauncher.launch(signInIntent)
-                            } catch (e: Exception) {
-                                Log.e("UTKNotesWelcomeScreen", "Failed to launch google sign-in client", e)
-                                Toast.makeText(context, "Error al iniciar Google Sign-In", Toast.LENGTH_SHORT).show()
-                                isSigningIn = false
-                            }
+                            launchSignIn()
                         },
                         modifier = Modifier
                             .fillMaxWidth()
@@ -419,6 +367,107 @@ fun UTKNotesWelcomeScreen(
                 Spacer(modifier = Modifier.height(32.dp))
             }
         }
+    }
+
+    if (showAccountSelectionDialog) {
+        AlertDialog(
+            onDismissRequest = { showAccountSelectionDialog = false },
+            title = {
+                Text("Seleccionar Cuenta de Google", color = Color.White, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Elige la cuenta para sincronizar con Google Drive:",
+                        color = TextSecondary,
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    deviceAccounts.forEach { acc ->
+                        Surface(
+                            onClick = {
+                                showAccountSelectionDialog = false
+                                isSigningIn = true
+                                viewModel.syncManager.connectDrive(acc.name)
+                                viewModel.triggerDriveSync()
+                            },
+                            color = CosmicBackground,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AccountCircle,
+                                    contentDescription = null,
+                                    tint = GeminiBlue,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = acc.name,
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+                    
+                    Surface(
+                        onClick = {
+                            showAccountSelectionDialog = false
+                            try {
+                                val intent = AccountManager.newChooseAccountIntent(
+                                    null, null, arrayOf("com.google"),
+                                    true, null, null, null, null
+                                )
+                                accountPickerLauncher.launch(intent)
+                            } catch (e: Exception) {
+                                showManualEmailDialog = true
+                            }
+                        },
+                        color = Color.Transparent,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = null,
+                                tint = GeminiBlue,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = "Usar otra cuenta de Google...",
+                                color = GeminiBlue,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(
+                    onClick = { showAccountSelectionDialog = false }
+                ) {
+                    Text("Cancelar", color = TextSecondary)
+                }
+            },
+            containerColor = CosmicSurface
+        )
     }
 
     if (showManualEmailDialog) {
