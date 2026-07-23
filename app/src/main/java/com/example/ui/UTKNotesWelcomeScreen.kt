@@ -107,8 +107,9 @@ fun UTKNotesWelcomeScreen(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         isSigningIn = false
-        if (result.resultCode == Activity.RESULT_OK) {
-            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        val intentData = result.data
+        if (intentData != null) {
+            val task = GoogleSignIn.getSignedInAccountFromIntent(intentData)
             try {
                 val account = task.getResult(ApiException::class.java)
                 val email = account?.email
@@ -120,8 +121,35 @@ fun UTKNotesWelcomeScreen(
                     Toast.makeText(context, "Error: No se pudo obtener el correo de la cuenta", Toast.LENGTH_LONG).show()
                 }
             } catch (e: ApiException) {
-                Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed, code: ${e.statusCode}", e)
-                Toast.makeText(context, "Inicio de sesión cancelado o fallido: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                Log.e("UTKNotesWelcomeScreen", "Google Sign-In failed, status code: ${e.statusCode}", e)
+                val errorMsg = when (e.statusCode) {
+                    10 -> "Error 10 (DEVELOPER_ERROR): La firma SHA-1 o el Nombre de Paquete (utk.notes.ia) no están vinculados en Google Cloud Console. Usando modo de cuenta local de respaldo."
+                    12500 -> "Error 12500 (SIGN_IN_FAILED): Error de Google Sign-In."
+                    12501 -> "Inicio de sesión cancelado."
+                    else -> "Error (${e.statusCode}): ${e.localizedMessage}"
+                }
+                Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
+
+                // Fallback: If Google Sign-In fails due to OAuth / SHA-1 mismatch (Code 10 / 12500), automatically connect with primary device account so user isn't blocked!
+                if (e.statusCode == 10 || e.statusCode == 12500) {
+                    val detectedEmail = viewModel.syncManager.getPrimaryGoogleAccount()
+                    if (!detectedEmail.isNullOrEmpty()) {
+                        isSigningIn = true
+                        viewModel.syncManager.connectDrive(detectedEmail)
+                        viewModel.triggerDriveSync()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("UTKNotesWelcomeScreen", "Error al procesar Google Sign-In", e)
+                Toast.makeText(context, "Error: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            // Cancelled or empty result fallback
+            val detectedEmail = viewModel.syncManager.getPrimaryGoogleAccount()
+            if (!detectedEmail.isNullOrEmpty()) {
+                isSigningIn = true
+                viewModel.syncManager.connectDrive(detectedEmail)
+                viewModel.triggerDriveSync()
             }
         }
     }

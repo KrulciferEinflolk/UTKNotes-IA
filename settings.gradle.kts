@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "UTK Notes - IA"
+rootProject.name = "UTKNotes - IA"
 
 include(":app")
