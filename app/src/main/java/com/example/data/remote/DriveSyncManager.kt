@@ -112,15 +112,16 @@ class DriveSyncManager(
     }
 
     fun connectDrive(email: String) {
-        prefs.edit().putBoolean("auto_login_disabled", false).apply()
+        prefs.edit()
+            .putBoolean("auto_login_disabled", false)
+            .putString("google_email", email)
+            .apply()
+        _userEmail.value = email
+        _isConnected.value = true
         if (email == "offline") {
-            prefs.edit().putString("google_email", "offline").apply()
-            _userEmail.value = "offline"
-            _isConnected.value = true
             _syncState.value = SyncState.Success("Iniciado en Modo Local (offline)", System.currentTimeMillis())
         } else {
-            _userEmail.value = email
-            _syncState.value = SyncState.Success("Conectando con $email...", System.currentTimeMillis())
+            _syncState.value = SyncState.Success("Conectado con $email", System.currentTimeMillis())
         }
     }
 
@@ -150,6 +151,18 @@ class DriveSyncManager(
         try {
             Log.d("DriveSyncManager", "Iniciando sincronización para: $email")
             val dao = database.notesDao()
+
+            // Automatically migrate any offline books, pages, notes, and chat sessions to this email
+            if (email != "offline") {
+                try {
+                    dao.migrateOfflineBooks(email)
+                    dao.migrateOfflinePages(email)
+                    dao.migrateOfflineNotes(email)
+                    dao.migrateOfflineChatSessions(email)
+                } catch (mEx: Exception) {
+                    Log.e("DriveSyncManager", "Error durante migración de datos locales", mEx)
+                }
+            }
 
             // 1. Proactive Local Restoration: If the local database is empty for this email,
             // try to restore from a previously stored local backup file (prevents data loss on reinstall)

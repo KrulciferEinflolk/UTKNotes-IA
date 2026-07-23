@@ -120,5 +120,18 @@ interface NotesDao {
 
     @Query("SELECT * FROM chat_sessions WHERE id = :id")
     suspend fun getChatSessionById(id: String): com.example.data.model.ChatSessionEntity?
+
+    // --- MIGRATION QUERIES ---
+    @Query("UPDATE books SET userEmail = :newEmail WHERE userEmail = 'offline' OR userEmail = ''")
+    suspend fun migrateOfflineBooks(newEmail: String)
+
+    @Query("UPDATE pages SET userEmail = :newEmail WHERE userEmail = 'offline' OR userEmail = ''")
+    suspend fun migrateOfflinePages(newEmail: String)
+
+    @Query("UPDATE notes SET userEmail = :newEmail WHERE userEmail = 'offline' OR userEmail = ''")
+    suspend fun migrateOfflineNotes(newEmail: String)
+
+    @Query("UPDATE chat_sessions SET userEmail = :newEmail WHERE userEmail = 'offline' OR userEmail = ''")
+    suspend fun migrateOfflineChatSessions(newEmail: String)
 }
 

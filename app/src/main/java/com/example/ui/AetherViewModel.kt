@@ -346,8 +346,12 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     fun saveNote(note: NoteEntity) {
         viewModelScope.launch {
             var finalNote = note
+            val email = currentEmail.value
+            if (email.isNotEmpty() && finalNote.userEmail != email) {
+                finalNote = finalNote.copy(userEmail = email)
+            }
             if (syncManager.isConnected.value) {
-                finalNote = syncManager.uploadAttachmentsForNote(note)
+                finalNote = syncManager.uploadAttachmentsForNote(finalNote)
             }
             repository.updateNote(finalNote)
             if (_selectedNote.value?.id == finalNote.id) {
