@@ -74,11 +74,27 @@ fun UTKNotesWelcomeScreen(
     val userEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
     val syncState by viewModel.syncManager.syncState.collectAsStateWithLifecycle()
 
-    val gso = remember {
-        GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+    val webClientId = remember(context) {
+        val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+        if (resId != 0) {
+            context.getString(resId)
+        } else {
+            "656969539367-pag4mlpgm1k5omrnndbuu1p1dhd1kptt.apps.googleusercontent.com"
+        }
+    }
+
+    val gso = remember(webClientId) {
+        val builder = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
             .requestScopes(Scope("https://www.googleapis.com/auth/drive.file"))
-            .build()
+        if (webClientId.isNotEmpty()) {
+            try {
+                builder.requestIdToken(webClientId)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        builder.build()
     }
     val googleSignInClient = remember {
         GoogleSignIn.getClient(context, gso)
