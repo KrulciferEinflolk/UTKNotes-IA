@@ -8,9 +8,12 @@ import com.example.data.model.BookEntity
 import com.example.data.model.NoteEntity
 import com.example.data.model.PageEntity
 import com.example.data.remote.DriveSyncManager
-import com.example.data.remote.GeminiService
 import com.example.data.remote.SyncState
 import com.example.data.repository.NotesRepository
+import com.example.data.local.llm.LocalLlmManager
+import com.example.data.local.llm.ModelDownloadVerifier
+import com.example.data.local.llm.ModelDownloadStatus
+import com.example.data.local.memory.NoteMemoryVaultManager
 import com.example.ui.reminders.NotificationHelper
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -21,15 +24,16 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     private val database = AppDatabase.getDatabase(application)
     private val repository = NotesRepository(database.notesDao())
     val syncManager = DriveSyncManager(application, database)
-    private val geminiService = GeminiService()
+    val localLlm = LocalLlmManager(application)
+    val modelVerifier = ModelDownloadVerifier(application)
+    val memoryVault = NoteMemoryVaultManager(application)
 
     init {
-        geminiService.customApiKey = syncManager.geminiApiKey
-    }
-    
-    fun updateGeminiApiKey(key: String?) {
-        syncManager.geminiApiKey = key
-        geminiService.customApiKey = key
+        viewModelScope.launch {
+            if (modelVerifier.checkCurrentStatus() is ModelDownloadStatus.Ready) {
+                localLlm.ensureModelLoaded(modelVerifier.modelFile)
+            }
+        }
     }
 
 
@@ -157,7 +161,6 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 _selectedBook.value = null
                 _selectedPage.value = null
                 _selectedNote.value = null
-                geminiService.customApiKey = syncManager.geminiApiKey
             }
         }
 
@@ -409,6 +412,12 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun createDriveDatabaseStructure() {
+        viewModelScope.launch {
+            syncManager.createDriveDatabaseStructure()
+        }
+    }
+
 
     // --- AI INTEL AGENT ACTIONS ---
 
@@ -424,19 +433,22 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 _aiSuggestions.value = listOf(
                     "Escribe tu primera nota para obtener sugerencias inteligentes.",
                     "Crea un plan diario en una nota para organizar tus ideas.",
-                    "Agrega etiquetas como 'Estudio' o 'Trabajo' para organizar tus notas."
+                    "Agrega etiquetas para organizar tus notas."
                 )
                 _aiLoading.value = false
                 return@launch
             }
 
-            val summary = currentNotes.joinToString("\n\n") { "Título: ${it.title}\nContenido: ${it.content}" }
-            val suggestions = geminiService.generateSuggestions(summary)
-            _aiSuggestions.value = suggestions.ifEmpty {
-                listOf(
-                    "Sintetiza tus notas actuales en un mapa mental.",
+            if (modelVerifier.checkCurrentStatus() is ModelDownloadStatus.Ready) {
+                localLlm.ensureModelLoaded(modelVerifier.modelFile)
+                val summary = currentNotes.take(5).joinToString("\n") { "• ${it.title}: ${it.content.take(80)}" }
+                val suggestions = localLlm.generateSuggestions(summary)
+                _aiSuggestions.value = suggestions
+            } else {
+                _aiSuggestions.value = listOf(
+                    "Sintetiza tus notas actuales con Qwen local.",
                     "Crea un recordatorio para revisar tus notas al final del día.",
-                    "Agrega más detalles sobre las ideas registradas."
+                    "Descarga el modelo Qwen en Ajustes para análisis 100% offline."
                 )
             }
             _aiLoading.value = false
@@ -446,8 +458,14 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     fun applyAiModificationToNote(note: NoteEntity, instruction: String) {
         viewModelScope.launch {
             _aiLoading.value = true
-            _aiMessage.value = "Pensando en modificaciones..."
-            val result = geminiService.modifyNote(
+            _aiMessage.value = "Qwen modificando nota..."
+            if (modelVerifier.checkCurrentStatus() !is ModelDownloadStatus.Ready) {
+                _aiMessage.value = "Descarga primero el modelo local Qwen en Ajustes de IA."
+                _aiLoading.value = false
+                return@launch
+            }
+            localLlm.ensureModelLoaded(modelVerifier.modelFile)
+            val result = localLlm.modifyNote(
                 title = note.title,
                 content = note.content,
                 instruction = instruction
@@ -461,9 +479,9 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 )
                 repository.updateNote(updatedNote)
                 _selectedNote.value = updatedNote
-                _aiMessage.value = "Nota modificada exitosamente con IA!"
+                _aiMessage.value = "Nota modificada exitosamente con Qwen local!"
             } else {
-                _aiMessage.value = "No se pudieron aplicar cambios con IA."
+                _aiMessage.value = "No se pudieron aplicar cambios con el modelo local."
             }
             _aiLoading.value = false
         }
@@ -473,8 +491,14 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         val currentPage = _selectedPage.value ?: return
         viewModelScope.launch {
             _aiLoading.value = true
-            _aiMessage.value = "Generando nueva nota..."
-            val result = geminiService.modifyNote(
+            _aiMessage.value = "Qwen generando nueva nota..."
+            if (modelVerifier.checkCurrentStatus() !is ModelDownloadStatus.Ready) {
+                _aiMessage.value = "Descarga primero el modelo local Qwen en Ajustes de IA."
+                _aiLoading.value = false
+                return@launch
+            }
+            localLlm.ensureModelLoaded(modelVerifier.modelFile)
+            val result = localLlm.modifyNote(
                 title = "Idea Generada",
                 content = "",
                 instruction = "Crea una nota completa sobre: $instruction"
@@ -484,13 +508,13 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     pageId = currentPage.id,
                     title = result.first,
                     content = result.second,
-                    tags = "Generado, IA",
+                    tags = "Generado, Qwen",
                     userEmail = currentEmail.value
                 )
                 _selectedNote.value = newNote
-                _aiMessage.value = "Nueva nota generada con IA!"
+                _aiMessage.value = "Nueva nota generada con Qwen local!"
             } else {
-                _aiMessage.value = "Error al generar nota con IA."
+                _aiMessage.value = "Error al generar nota con Qwen."
             }
             _aiLoading.value = false
         }
@@ -628,7 +652,42 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     suspend fun sendMessage(message: String, imageBase64: String? = null, mimeType: String? = null): String? {
-        val rawResponse = geminiService.sendMessage(message, imageBase64, mimeType) ?: return null
+        val status = modelVerifier.checkCurrentStatus()
+        if (status !is ModelDownloadStatus.Ready) {
+            return "El modelo local Qwen2.5 (1.5B) aún no está descargado en tu dispositivo.\n\nPara poder conversar y analizar tus notas sin conexión a internet, abre Ajustes de IA y presiona 'Descargar Modelo Qwen'."
+        }
+
+        val isLoaded = localLlm.ensureModelLoaded(modelVerifier.modelFile)
+        if (!isLoaded) {
+            return "Cargando el modelo Qwen en la memoria del dispositivo... Por favor, intenta de nuevo en unos momentos."
+        }
+
+        val noteId = _selectedNote.value?.id
+        val noteTitle = _selectedNote.value?.title ?: "Nota"
+        val systemPrompt = if (noteId != null) {
+            memoryVault.buildAugmentedSystemPrompt(noteId, noteTitle)
+        } else {
+            "Eres un asistente de notas inteligente que responde de forma concisa, clara y en español."
+        }
+
+        val rawResponse = localLlm.generateResponse(message, systemPrompt)
+
+        if (noteId != null) {
+            viewModelScope.launch {
+                memoryVault.saveChat(
+                    com.example.data.local.memory.NoteChatRecord(
+                        chatId = java.util.UUID.randomUUID().toString(),
+                        noteId = noteId,
+                        title = message.take(30),
+                        messages = listOf(
+                            com.example.data.local.memory.NoteChatMessage(role = "user", content = message),
+                            com.example.data.local.memory.NoteChatMessage(role = "assistant", content = rawResponse)
+                        )
+                    )
+                )
+            }
+        }
+
         return parseAndApplyChatbotUpdates(rawResponse)
     }
 }

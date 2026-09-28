@@ -66,6 +66,8 @@ import com.example.data.model.BookEntity
 import com.example.data.model.NoteEntity
 import com.example.data.model.PageEntity
 import com.example.data.remote.SyncState
+import com.example.data.local.llm.ModelDownloadStatus
+import com.example.data.local.llm.LlmModelState
 import com.example.ui.AetherViewModel
 import com.example.ui.LibraryMainScreen
 import com.example.ui.UTKNotesWelcomeScreen
@@ -5308,24 +5310,17 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
     val context = LocalContext.current
     var isSending by remember { mutableStateOf(false) }
 
-        var showSettingsDialog by remember { mutableStateOf(false) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
     val currentEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
     val selectedNote by viewModel.selectedNote.collectAsStateWithLifecycle()
-    var tempApiKey by remember { mutableStateOf(viewModel.syncManager.geminiApiKey ?: "") }
-    
-    // Reset temp api key when dialog opens
-    LaunchedEffect(showSettingsDialog) {
-        if (showSettingsDialog) {
-            tempApiKey = viewModel.syncManager.geminiApiKey ?: ""
-        }
-    }
+    val modelDownloadStatus by viewModel.modelVerifier.status.collectAsStateWithLifecycle()
+    val llmModelState by viewModel.localLlm.modelState.collectAsStateWithLifecycle()
 
     if (showSettingsDialog) {
-        
         AlertDialog(
             onDismissRequest = { showSettingsDialog = false },
             containerColor = CosmicSurfaceVariant,
-            title = { Text("Ajustes de IA", color = TextPrimary) },
+            title = { Text("Ajustes de IA Local (Qwen)", color = TextPrimary, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
                     Text("Cuenta actual:", color = TextSecondary, fontSize = 14.sp)
@@ -5333,30 +5328,105 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     
                     Spacer(modifier = Modifier.height(16.dp))
                     
-                    OutlinedTextField(
-                        value = tempApiKey,
-                        onValueChange = { tempApiKey = it },
-                        label = { Text("Clave de Gemini API (Opcional)") },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary,
-                            focusedBorderColor = GeminiBlue,
-                            unfocusedBorderColor = CosmicBorder
-                        ),
+                    Surface(
+                        color = CosmicSurface,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, CosmicBorder),
                         modifier = Modifier.fillMaxWidth()
-                    )
-                    Text("Si se deja en blanco se utilizará la clave por defecto.", fontSize = 12.sp, color = TextTertiary)
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Memory, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Qwen2.5-1.5B (Local)", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            }
+                            
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            when (val status = modelDownloadStatus) {
+                                is ModelDownloadStatus.Ready -> {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50), modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Modelo descargado (~1.0 GB)", color = Color(0xFF81C784), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text("Inferencia 100% offline y privada en tu dispositivo vía llama.cpp.", color = TextSecondary, fontSize = 12.sp)
+                                    
+                                    if (llmModelState !is LlmModelState.Ready) {
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        OutlinedButton(
+                                            onClick = {
+                                                scope.launch { viewModel.localLlm.ensureModelLoaded(viewModel.modelVerifier.modelFile) }
+                                            },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = GeminiBlue),
+                                            border = BorderStroke(1.dp, GeminiBlue)
+                                        ) {
+                                            Text("Cargar en Memoria RAM", fontSize = 12.sp)
+                                        }
+                                    } else {
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text("Estado: Cargado en memoria RAM listo para responder.", color = GeminiCyanAccent, fontSize = 11.sp)
+                                    }
+                                }
+                                is ModelDownloadStatus.Downloading -> {
+                                    Text("Descargando Qwen: ${(status.progress * 100).toInt()}%", color = GeminiBlue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    LinearProgressIndicator(
+                                        progress = { status.progress },
+                                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                        color = GeminiBlue,
+                                        trackColor = CosmicBorder
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    TextButton(onClick = { viewModel.modelVerifier.cancelDownload() }) {
+                                        Text("Cancelar Descarga", color = Color.Red, fontSize = 12.sp)
+                                    }
+                                }
+                                else -> {
+                                    Text("Descarga el modelo Qwen2.5-1.5B para ejecutar la IA de forma local y privada sin conexión a internet.", color = TextSecondary, fontSize = 12.sp)
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Button(
+                                        onClick = {
+                                            scope.launch { viewModel.modelVerifier.startDownload() }
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
+                                    ) {
+                                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Descargar Modelo Qwen (1.5B)", color = GeminiOnPrimary, fontSize = 13.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (currentEmail != null && currentEmail != "offline") {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.createDriveDatabaseStructure()
+                                showSettingsDialog = false
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("create_drive_db_structure_btn"),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = GeminiBlue),
+                            border = BorderStroke(1.dp, GeminiBlue)
+                        ) {
+                            Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp), tint = GeminiBlue)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Estructurar BD en Google Drive", fontSize = 13.sp)
+                        }
+                    }
                 }
             },
             confirmButton = {
                 Button(
-                    onClick = {
-                        viewModel.updateGeminiApiKey(tempApiKey.takeIf { it.isNotBlank() })
-                        showSettingsDialog = false
-                    },
+                    onClick = { showSettingsDialog = false },
                     colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
                 ) {
-                    Text("Guardar", color = GeminiOnPrimary)
+                    Text("Cerrar", color = GeminiOnPrimary)
                 }
             },
             dismissButton = {
@@ -5367,10 +5437,6 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                         onDismiss()
                     }) {
                         Text("Cerrar Sesión", color = Color.Red)
-                    }
-                } else {
-                    TextButton(onClick = { showSettingsDialog = false }) {
-                        Text("Cancelar", color = TextSecondary)
                     }
                 }
             }
@@ -5744,7 +5810,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                             scope.launch {
                                                 val response = viewModel.sendMessage(lastUserMsg)
                                                 isSending = false
-                                                val updatedList = messagesList + ((response ?: "Error de Gemini") to false)
+                                                val updatedList = messagesList + ((response ?: "Error en Qwen local") to false)
                                                 messagesList = updatedList
                                                 currentSessionId?.let { sId ->
                                                     viewModel.saveChatSession(sId, lastUserMsg.take(35), serializeChatMessages(updatedList))
@@ -5770,7 +5836,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                 if (isSending) {
                     item {
                         Text(
-                            text = "Gemini escribiendo...",
+                            text = "Qwen pensando...",
                             color = TextSecondary,
                             fontSize = 13.sp,
                             style = TextStyle(fontStyle = FontStyle.Italic),
@@ -6086,7 +6152,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     scope.launch {
                         val response = viewModel.sendMessage(finalMsgForApi, imgB64, imgMime)
                         isSending = false
-                        val finalResult = response ?: "Error al obtener respuesta de Gemini"
+                        val finalResult = response ?: "Error al obtener respuesta de Qwen local"
                         val finalMessages = updatedList + (finalResult to false)
                         messagesList = finalMessages
 
