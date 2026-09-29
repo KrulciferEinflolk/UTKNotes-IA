@@ -688,6 +688,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
-        return parseAndApplyChatbotUpdates(rawResponse)
+        val clean = parseAndApplyChatbotUpdates(rawResponse).trim()
+        return clean.ifBlank { rawResponse.trim().ifBlank { "Qwen no produjo una respuesta de texto para este mensaje." } }
     }
 }

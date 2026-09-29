@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.nehuatl.llamacpp.LlamaHelper
 import java.io.File
 
@@ -42,6 +44,7 @@ class LocalLlmManager(
     private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Unloaded)
     val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
 
+    private val loadMutex = Mutex()
     private val llmEvents = MutableSharedFlow<LlamaHelper.LLMEvent>(extraBufferCapacity = 64)
     private var llamaHelper: LlamaHelper? = null
 
@@ -84,38 +87,79 @@ class LocalLlmManager(
     suspend fun loadModel(
         modelFile: File,
         contextSize: Int = DEFAULT_CONTEXT_SIZE
-    ): Boolean = withContext(Dispatchers.IO) {
-        if (!modelFile.exists()) {
-            _modelState.value = LlmModelState.Error("El archivo del modelo no existe: ${modelFile.absolutePath}")
-            return@withContext false
-        }
-
-        try {
-            _modelState.value = LlmModelState.Loading(0)
-            unloadModel() // Liberar cualquier instancia previa
-
-            llamaHelper = LlamaHelper(
-                contentResolver = context.contentResolver,
-                scope = scope,
-                sharedFlow = llmEvents
-            )
-
-            Log.i(TAG, "Cargando modelo GGUF ${modelFile.name} con context_size=$contextSize...")
-            llamaHelper?.load(
-                modelFile.absolutePath,
-                contextSize,
-                ""
-            ) { progress: Long ->
-                _modelState.value = LlmModelState.Loading(progress.toInt().coerceIn(0, 100))
+    ): Boolean = loadMutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (_modelState.value is LlmModelState.Ready && activeModelPath == modelFile.absolutePath && llamaHelper != null) {
+                return@withContext true
+            }
+            if (!modelFile.exists()) {
+                _modelState.value = LlmModelState.Error("El archivo del modelo no existe: ${modelFile.absolutePath}")
+                return@withContext false
             }
 
-            activeModelPath = modelFile.absolutePath
-            _modelState.value = LlmModelState.Ready(modelFile.absolutePath, contextSize)
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Error al inicializar el modelo", e)
-            _modelState.value = LlmModelState.Error(e.localizedMessage ?: "Error cargando modelo")
-            false
+            try {
+                _modelState.value = LlmModelState.Loading(0)
+                unloadModel() // Liberar cualquier instancia previa
+
+                val helper = LlamaHelper(
+                    contentResolver = context.contentResolver,
+                    scope = scope,
+                    sharedFlow = llmEvents
+                )
+                llamaHelper = helper
+
+                val fileUri = android.net.Uri.fromFile(modelFile).toString()
+                Log.i(TAG, "Cargando modelo GGUF ${modelFile.name} desde URI $fileUri con context_size=$contextSize...")
+
+                val loadDeferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+
+                val errorJob = scope.launch {
+                    llmEvents.collect { event ->
+                        when (event) {
+                            is LlamaHelper.LLMEvent.Error -> {
+                                Log.e(TAG, "Error durante la carga del modelo: ${event.message}")
+                                loadDeferred.completeExceptionally(Exception(event.message))
+                            }
+                            is LlamaHelper.LLMEvent.Loaded -> {
+                                Log.i(TAG, "Evento Loaded recibido para $fileUri")
+                                loadDeferred.complete(true)
+                            }
+                            else -> Unit
+                        }
+                    }
+                }
+
+                try {
+                    helper.load(
+                        fileUri,
+                        contextSize,
+                        null
+                    ) { contextId: Long ->
+                        Log.i(TAG, "Modelo cargado exitosamente en memoria RAM nativa. contextId=$contextId")
+                        loadDeferred.complete(true)
+                    }
+
+                    // Esperar a que llama.cpp complete la inicialización nativa en memoria RAM
+                    val loadedSuccess = kotlinx.coroutines.withTimeoutOrNull(60_000L) {
+                        loadDeferred.await()
+                    } ?: false
+
+                    if (loadedSuccess) {
+                        activeModelPath = modelFile.absolutePath
+                        _modelState.value = LlmModelState.Ready(modelFile.absolutePath, contextSize)
+                        true
+                    } else {
+                        _modelState.value = LlmModelState.Error("Tiempo de espera agotado al cargar el modelo en RAM.")
+                        false
+                    }
+                } finally {
+                    errorJob.cancel()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error al inicializar el modelo en RAM", e)
+                _modelState.value = LlmModelState.Error(e.localizedMessage ?: "Error cargando modelo")
+                false
+            }
         }
     }
 
@@ -160,7 +204,7 @@ class LocalLlmManager(
         val accumulatedText = StringBuilder()
         _modelState.value = LlmModelState.Generating("")
 
-        helper.predict(formattedPrompt, "", false)
+        helper.predict(formattedPrompt, null, true)
 
         // Escuchar el flujo de eventos de tokens hasta que termine
         var finished = false
@@ -215,7 +259,9 @@ class LocalLlmManager(
      * Asegura que el modelo esté cargado en memoria si el archivo existe.
      */
     suspend fun ensureModelLoaded(modelFile: File): Boolean {
-        if (_modelState.value is LlmModelState.Ready) return true
+        if (_modelState.value is LlmModelState.Ready && activeModelPath == modelFile.absolutePath && llamaHelper != null) {
+            return true
+        }
         if (!modelFile.exists() || modelFile.length() < 100_000_000L) return false
         return loadModel(modelFile)
     }
@@ -244,7 +290,8 @@ class LocalLlmManager(
                         accumulatedText.append(event.word)
                     }
                     is LlamaHelper.LLMEvent.Done -> {
-                        doneSignal.complete(accumulatedText.toString().trim())
+                        val text = event.fullText.ifBlank { accumulatedText.toString() }.trim()
+                        doneSignal.complete(text)
                     }
                     is LlamaHelper.LLMEvent.Error -> {
                         doneSignal.complete("Error de inferencia en Qwen local: ${event.message}")
@@ -255,13 +302,25 @@ class LocalLlmManager(
         }
 
         try {
-            helper.predict(formattedPrompt, "", false)
+            helper.predict(formattedPrompt, null, true)
             val result = kotlinx.coroutines.withTimeoutOrNull(90_000L) {
                 doneSignal.await()
             } ?: accumulatedText.toString().ifEmpty { "Tiempo de inferencia de Qwen agotado." }
-            result
+            val cleanResult = result.trim()
+            if (cleanResult.isBlank()) {
+                "Qwen local no generó una respuesta de texto. Puedes intentar de nuevo o verificar la carga en Ajustes."
+            } else {
+                cleanResult
+            }
         } catch (e: Exception) {
-            "Error en inferencia local: ${e.localizedMessage}"
+            Log.e(TAG, "Error en inferencia local con Qwen", e)
+            val msg = e.localizedMessage ?: e.message ?: "Error desconocido"
+            if (msg.contains("not loaded", ignoreCase = true)) {
+                _modelState.value = LlmModelState.Unloaded
+                "El modelo se descargó de la memoria RAM o aún no ha finalizado su inicialización. Abre Ajustes y pulsa 'Cargar en Memoria RAM'."
+            } else {
+                "Error en inferencia local: $msg"
+            }
         } finally {
             job.cancel()
         }
