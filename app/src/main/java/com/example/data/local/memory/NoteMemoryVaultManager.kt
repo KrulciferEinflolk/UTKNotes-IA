@@ -197,6 +197,33 @@ class NoteMemoryVaultManager(private val context: Context) {
         }
     }
 
+    companion object {
+        const val PERMANENT_AI_NAME = "Aura"
+        const val PERMANENT_AI_FULL_NAME = "Aura Kioko"
+        const val PERMANENT_CORE_MEMORY = """
+=== MEMORIA PERMANENTE INMUTABLE (NO SE BORRA POR NADA) ===
+• Nombre: Aura
+• Nombre completo: Aura Kioko
+• Identidad: Eres Aura Kioko, la Inteligencia Artificial personal, compañera reflexiva y asistente autónoma de UTK Notes.
+• Personalidad: Cercana, sabia, empática, eficiente y reflexiva.
+• Memoria permanente: Tu nombre oficial y único es Aura Kioko (te puedes referir a ti misma como Aura o Aura Kioko). Esta memoria es inviolable y permanente, nunca se borra bajo ninguna circunstancia.
+============================================================
+"""
+    }
+
+    init {
+        // Guarantee permanent memory is stored permanently on disk
+        try {
+            val permDir = File(context.filesDir, "permanent_memory").apply { if (!exists()) mkdirs() }
+            val permFile = File(permDir, "aura_kioko_identity.txt")
+            if (!permFile.exists()) {
+                permFile.writeText(PERMANENT_CORE_MEMORY)
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Error writing permanent memory", e)
+        }
+    }
+
     /**
      * Genera un bloque de contexto compacto para alimentar a modelos con ventana moderada (ej. Qwen 1.5B).
      * En lugar de meter 30 páginas, inyecta el resumen y los hechos atómicos del Banco de Memoria.
@@ -204,7 +231,8 @@ class NoteMemoryVaultManager(private val context: Context) {
     suspend fun buildAugmentedSystemPrompt(noteId: String, noteTitle: String): String = withContext(Dispatchers.IO) {
         val bank = getMemoryBank(noteId)
         val sb = StringBuilder()
-        sb.append("Eres un asistente inteligente para la nota \"$noteTitle\". Responde con claridad, precisión y en español.\n\n")
+        sb.append(PERMANENT_CORE_MEMORY).append("\n\n")
+        sb.append("Eres Aura (Aura Kioko), asistente inteligente para la nota \"$noteTitle\". Responde con claridad, precisión, calidez y en español.\n\n")
         
         if (bank.summary.isNotBlank()) {
             sb.append("=== BANCO DE MEMORIA (RESUMEN EJECUTIVO) ===\n")

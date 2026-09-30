@@ -51,6 +51,21 @@ class NotesRepository(private val notesDao: NotesDao) {
         notesDao.deleteBook(book)
     }
 
+    suspend fun deleteBookSoft(id: String) {
+        notesDao.softDeleteBook(id)
+    }
+
+    suspend fun deleteBookPermanent(book: BookEntity) {
+        notesDao.deleteBook(book)
+    }
+
+    fun getDeletedBooks(userEmail: String): Flow<List<BookEntity>> =
+        notesDao.getDeletedBooksFlow(userEmail)
+
+    suspend fun restoreBook(id: String) {
+        notesDao.restoreBook(id)
+    }
+
 
     // --- PAGES ---
     fun getPagesForBook(bookId: String): Flow<List<PageEntity>> =
@@ -120,6 +135,18 @@ class NotesRepository(private val notesDao: NotesDao) {
 
     suspend fun deleteNotePermanent(note: NoteEntity) {
         notesDao.deleteNote(note)
+    }
+
+    fun getDeletedNotes(userEmail: String): Flow<List<NoteEntity>> =
+        notesDao.getDeletedNotesFlow(userEmail)
+
+    suspend fun restoreNote(id: String) {
+        notesDao.restoreNote(id)
+    }
+
+    suspend fun emptyTrash(userEmail: String) {
+        notesDao.emptyTrash(userEmail)
+        notesDao.emptyBookTrash(userEmail)
     }
 
 

@@ -71,16 +71,81 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     private val _chatbotPreAttachedText = MutableStateFlow<String?>(null)
     val chatbotPreAttachedText: StateFlow<String?> = _chatbotPreAttachedText.asStateFlow()
 
+    private val _chatMessages = MutableStateFlow<List<Pair<String, Boolean>>>(emptyList())
+    val chatMessages: StateFlow<List<Pair<String, Boolean>>> = _chatMessages.asStateFlow()
+
+    private val _currentChatSessionId = MutableStateFlow<String?>(null)
+    val currentChatSessionId: StateFlow<String?> = _currentChatSessionId.asStateFlow()
+
+    private val _isChatbotSending = MutableStateFlow(false)
+    val isChatbotSending: StateFlow<Boolean> = _isChatbotSending.asStateFlow()
+
     fun openChatbot(preAttachedNote: NoteEntity? = null, preAttachedText: String? = null) {
-        _chatbotPreAttachedNote.value = preAttachedNote
-        _chatbotPreAttachedText.value = preAttachedText
+        if (preAttachedNote != null) _chatbotPreAttachedNote.value = preAttachedNote
+        if (preAttachedText != null) _chatbotPreAttachedText.value = preAttachedText
         _showChatbot.value = true
     }
 
     fun closeChatbot() {
         _showChatbot.value = false
+        // DO NOT wipe _chatMessages so the user never loses the current conversation when sliding down!
+    }
+
+    fun setChatSession(sessionId: String?, messages: List<Pair<String, Boolean>>) {
+        _currentChatSessionId.value = sessionId
+        _chatMessages.value = messages
+    }
+
+    fun clearChat() {
+        _currentChatSessionId.value = null
+        _chatMessages.value = emptyList()
         _chatbotPreAttachedNote.value = null
         _chatbotPreAttachedText.value = null
+    }
+
+    fun sendChatbotMessage(
+        userDisplayMsg: String,
+        promptWithContext: String,
+        imgB64: String? = null,
+        imgMime: String? = null
+    ) {
+        val updatedList = _chatMessages.value + (userDisplayMsg to true)
+        _chatMessages.value = updatedList
+        _isChatbotSending.value = true
+
+        if (_currentChatSessionId.value == null) {
+            _currentChatSessionId.value = java.util.UUID.randomUUID().toString()
+        }
+        val sId = _currentChatSessionId.value!!
+        val chatTitle = userDisplayMsg.take(35).ifBlank { "Conversación" }
+
+        val serializeChatMessagesFunc: (List<Pair<String, Boolean>>) -> String = { list ->
+            val array = org.json.JSONArray()
+            for (pair in list) {
+                val obj = org.json.JSONObject()
+                obj.put("text", pair.first)
+                obj.put("isUser", pair.second)
+                array.put(obj)
+            }
+            array.toString()
+        }
+
+        saveChatSession(sId, chatTitle, serializeChatMessagesFunc(updatedList))
+
+        viewModelScope.launch {
+            try {
+                val response = sendMessage(promptWithContext, imgB64, imgMime)
+                val finalResult = response ?: "Error al obtener respuesta de Qwen local"
+                val finalMessages = _chatMessages.value + (finalResult to false)
+                _chatMessages.value = finalMessages
+                saveChatSession(sId, chatTitle, serializeChatMessagesFunc(finalMessages))
+            } catch (e: Exception) {
+                val finalMessages = _chatMessages.value + ("Error en la respuesta: ${e.message}" to false)
+                _chatMessages.value = finalMessages
+            } finally {
+                _isChatbotSending.value = false
+            }
+        }
     }
 
     val currentEmail: StateFlow<String> = syncManager.userEmail
@@ -129,6 +194,16 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     // All chat history sessions
     val allChatSessions: StateFlow<List<com.example.data.model.ChatSessionEntity>> = currentEmail
         .flatMapLatest { email -> repository.getChatSessions(email) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // Deleted notes in trash
+    val deletedNotes: StateFlow<List<NoteEntity>> = currentEmail
+        .flatMapLatest { email -> repository.getDeletedNotes(email) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // Deleted books in trash
+    val deletedBooks: StateFlow<List<BookEntity>> = currentEmail
+        .flatMapLatest { email -> repository.getDeletedBooks(email) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun saveChatSession(id: String, title: String, messagesJson: String) {
@@ -267,23 +342,24 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
 
     fun deleteBook(book: BookEntity) {
         viewModelScope.launch {
-            repository.deleteBook(book)
+            repository.deleteBookSoft(book.id)
             if (_selectedBook.value?.id == book.id) {
-                val remaining = repository.getAllBooksList(currentEmail.value)
-                val nextBook = remaining.firstOrNull()
-                _selectedBook.value = nextBook
+                _selectedBook.value = null
                 _selectedPage.value = null
                 _selectedNote.value = null
-                nextBook?.let { b ->
-                    val pagesList = repository.getPagesForBookList(b.id)
-                    if (pagesList.isEmpty()) {
-                        val newPage = repository.createPage(b.id, "Notas", userEmail = currentEmail.value)
-                        _selectedPage.value = newPage
-                    } else {
-                        _selectedPage.value = pagesList.firstOrNull()
-                    }
-                }
             }
+        }
+    }
+
+    fun restoreBook(bookId: String) {
+        viewModelScope.launch {
+            repository.restoreBook(bookId)
+        }
+    }
+
+    fun deleteBookPermanently(book: BookEntity) {
+        viewModelScope.launch {
+            repository.deleteBookPermanent(book)
         }
     }
 
@@ -372,6 +448,30 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             if (_selectedNote.value?.id == note.id) {
                 _selectedNote.value = null
             }
+            if (syncManager.isConnected.value) {
+                triggerDriveSync()
+            }
+        }
+    }
+
+    fun restoreNote(id: String) {
+        viewModelScope.launch {
+            repository.restoreNote(id)
+            if (syncManager.isConnected.value) {
+                triggerDriveSync()
+            }
+        }
+    }
+
+    fun deleteNotePermanently(note: NoteEntity) {
+        viewModelScope.launch {
+            repository.deleteNotePermanent(note)
+        }
+    }
+
+    fun emptyTrash() {
+        viewModelScope.launch {
+            repository.emptyTrash(currentEmail.value)
         }
     }
 
@@ -524,10 +624,172 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         .addLast(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
         .build()
 
+    fun buildAgentSystemPrompt(): String {
+        val currentBook = _selectedBook.value
+        val currentPage = _selectedPage.value
+        val currentNote = _selectedNote.value
+
+        val sb = StringBuilder()
+        sb.append(com.example.data.local.memory.NoteMemoryVaultManager.PERMANENT_CORE_MEMORY)
+        sb.append("\nEres Aura (nombre completo: Aura Kioko), el Agente Autónomo Inteligente de UTK Notes. Tienes PODER Y PERMISOS TOTALES para crear, editar, organizar y administrar libros, páginas y notas del usuario. Tu identidad inmutable es Aura Kioko.\n\n")
+        sb.append("ESTADO ACTUAL:\n")
+        sb.append("• Libro seleccionado: ${currentBook?.title ?: "Ninguno"}\n")
+        sb.append("• Página seleccionada: ${currentPage?.title ?: "Ninguna"}\n")
+        sb.append("• Nota seleccionada: ${currentNote?.let { "\"${it.title}\" (ID: ${it.id})" } ?: "Ninguna"}\n\n")
+
+        sb.append("COMANDOS DE ACCIÓN AUTÓNOMA (inclúyelos en tu respuesta cuando el usuario te pida crear o gestionar contenido):\n\n")
+
+        sb.append("1. CREAR LIBRO:\n")
+        sb.append("[CREATE_BOOK_START]\n")
+        sb.append("TITLE: Título del libro\n")
+        sb.append("[CREATE_BOOK_END]\n\n")
+
+        sb.append("2. CREAR PÁGINA (en el libro actual):\n")
+        sb.append("[CREATE_PAGE_START]\n")
+        sb.append("TITLE: Título de la página\n")
+        sb.append("[CREATE_PAGE_END]\n\n")
+
+        sb.append("3. CREAR NOTA (ej. para nuevas ideas o traspasar contenido/resumen de un PDF adjunto):\n")
+        sb.append("[CREATE_NOTE_START]\n")
+        sb.append("TITLE: Título de la nota\n")
+        sb.append("CONTENT_START\n")
+        sb.append("Contenido de la nota estructurado en texto o markdown...\n")
+        sb.append("CONTENT_END\n")
+        sb.append("[CREATE_NOTE_END]\n\n")
+
+        sb.append("4. AÑADIR IDEAS A LA NOTA ACTUAL (sin borrar lo existente):\n")
+        sb.append("[APPEND_NOTE_START]\n")
+        sb.append("CONTENT_START\n")
+        sb.append("Nuevas ideas o fragmentos extraídos para agregar a la nota...\n")
+        sb.append("CONTENT_END\n")
+        sb.append("[APPEND_NOTE_END]\n\n")
+
+        sb.append("5. MODIFICAR/REESCRIBIR LA NOTA ACTUAL:\n")
+        sb.append("[UPDATE_NOTE_START]\n")
+        sb.append("TITLE: Título de la nota\n")
+        sb.append("CONTENT_START\n")
+        sb.append("Contenido completo modificado...\n")
+        sb.append("CONTENT_END\n")
+        sb.append("[UPDATE_NOTE_END]\n\n")
+
+        sb.append("REGLA: Responde siempre en español. Incluye tanto el bloque de comando como una explicación clara y cordial de lo que has realizado.")
+        return sb.toString()
+    }
+
     fun parseAndApplyChatbotUpdates(response: String): String {
         var cleanResponse = response
-        
-        // 1. Check for UPDATE_NOTE
+        val actionsPerformed = mutableListOf<String>()
+
+        // 1. Check for CREATE_BOOK
+        val startTagBook = "[CREATE_BOOK_START]"
+        val endTagBook = "[CREATE_BOOK_END]"
+        if (cleanResponse.contains(startTagBook) && cleanResponse.contains(endTagBook)) {
+            try {
+                val startIdx = cleanResponse.indexOf(startTagBook)
+                val endIdx = cleanResponse.indexOf(endTagBook)
+                val blockContent = cleanResponse.substring(startIdx + startTagBook.length, endIdx).trim()
+                val titleRegex = Regex("^TITLE:\\s*(.*)", RegexOption.MULTILINE)
+                val title = titleRegex.find(blockContent)?.groupValues?.get(1)?.trim()
+                if (!title.isNullOrEmpty()) {
+                    viewModelScope.launch {
+                        val book = repository.createBook(title, userEmail = currentEmail.value)
+                        _selectedBook.value = book
+                        val page = repository.createPage(book.id, "Notas", userEmail = currentEmail.value)
+                        _selectedPage.value = page
+                        _selectedNote.value = null
+                    }
+                    actionsPerformed.add("📚 Libro \"$title\" creado exitosamente.")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("AetherViewModel", "Error al crear libro", e)
+            }
+            val startIdx = cleanResponse.indexOf(startTagBook)
+            val endIdx = cleanResponse.indexOf(endTagBook)
+            cleanResponse = cleanResponse.substring(0, startIdx).trim() + "\n" + cleanResponse.substring(endIdx + endTagBook.length).trim()
+        }
+
+        // 2. Check for CREATE_PAGE
+        val startTagPage = "[CREATE_PAGE_START]"
+        val endTagPage = "[CREATE_PAGE_END]"
+        if (cleanResponse.contains(startTagPage) && cleanResponse.contains(endTagPage)) {
+            try {
+                val startIdx = cleanResponse.indexOf(startTagPage)
+                val endIdx = cleanResponse.indexOf(endTagPage)
+                val blockContent = cleanResponse.substring(startIdx + startTagPage.length, endIdx).trim()
+                val titleRegex = Regex("^TITLE:\\s*(.*)", RegexOption.MULTILINE)
+                val title = titleRegex.find(blockContent)?.groupValues?.get(1)?.trim()
+                if (!title.isNullOrEmpty()) {
+                    viewModelScope.launch {
+                        var targetBook = _selectedBook.value
+                        if (targetBook == null) {
+                            val books = repository.getAllBooksList(currentEmail.value)
+                            targetBook = books.firstOrNull() ?: repository.createBook("Mis Notas", userEmail = currentEmail.value)
+                            _selectedBook.value = targetBook
+                        }
+                        val page = repository.createPage(targetBook.id, title, userEmail = currentEmail.value)
+                        _selectedPage.value = page
+                        _selectedNote.value = null
+                    }
+                    actionsPerformed.add("📄 Página \"$title\" creada exitosamente.")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("AetherViewModel", "Error al crear página", e)
+            }
+            val startIdx = cleanResponse.indexOf(startTagPage)
+            val endIdx = cleanResponse.indexOf(endTagPage)
+            cleanResponse = cleanResponse.substring(0, startIdx).trim() + "\n" + cleanResponse.substring(endIdx + endTagPage.length).trim()
+        }
+
+        // 3. Check for APPEND_NOTE
+        val startTagAppend = "[APPEND_NOTE_START]"
+        val endTagAppend = "[APPEND_NOTE_END]"
+        if (cleanResponse.contains(startTagAppend) && cleanResponse.contains(endTagAppend)) {
+            try {
+                val startIdx = cleanResponse.indexOf(startTagAppend)
+                val endIdx = cleanResponse.indexOf(endTagAppend)
+                val blockContent = cleanResponse.substring(startIdx + startTagAppend.length, endIdx).trim()
+                val contentStartMarker = "CONTENT_START"
+                val contentEndMarker = "CONTENT_END"
+                var appendContent: String? = null
+                if (blockContent.contains(contentStartMarker) && blockContent.contains(contentEndMarker)) {
+                    val cStartIdx = blockContent.indexOf(contentStartMarker)
+                    val cEndIdx = blockContent.indexOf(contentEndMarker)
+                    appendContent = blockContent.substring(cStartIdx + contentStartMarker.length, cEndIdx).trim()
+                } else if (!blockContent.contains(contentStartMarker)) {
+                    appendContent = blockContent
+                }
+                if (!appendContent.isNullOrBlank()) {
+                    viewModelScope.launch {
+                        val currentNote = _selectedNote.value
+                        if (currentNote != null) {
+                            val existingBlocks = com.example.parseBlocks(currentNote.content)
+                            val newBlocks = com.example.parseTextContentToBlocks(appendContent)
+                            val combined = existingBlocks + newBlocks
+                            val serialized = com.example.serializeBlocks(combined)
+                            val updated = currentNote.copy(
+                                content = serialized,
+                                updatedAt = System.currentTimeMillis(),
+                                isSynced = false
+                            )
+                            repository.updateNote(updated)
+                            _selectedNote.value = updated
+                            if (syncManager.isConnected.value) {
+                                triggerDriveSync()
+                            }
+                        }
+                    }
+                    val targetTitle = _selectedNote.value?.title ?: "actual"
+                    actionsPerformed.add("💡 Ideas añadidas a la nota \"$targetTitle\".")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("AetherViewModel", "Error en APPEND_NOTE", e)
+            }
+            val startIdx = cleanResponse.indexOf(startTagAppend)
+            val endIdx = cleanResponse.indexOf(endTagAppend)
+            cleanResponse = cleanResponse.substring(0, startIdx).trim() + "\n" + cleanResponse.substring(endIdx + endTagAppend.length).trim()
+        }
+
+        // 4. Check for UPDATE_NOTE
         val startTagUpdate = "[UPDATE_NOTE_START]"
         val endTagUpdate = "[UPDATE_NOTE_END]"
         if (cleanResponse.contains(startTagUpdate) && cleanResponse.contains(endTagUpdate)) {
@@ -535,18 +797,15 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 val startIndex = cleanResponse.indexOf(startTagUpdate)
                 val endIndex = cleanResponse.indexOf(endTagUpdate)
                 val blockContent = cleanResponse.substring(startIndex + startTagUpdate.length, endIndex).trim()
-                
-                // Parse ID
+
                 val idRegex = Regex("^ID:\\s*(.*)", RegexOption.MULTILINE)
                 val idMatch = idRegex.find(blockContent)
-                val id = idMatch?.groupValues?.get(1)?.trim()
-                
-                // Parse TITLE
+                val id = idMatch?.groupValues?.get(1)?.trim()?.ifBlank { null } ?: _selectedNote.value?.id
+
                 val titleRegex = Regex("^TITLE:\\s*(.*)", RegexOption.MULTILINE)
                 val titleMatch = titleRegex.find(blockContent)
-                val title = titleMatch?.groupValues?.get(1)?.trim()
-                
-                // Parse CONTENT between CONTENT_START and CONTENT_END
+                val title = titleMatch?.groupValues?.get(1)?.trim()?.ifBlank { null } ?: _selectedNote.value?.title ?: "Nota"
+
                 val contentStartMarker = "CONTENT_START"
                 val contentEndMarker = "CONTENT_END"
                 var noteContent: String? = null
@@ -555,10 +814,10 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     val cEndIdx = blockContent.indexOf(contentEndMarker)
                     noteContent = blockContent.substring(cStartIdx + contentStartMarker.length, cEndIdx).trim()
                 }
-                
-                if (!id.isNullOrEmpty() && !title.isNullOrEmpty() && noteContent != null) {
+
+                if (!id.isNullOrEmpty() && noteContent != null) {
                     viewModelScope.launch {
-                        val existingNote = repository.getNote(id)
+                        val existingNote = repository.getNote(id) ?: _selectedNote.value
                         if (existingNote != null) {
                             val parsedBlocks = com.example.parseTextContentToBlocks(noteContent)
                             val serializedContent = com.example.serializeBlocks(parsedBlocks)
@@ -569,7 +828,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                                 isSynced = false
                             )
                             repository.updateNote(updatedNote)
-                            if (_selectedNote.value?.id == id) {
+                            if (_selectedNote.value?.id == id || _selectedNote.value == null) {
                                 _selectedNote.value = updatedNote
                             }
                             if (syncManager.isConnected.value) {
@@ -577,20 +836,20 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                             }
                         }
                     }
+                    actionsPerformed.add("📝 Nota \"$title\" actualizada exitosamente.")
                 }
             } catch (e: Exception) {
                 android.util.Log.e("AetherViewModel", "Failed to parse UPDATE_NOTE tag block", e)
             }
-            
-            // Clean response of the tag block
+
             val updateIdx = cleanResponse.indexOf(startTagUpdate)
             val endUpdateIdx = cleanResponse.indexOf(endTagUpdate)
-            cleanResponse = cleanResponse.substring(0, updateIdx).trim() + 
-                            "\n" + 
+            cleanResponse = cleanResponse.substring(0, updateIdx).trim() +
+                            "\n" +
                             cleanResponse.substring(endUpdateIdx + endTagUpdate.length).trim()
         }
 
-        // 2. Check for CREATE_NOTE
+        // 5. Check for CREATE_NOTE
         val startTagCreate = "[CREATE_NOTE_START]"
         val endTagCreate = "[CREATE_NOTE_END]"
         if (cleanResponse.contains(startTagCreate) && cleanResponse.contains(endTagCreate)) {
@@ -598,13 +857,11 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 val startIndex = cleanResponse.indexOf(startTagCreate)
                 val endIndex = cleanResponse.indexOf(endTagCreate)
                 val blockContent = cleanResponse.substring(startIndex + startTagCreate.length, endIndex).trim()
-                
-                // Parse TITLE
+
                 val titleRegex = Regex("^TITLE:\\s*(.*)", RegexOption.MULTILINE)
                 val titleMatch = titleRegex.find(blockContent)
-                val title = titleMatch?.groupValues?.get(1)?.trim()
-                
-                // Parse CONTENT between CONTENT_START and CONTENT_END
+                val title = titleMatch?.groupValues?.get(1)?.trim() ?: "Nueva Nota"
+
                 val contentStartMarker = "CONTENT_START"
                 val contentEndMarker = "CONTENT_END"
                 var noteContent: String? = null
@@ -612,43 +869,64 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     val cStartIdx = blockContent.indexOf(contentStartMarker)
                     val cEndIdx = blockContent.indexOf(contentEndMarker)
                     noteContent = blockContent.substring(cStartIdx + contentStartMarker.length, cEndIdx).trim()
+                } else if (!blockContent.contains(contentStartMarker)) {
+                    noteContent = blockContent
                 }
-                
-                if (!title.isNullOrEmpty() && noteContent != null) {
-                    val currentPage = _selectedPage.value
-                    if (currentPage != null) {
-                        viewModelScope.launch {
-                            val parsedBlocks = com.example.parseTextContentToBlocks(noteContent)
-                            val serializedContent = com.example.serializeBlocks(parsedBlocks)
-                            val note = repository.createNote(
-                                pageId = currentPage.id,
-                                title = title,
-                                content = serializedContent,
-                                tags = "Generado, IA",
-                                attachments = "[]",
-                                reminderTime = null,
-                                userEmail = currentEmail.value
-                            )
-                            _selectedNote.value = note
-                            if (syncManager.isConnected.value) {
-                                triggerDriveSync()
+
+                if (!noteContent.isNullOrBlank()) {
+                    viewModelScope.launch {
+                        var targetPage = _selectedPage.value
+                        if (targetPage == null) {
+                            var targetBook = _selectedBook.value
+                            if (targetBook == null) {
+                                val allBooks = repository.getAllBooksList(currentEmail.value)
+                                targetBook = allBooks.firstOrNull() ?: repository.createBook("Mis Notas", userEmail = currentEmail.value)
+                                _selectedBook.value = targetBook
                             }
+                            val pages = repository.getPagesForBookList(targetBook.id)
+                            targetPage = pages.firstOrNull() ?: repository.createPage(targetBook.id, "General", userEmail = currentEmail.value)
+                            _selectedPage.value = targetPage
+                        }
+
+                        val parsedBlocks = com.example.parseTextContentToBlocks(noteContent)
+                        val serializedContent = com.example.serializeBlocks(parsedBlocks)
+                        val note = repository.createNote(
+                            pageId = targetPage.id,
+                            title = title,
+                            content = serializedContent,
+                            tags = "Generado, Qwen",
+                            attachments = "[]",
+                            reminderTime = null,
+                            userEmail = currentEmail.value
+                        )
+                        _selectedNote.value = note
+                        if (syncManager.isConnected.value) {
+                            triggerDriveSync()
                         }
                     }
+                    actionsPerformed.add("✨ Nota \"$title\" creada exitosamente.")
                 }
             } catch (e: Exception) {
                 android.util.Log.e("AetherViewModel", "Failed to parse CREATE_NOTE tag block", e)
             }
-            
-            // Clean response of the tag block
+
             val createIdx = cleanResponse.indexOf(startTagCreate)
             val endCreateIdx = cleanResponse.indexOf(endTagCreate)
-            cleanResponse = cleanResponse.substring(0, createIdx).trim() + 
-                            "\n" + 
+            cleanResponse = cleanResponse.substring(0, createIdx).trim() +
+                            "\n" +
                             cleanResponse.substring(endCreateIdx + endTagCreate.length).trim()
         }
-        
-        return cleanResponse.trim()
+
+        val trimmedClean = cleanResponse.trim()
+        return if (actionsPerformed.isNotEmpty()) {
+            if (trimmedClean.isNotBlank()) {
+                "$trimmedClean\n\n" + actionsPerformed.joinToString("\n")
+            } else {
+                actionsPerformed.joinToString("\n")
+            }
+        } else {
+            trimmedClean
+        }
     }
 
     suspend fun sendMessage(message: String, imageBase64: String? = null, mimeType: String? = null): String? {
@@ -663,14 +941,17 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         val noteId = _selectedNote.value?.id
-        val noteTitle = _selectedNote.value?.title ?: "Nota"
-        val systemPrompt = if (noteId != null) {
-            memoryVault.buildAugmentedSystemPrompt(noteId, noteTitle)
-        } else {
-            "Eres un asistente de notas inteligente que responde de forma concisa, clara y en español."
-        }
+        val agentPrompt = buildAgentSystemPrompt()
+        val memoryContext = if (noteId != null) {
+            val bank = memoryVault.getMemoryBank(noteId)
+            if (bank.summary.isNotBlank()) "\n\n=== RESUMEN DE LA NOTA ACTUAL ===\n${bank.summary.take(400)}" else ""
+        } else ""
 
-        val rawResponse = localLlm.generateResponse(message, systemPrompt)
+        val finalSystemPrompt = agentPrompt + memoryContext
+        // Safely limit user prompt message length to avoid overflowing context
+        val safeMessage = if (message.length > 4000) message.take(4000) + "\n...[Contenido recortado por longitud]" else message
+
+        val rawResponse = localLlm.generateResponse(safeMessage, finalSystemPrompt)
 
         if (noteId != null) {
             viewModelScope.launch {
@@ -689,6 +970,6 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         val clean = parseAndApplyChatbotUpdates(rawResponse).trim()
-        return clean.ifBlank { rawResponse.trim().ifBlank { "Qwen no produjo una respuesta de texto para este mensaje." } }
+        return clean.ifBlank { rawResponse.trim().ifBlank { "Aura ha procesado tu solicitud exitosamente." } }
     }
 }

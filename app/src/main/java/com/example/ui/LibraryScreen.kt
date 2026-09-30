@@ -14,6 +14,7 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -34,6 +35,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.lerp
 import com.example.data.model.BookEntity
+import com.example.data.model.NoteEntity
+import com.example.data.local.llm.ModelDownloadStatus
+import com.example.data.local.llm.LlmModelState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import com.example.ui.theme.*
 import kotlin.math.absoluteValue
 import androidx.compose.foundation.Canvas
@@ -696,7 +708,156 @@ fun BookCustomizationDialog(
 enum class NavigationTab {
     Search,
     Home,
-    Community
+    Community,
+    Trash
+}
+
+@Composable
+fun HomeCustomBottomBar(
+    viewModel: AetherViewModel,
+    onNavigateToSearch: () -> Unit,
+    onNavigateToCommunity: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenTrash: () -> Unit
+) {
+    var showMenu by remember { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding(),
+        color = CosmicSurface,
+        shadowElevation = 8.dp,
+        border = BorderStroke(1.dp, CosmicBorder)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // 1. Botón Buscar
+            Surface(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .clickable { onNavigateToSearch() },
+                color = CosmicSurfaceVariant,
+                border = BorderStroke(1.dp, CosmicBorder)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Buscar",
+                        tint = GeminiBlue,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+
+            // 2. Botón "Pregúntale a la IA..." (largo, cápsula como dentro de las notas)
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(Color(0xFF907CFF).copy(alpha = 0.18f), GeminiBlue.copy(alpha = 0.18f))
+                        )
+                    )
+                    .border(1.2.dp, Color(0xFF907CFF).copy(alpha = 0.6f), RoundedCornerShape(24.dp))
+                    .clickable {
+                        viewModel.openChatbot()
+                    }
+                    .padding(horizontal = 14.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = Color(0xFF907CFF),
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "Pregúntale a la IA...",
+                        color = TextPrimary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // 3. Botón flotante / Menú con lista emergente
+            Box {
+                Surface(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .clickable { showMenu = true },
+                    color = CosmicSurfaceVariant,
+                    border = BorderStroke(1.dp, CosmicBorder)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Menú de opciones",
+                            tint = GeminiBlue,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false },
+                    modifier = Modifier
+                        .background(CosmicSurface)
+                        .border(1.dp, CosmicBorder, RoundedCornerShape(12.dp))
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Comunidad", color = TextPrimary, fontWeight = FontWeight.Medium) },
+                        leadingIcon = {
+                            Icon(Icons.Default.People, contentDescription = null, tint = GeminiBlue)
+                        },
+                        onClick = {
+                            showMenu = false
+                            onNavigateToCommunity()
+                        }
+                    )
+                    HorizontalDivider(color = CosmicBorder.copy(alpha = 0.5f))
+                    DropdownMenuItem(
+                        text = { Text("Ajustes", color = TextPrimary, fontWeight = FontWeight.Medium) },
+                        leadingIcon = {
+                            Icon(Icons.Default.Settings, contentDescription = null, tint = GeminiCyanAccent)
+                        },
+                        onClick = {
+                            showMenu = false
+                            onOpenSettings()
+                        }
+                    )
+                    HorizontalDivider(color = CosmicBorder.copy(alpha = 0.5f))
+                    DropdownMenuItem(
+                        text = { Text("Papelera", color = Color(0xFFFF5252), fontWeight = FontWeight.Medium) },
+                        leadingIcon = {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Color(0xFFFF5252))
+                        },
+                        onClick = {
+                            showMenu = false
+                            onOpenTrash()
+                        }
+                    )
+                }
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -709,8 +870,15 @@ fun LibraryMainScreen(viewModel: AetherViewModel, modifier: Modifier = Modifier)
     
     var showAddBookDialog by rememberSaveable { mutableStateOf(false) }
     var editingBookState by remember { mutableStateOf<BookEntity?>(null) }
+    var showSettingsDialog by rememberSaveable { mutableStateOf(false) }
+
+    if (showSettingsDialog) {
+        androidx.activity.compose.BackHandler { showSettingsDialog = false }
+        AppSettingsDialog(viewModel = viewModel, onDismiss = { showSettingsDialog = false })
+    }
     
     if (showAddBookDialog) {
+        androidx.activity.compose.BackHandler { showAddBookDialog = false }
         BookCustomizationDialog(
             onDismiss = { showAddBookDialog = false },
             onConfirm = { title, colorHex, textColorHex, coverUri, scale, offsetX, offsetY ->
@@ -729,6 +897,7 @@ fun LibraryMainScreen(viewModel: AetherViewModel, modifier: Modifier = Modifier)
     }
 
     if (editingBookState != null) {
+        androidx.activity.compose.BackHandler { editingBookState = null }
         BookCustomizationDialog(
             editingBook = editingBookState,
             onDismiss = { editingBookState = null },
@@ -757,13 +926,22 @@ fun LibraryMainScreen(viewModel: AetherViewModel, modifier: Modifier = Modifier)
         modifier = modifier.fillMaxSize(),
         containerColor = CosmicBackground,
         bottomBar = {
-            LibraryBottomNavigationBar(currentTab) { currentTab = it }
+            if (currentTab == NavigationTab.Home) {
+                HomeCustomBottomBar(
+                    viewModel = viewModel,
+                    onNavigateToSearch = { currentTab = NavigationTab.Search },
+                    onNavigateToCommunity = { currentTab = NavigationTab.Community },
+                    onOpenSettings = { showSettingsDialog = true },
+                    onOpenTrash = { currentTab = NavigationTab.Trash }
+                )
+            }
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
             when (currentTab) {
                 NavigationTab.Search -> {
-                    LibrarySearchScreen(viewModel)
+                    androidx.activity.compose.BackHandler { currentTab = NavigationTab.Home }
+                    LibrarySearchScreen(viewModel = viewModel, onBack = { currentTab = NavigationTab.Home })
                 }
                 NavigationTab.Home -> {
                     LibraryHomeScreen(
@@ -778,58 +956,15 @@ fun LibraryMainScreen(viewModel: AetherViewModel, modifier: Modifier = Modifier)
                     )
                 }
                 NavigationTab.Community -> {
-                    LibraryCommunityScreen()
+                    androidx.activity.compose.BackHandler { currentTab = NavigationTab.Home }
+                    LibraryCommunityScreen(onBack = { currentTab = NavigationTab.Home })
+                }
+                NavigationTab.Trash -> {
+                    androidx.activity.compose.BackHandler { currentTab = NavigationTab.Home }
+                    TrashScreen(viewModel = viewModel, onBack = { currentTab = NavigationTab.Home })
                 }
             }
         }
-    }
-}
-
-@Composable
-fun LibraryBottomNavigationBar(currentTab: NavigationTab, onTabSelected: (NavigationTab) -> Unit) {
-    NavigationBar(
-        containerColor = CosmicSurface,
-        contentColor = GeminiBlue
-    ) {
-        NavigationBarItem(
-            icon = { Icon(Icons.Default.Search, contentDescription = "Buscar") },
-            label = { Text("Buscar") },
-            selected = currentTab == NavigationTab.Search,
-            onClick = { onTabSelected(NavigationTab.Search) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = GeminiBlue,
-                selectedTextColor = GeminiBlue,
-                indicatorColor = GeminiBlue.copy(alpha = 0.2f),
-                unselectedIconColor = TextSecondary,
-                unselectedTextColor = TextSecondary
-            )
-        )
-        NavigationBarItem(
-            icon = { Icon(Icons.Default.Home, contentDescription = "Inicio") },
-            label = { Text("Inicio") },
-            selected = currentTab == NavigationTab.Home,
-            onClick = { onTabSelected(NavigationTab.Home) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = GeminiBlue,
-                selectedTextColor = GeminiBlue,
-                indicatorColor = GeminiBlue.copy(alpha = 0.2f),
-                unselectedIconColor = TextSecondary,
-                unselectedTextColor = TextSecondary
-            )
-        )
-        NavigationBarItem(
-            icon = { Icon(Icons.Default.People, contentDescription = "Comunidad") },
-            label = { Text("Comunidad") },
-            selected = currentTab == NavigationTab.Community,
-            onClick = { onTabSelected(NavigationTab.Community) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = GeminiBlue,
-                selectedTextColor = GeminiBlue,
-                indicatorColor = GeminiBlue.copy(alpha = 0.2f),
-                unselectedIconColor = TextSecondary,
-                unselectedTextColor = TextSecondary
-            )
-        )
     }
 }
 
@@ -843,10 +978,11 @@ fun LibraryHomeScreen(
     onBookLongClick: (BookEntity) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
+        // --- BIBLIOTECA HEADER ---
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 16.dp),
+                .padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1187,24 +1323,40 @@ fun Book25D(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LibrarySearchScreen(viewModel: AetherViewModel) {
+fun LibrarySearchScreen(viewModel: AetherViewModel, onBack: () -> Unit = {}) {
+    androidx.activity.compose.BackHandler {
+        onBack()
+    }
     val query by viewModel.searchQuery.collectAsState()
     
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        OutlinedTextField(
-            value = query,
-            onValueChange = { newValue -> viewModel.updateSearchQuery(newValue) },
-            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-            placeholder = { Text("Buscar libros, capítulos, contenido...") },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-            singleLine = true,
-            shape = RoundedCornerShape(16.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = GeminiBlue,
-                unfocusedBorderColor = CosmicBorder,
-                focusedContainerColor = CosmicSurface, unfocusedContainerColor = CosmicSurface
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Default.ArrowBack,
+                    contentDescription = "Volver al inicio",
+                    tint = TextPrimary
+                )
+            }
+            Spacer(modifier = Modifier.width(4.dp))
+            OutlinedTextField(
+                value = query,
+                onValueChange = { newValue -> viewModel.updateSearchQuery(newValue) },
+                modifier = Modifier.weight(1f).heightIn(min = 52.dp),
+                placeholder = { Text("Buscar libros, notas, contenido...") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = GeminiBlue) },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = GeminiBlue,
+                    unfocusedBorderColor = CosmicBorder,
+                    focusedContainerColor = CosmicSurface, unfocusedContainerColor = CosmicSurface
+                )
             )
-        )
+        }
         
         Spacer(modifier = Modifier.height(16.dp))
         
@@ -1279,27 +1431,58 @@ fun LibrarySearchScreen(viewModel: AetherViewModel) {
 }
 
 @Composable
-fun LibraryCommunityScreen() {
+fun LibraryCommunityScreen(onBack: () -> Unit = {}) {
+    androidx.activity.compose.BackHandler {
+        onBack()
+    }
     Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
+        modifier = Modifier.fillMaxSize().padding(16.dp)
     ) {
-        Icon(Icons.Default.People, contentDescription = null, modifier = Modifier.size(64.dp), tint = GeminiBlue)
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = "Comunidad",
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            color = TextPrimary
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = "Gestión de notas compartidas y colaboración",
-            color = TextSecondary,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 32.dp)
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Default.ArrowBack,
+                    contentDescription = "Volver al inicio",
+                    tint = TextPrimary
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "Comunidad",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary
+            )
+        }
+
+        Box(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Icon(Icons.Default.People, contentDescription = null, modifier = Modifier.size(64.dp), tint = GeminiBlue)
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Comunidad UTK",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Gestión de notas compartidas y colaboración con otros usuarios.",
+                    color = TextSecondary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 32.dp)
+                )
+            }
+        }
     }
 }
 
@@ -1323,5 +1506,523 @@ fun AddBookCard(onClick: () -> Unit) {
         }
         Spacer(modifier = Modifier.height(16.dp))
         Text("Nuevo Libro", color = GeminiBlue, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+fun AppSettingsDialog(
+    viewModel: AetherViewModel,
+    onDismiss: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val currentEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
+    val modelDownloadStatus by viewModel.modelVerifier.status.collectAsStateWithLifecycle()
+    val llmModelState by viewModel.localLlm.modelState.collectAsStateWithLifecycle()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = CosmicSurfaceVariant,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Settings, contentDescription = null, tint = GeminiBlue, modifier = Modifier.size(24.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Ajustes y Configuración", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text("Cuenta actual:", color = TextSecondary, fontSize = 13.sp)
+                Text(currentEmail ?: "No has iniciado sesión", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Surface(
+                    color = CosmicSurface,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, CosmicBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Memory, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("IA Local Qwen2.5-1.5B", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        when (val status = modelDownloadStatus) {
+                            is ModelDownloadStatus.Ready -> {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50), modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Modelo descargado (~1.0 GB)", color = Color(0xFF81C784), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text("Inferencia 100% offline y privada en tu dispositivo vía llama.cpp.", color = TextSecondary, fontSize = 12.sp)
+
+                                if (llmModelState !is LlmModelState.Ready) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    OutlinedButton(
+                                        onClick = {
+                                            scope.launch { viewModel.localLlm.ensureModelLoaded(viewModel.modelVerifier.modelFile) }
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = GeminiBlue),
+                                        border = BorderStroke(1.dp, GeminiBlue)
+                                    ) {
+                                        Text("Cargar en Memoria RAM", fontSize = 12.sp)
+                                    }
+                                } else {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text("Estado: Cargado en memoria RAM listo para responder.", color = GeminiCyanAccent, fontSize = 11.sp)
+                                }
+                            }
+                            is ModelDownloadStatus.Downloading -> {
+                                Text("Descargando Qwen: ${(status.progress * 100).toInt()}%", color = GeminiBlue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                Spacer(modifier = Modifier.height(6.dp))
+                                LinearProgressIndicator(
+                                    progress = { status.progress },
+                                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                    color = GeminiBlue,
+                                    trackColor = CosmicBorder
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                TextButton(onClick = { viewModel.modelVerifier.cancelDownload() }) {
+                                    Text("Cancelar Descarga", color = Color.Red, fontSize = 12.sp)
+                                }
+                            }
+                            else -> {
+                                Text("Descarga el modelo Qwen2.5-1.5B para ejecutar la IA de forma local y privada sin conexión a internet.", color = TextSecondary, fontSize = 12.sp)
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Button(
+                                    onClick = {
+                                        scope.launch { viewModel.modelVerifier.startDownload() }
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
+                                ) {
+                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Descargar Modelo Qwen (1.5B)", color = GeminiOnPrimary, fontSize = 13.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (currentEmail != null && currentEmail != "offline") {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.createDriveDatabaseStructure()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = GeminiBlue),
+                        border = BorderStroke(1.dp, GeminiBlue)
+                    ) {
+                        Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp), tint = GeminiBlue)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Sincronizar carpetas en Drive", fontSize = 12.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
+            ) {
+                Text("Cerrar", color = GeminiOnPrimary)
+            }
+        },
+        dismissButton = {
+            if (currentEmail != null && currentEmail != "offline") {
+                TextButton(onClick = {
+                    viewModel.syncManager.disconnectDrive()
+                    onDismiss()
+                }) {
+                    Text("Cerrar Sesión", color = Color.Red)
+                }
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TrashScreen(
+    viewModel: AetherViewModel,
+    onBack: () -> Unit
+) {
+    androidx.activity.compose.BackHandler {
+        onBack()
+    }
+
+    val deletedNotes by viewModel.deletedNotes.collectAsStateWithLifecycle()
+    val deletedBooks by viewModel.deletedBooks.collectAsStateWithLifecycle()
+    val formatter = remember { SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()) }
+    var selectedFilter by remember { mutableStateOf(0) } // 0: Todos, 1: Libros, 2: Notas
+    var showConfirmEmptyDialog by remember { mutableStateOf(false) }
+
+    if (showConfirmEmptyDialog) {
+        AlertDialog(
+            onDismissRequest = { showConfirmEmptyDialog = false },
+            containerColor = CosmicSurfaceVariant,
+            title = {
+                Text("¿Vaciar papelera?", color = TextPrimary, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "Esta acción eliminará de forma permanente todos los libros y notas que están en la papelera. No podrás recuperarlos.",
+                    color = TextSecondary,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.emptyTrash()
+                        showConfirmEmptyDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252))
+                ) {
+                    Text("Eliminar todo", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirmEmptyDialog = false }) {
+                    Text("Cancelar", color = TextSecondary)
+                }
+            }
+        )
+    }
+
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = CosmicBackground,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteOutline,
+                            contentDescription = null,
+                            tint = Color(0xFFFF5252),
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Papelera",
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 20.sp
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Default.ArrowBack,
+                            contentDescription = "Volver al inicio",
+                            tint = TextPrimary
+                        )
+                    }
+                },
+                actions = {
+                    if (deletedNotes.isNotEmpty() || deletedBooks.isNotEmpty()) {
+                        TextButton(onClick = { showConfirmEmptyDialog = true }) {
+                            Icon(
+                                imageVector = Icons.Default.DeleteSweep,
+                                contentDescription = null,
+                                tint = Color(0xFFFF5252),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Vaciar",
+                                color = Color(0xFFFF5252),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = CosmicSurface)
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp)
+        ) {
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Filter Chips
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = selectedFilter == 0,
+                    onClick = { selectedFilter = 0 },
+                    label = { Text("Todos (${deletedBooks.size + deletedNotes.size})") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = GeminiBlue.copy(alpha = 0.2f),
+                        selectedLabelColor = GeminiBlue,
+                        labelColor = TextSecondary
+                    )
+                )
+                FilterChip(
+                    selected = selectedFilter == 1,
+                    onClick = { selectedFilter = 1 },
+                    label = { Text("Libros (${deletedBooks.size})") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = GeminiBlue.copy(alpha = 0.2f),
+                        selectedLabelColor = GeminiBlue,
+                        labelColor = TextSecondary
+                    )
+                )
+                FilterChip(
+                    selected = selectedFilter == 2,
+                    onClick = { selectedFilter = 2 },
+                    label = { Text("Notas (${deletedNotes.size})") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = GeminiBlue.copy(alpha = 0.2f),
+                        selectedLabelColor = GeminiBlue,
+                        labelColor = TextSecondary
+                    )
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            val showBooks = selectedFilter == 0 || selectedFilter == 1
+            val showNotes = selectedFilter == 0 || selectedFilter == 2
+            val totalCount = (if (showBooks) deletedBooks.size else 0) + (if (showNotes) deletedNotes.size else 0)
+
+            if (totalCount == 0) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = 60.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(72.dp),
+                            shape = CircleShape,
+                            color = CosmicSurfaceVariant,
+                            border = BorderStroke(1.dp, CosmicBorder)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteSweep,
+                                    contentDescription = null,
+                                    tint = TextTertiary,
+                                    modifier = Modifier.size(36.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "La papelera está vacía",
+                            color = TextPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 17.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Los libros o notas que elimines aparecerán aquí.",
+                            color = TextSecondary,
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp)
+                ) {
+                    if (showBooks && deletedBooks.isNotEmpty()) {
+                        item {
+                            Text(
+                                text = "Libros eliminados (${deletedBooks.size})",
+                                color = GeminiBlue,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                            )
+                        }
+                        items(deletedBooks, key = { "book_${it.id}" }) { book ->
+                            Surface(
+                                color = CosmicSurface,
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, CosmicBorder),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(42.dp, 56.dp)
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(
+                                                runCatching { Color(android.graphics.Color.parseColor(book.colorHex)) }.getOrDefault(Color(0xFF907CFF))
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Book,
+                                            contentDescription = null,
+                                            tint = Color.White.copy(alpha = 0.8f),
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = book.title.ifEmpty { "Libro sin título" },
+                                            color = TextPrimary,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(modifier = Modifier.height(3.dp))
+                                        Text(
+                                            text = "Eliminado • ${formatter.format(Date(book.updatedAt))}",
+                                            color = TextSecondary,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        IconButton(
+                                            onClick = { viewModel.restoreBook(book.id) },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Restore,
+                                                contentDescription = "Restaurar libro",
+                                                tint = GeminiCyanAccent,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { viewModel.deleteBookPermanently(book) },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.DeleteForever,
+                                                contentDescription = "Eliminar definitivamente",
+                                                tint = Color(0xFFFF5252),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (showNotes && deletedNotes.isNotEmpty()) {
+                        item {
+                            Text(
+                                text = "Notas eliminadas (${deletedNotes.size})",
+                                color = GeminiBlue,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
+                            )
+                        }
+                        items(deletedNotes, key = { "note_${it.id}" }) { note ->
+                            Surface(
+                                color = CosmicSurface,
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, CosmicBorder),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        modifier = Modifier.size(42.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = CosmicSurfaceVariant,
+                                        border = BorderStroke(1.dp, CosmicBorder)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Default.Description,
+                                                contentDescription = null,
+                                                tint = GeminiCyanAccent,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = note.title.ifEmpty { "Nota sin título" },
+                                            color = TextPrimary,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 15.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(modifier = Modifier.height(3.dp))
+                                        Text(
+                                            text = "Eliminada • ${formatter.format(Date(note.updatedAt))}",
+                                            color = TextSecondary,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        IconButton(
+                                            onClick = { viewModel.restoreNote(note.id) },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Restore,
+                                                contentDescription = "Restaurar nota",
+                                                tint = GeminiCyanAccent,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { viewModel.deleteNotePermanently(note) },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.DeleteForever,
+                                                contentDescription = "Eliminar definitivamente",
+                                                tint = Color(0xFFFF5252),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -10,10 +10,10 @@ import kotlinx.coroutines.flow.Flow
 interface NotesDao {
 
     // --- BOOKS ---
-    @Query("SELECT * FROM books WHERE userEmail = :userEmail ORDER BY title ASC")
+    @Query("SELECT * FROM books WHERE userEmail = :userEmail AND isDeleted = 0 ORDER BY title ASC")
     fun getAllBooksFlow(userEmail: String): Flow<List<BookEntity>>
 
-    @Query("SELECT * FROM books WHERE userEmail = :userEmail ORDER BY title ASC")
+    @Query("SELECT * FROM books WHERE userEmail = :userEmail AND isDeleted = 0 ORDER BY title ASC")
     suspend fun getAllBooks(userEmail: String): List<BookEntity>
 
     @Query("SELECT * FROM books WHERE id = :id")
@@ -27,6 +27,18 @@ interface NotesDao {
 
     @Delete
     suspend fun deleteBook(book: BookEntity)
+
+    @Query("UPDATE books SET isDeleted = 1, updatedAt = :timestamp WHERE id = :id")
+    suspend fun softDeleteBook(id: String, timestamp: Long = System.currentTimeMillis())
+
+    @Query("SELECT * FROM books WHERE userEmail = :userEmail AND isDeleted = 1 ORDER BY updatedAt DESC")
+    fun getDeletedBooksFlow(userEmail: String): Flow<List<BookEntity>>
+
+    @Query("UPDATE books SET isDeleted = 0, updatedAt = :timestamp WHERE id = :id")
+    suspend fun restoreBook(id: String, timestamp: Long = System.currentTimeMillis())
+
+    @Query("DELETE FROM books WHERE isDeleted = 1 AND userEmail = :userEmail")
+    suspend fun emptyBookTrash(userEmail: String)
 
 
     // --- PAGES ---
@@ -74,6 +86,15 @@ interface NotesDao {
     // Soft delete / sync query (allows marking as deleted so sync can run)
     @Query("UPDATE notes SET isDeleted = 1, isSynced = 0, updatedAt = :timestamp WHERE id = :id")
     suspend fun softDeleteNote(id: String, timestamp: Long = System.currentTimeMillis())
+
+    @Query("SELECT * FROM notes WHERE userEmail = :userEmail AND isDeleted = 1 ORDER BY updatedAt DESC")
+    fun getDeletedNotesFlow(userEmail: String): Flow<List<NoteEntity>>
+
+    @Query("UPDATE notes SET isDeleted = 0, isSynced = 0, updatedAt = :timestamp WHERE id = :id")
+    suspend fun restoreNote(id: String, timestamp: Long = System.currentTimeMillis())
+
+    @Query("DELETE FROM notes WHERE isDeleted = 1 AND userEmail = :userEmail")
+    suspend fun emptyTrash(userEmail: String)
 
     // --- SEARCH & AI ---
     @Query("""

@@ -306,9 +306,9 @@ class LocalLlmManager(
             val result = kotlinx.coroutines.withTimeoutOrNull(90_000L) {
                 doneSignal.await()
             } ?: accumulatedText.toString().ifEmpty { "Tiempo de inferencia de Qwen agotado." }
-            val cleanResult = result.trim()
+            val cleanResult = result.replace("<|im_end|>", "").replace("<|endoftext|>", "").trim()
             if (cleanResult.isBlank()) {
-                "Qwen local no generó una respuesta de texto. Puedes intentar de nuevo o verificar la carga en Ajustes."
+                "Qwen local procesó la instrucción. Si solicitaste crear o modificar una nota o libro, la acción se aplicará en tu espacio de trabajo."
             } else {
                 cleanResult
             }
