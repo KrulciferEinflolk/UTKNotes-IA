@@ -2570,7 +2570,7 @@ fun ImageBlockView(
                 }
                 .clip(RoundedCornerShape(8.dp))
                 .combinedClickable(
-                    onClick = onOpenSettings,
+                    onClick = {},
                     onLongClick = onOpenSettings
                 )
             
@@ -2584,7 +2584,7 @@ fun ImageBlockView(
                 }
             }
 
-            Box(contentAlignment = Alignment.TopEnd) {
+            Box(contentAlignment = Alignment.Center) {
                 if (isPlaceholder) {
                     Box(
                         modifier = mod.background(Brush.linearGradient(listOf(Color(0xFF4285F4), Color(0xFF9B72F3)))),
@@ -2593,7 +2593,7 @@ fun ImageBlockView(
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Icon(Icons.Default.Palette, null, tint = Color.White, modifier = Modifier.size(32.dp))
                             Spacer(modifier = Modifier.height(4.dp))
-                            Text("Toca para editar imagen", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                            Text("Mantener pulsado para configurar", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                         }
                     }
                 } else {
@@ -2615,33 +2615,6 @@ fun ImageBlockView(
                             androidx.compose.ui.layout.ContentScale.Crop
                         }
                     )
-
-                    Surface(
-                        color = Color.Black.copy(alpha = 0.72f),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier
-                            .padding(8.dp)
-                            .clickable { onOpenSettings() }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Edit,
-                                contentDescription = "Editar imagen",
-                                tint = Color.White,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                "Editar imagen",
-                                color = Color.White,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
                 }
             }
             
@@ -3744,9 +3717,24 @@ fun NoteEditorWorkspace(
         }
     }
 
-    // Collapsed block filter list
+    // Collapsed block filter list for collapsible dropdown sections
     val visibleBlocks = remember(blocks) {
-        blocks
+        val list = mutableListOf<EditorBlock>()
+        var isHiding = false
+        for (b in blocks) {
+            if (b is EditorBlock.Text && b.isCollapsedHeader) {
+                list.add(b)
+                isHiding = b.isCollapsed
+            } else if (b is EditorBlock.Text && b.isHeader) {
+                list.add(b)
+                isHiding = false
+            } else {
+                if (!isHiding) {
+                    list.add(b)
+                }
+            }
+        }
+        list
     }
 
     // Sleek formatting states
@@ -4894,6 +4882,7 @@ fun NoteEditorWorkspace(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .padding(vertical = if (block is EditorBlock.Text && (block.isHeader || block.isCollapsedHeader)) 6.dp else 2.dp)
                                 .then(
                                     if (matchesSearch) {
                                         Modifier
@@ -5600,64 +5589,6 @@ fun TableSettingsContent(block: EditorBlock.Table, onBlockChange: (EditorBlock) 
 }
 
 
-fun loadBitmapFromUrlOrPath(context: android.content.Context, urlOrPath: String): android.graphics.Bitmap? {
-    return try {
-        if (urlOrPath.startsWith("/") || urlOrPath.startsWith("file://")) {
-            val path = if (urlOrPath.startsWith("file://")) urlOrPath.removePrefix("file://") else urlOrPath
-            val file = java.io.File(path)
-            if (file.exists()) {
-                android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-            } else null
-        } else if (urlOrPath.startsWith("content://")) {
-            val uri = android.net.Uri.parse(urlOrPath)
-            context.contentResolver.openInputStream(uri)?.use {
-                android.graphics.BitmapFactory.decodeStream(it)
-            }
-        } else {
-            null
-        }
-    } catch (e: Exception) {
-        android.util.Log.e("ImageEdit", "Error loading bitmap: ${e.message}")
-        null
-    }
-}
-
-fun saveEditedBitmap(context: android.content.Context, bitmap: android.graphics.Bitmap): String {
-    val dir = java.io.File(context.filesDir, "edited_images").apply { mkdirs() }
-    val file = java.io.File(dir, "img_edit_${System.currentTimeMillis()}.jpg")
-    java.io.FileOutputStream(file).use { out ->
-        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
-    }
-    return file.absolutePath
-}
-
-fun rotateImage(context: android.content.Context, urlOrPath: String, degrees: Float): String? {
-    val bmp = loadBitmapFromUrlOrPath(context, urlOrPath) ?: return null
-    val matrix = android.graphics.Matrix().apply { postRotate(degrees) }
-    val rotated = android.graphics.Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
-    return saveEditedBitmap(context, rotated)
-}
-
-fun flipImage(context: android.content.Context, urlOrPath: String, horizontal: Boolean): String? {
-    val bmp = loadBitmapFromUrlOrPath(context, urlOrPath) ?: return null
-    val matrix = android.graphics.Matrix().apply {
-        if (horizontal) postScale(-1f, 1f) else postScale(1f, -1f)
-    }
-    val flipped = android.graphics.Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
-    return saveEditedBitmap(context, flipped)
-}
-
-fun applyGrayscale(context: android.content.Context, urlOrPath: String): String? {
-    val bmp = loadBitmapFromUrlOrPath(context, urlOrPath) ?: return null
-    val result = android.graphics.Bitmap.createBitmap(bmp.width, bmp.height, android.graphics.Bitmap.Config.ARGB_8888)
-    val canvas = android.graphics.Canvas(result)
-    val paint = android.graphics.Paint()
-    val cm = android.graphics.ColorMatrix().apply { setSaturation(0f) }
-    paint.colorFilter = android.graphics.ColorMatrixColorFilter(cm)
-    canvas.drawBitmap(bmp, 0f, 0f, paint)
-    return saveEditedBitmap(context, result)
-}
-
 @Composable
 fun ImageSettingsContent(block: EditorBlock.Image, onBlockChange: (EditorBlock) -> Unit) {
     val context = LocalContext.current
@@ -5671,153 +5602,43 @@ fun ImageSettingsContent(block: EditorBlock.Image, onBlockChange: (EditorBlock) 
                 // Ignore if persistable permission is not available
             }
             onBlockChange(block.copy(urlOrPath = uri.toString()))
-            Toast.makeText(context, "Imagen reemplazada", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Imagen cambiada", Toast.LENGTH_SHORT).show()
         }
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        // Thumbnail preview
-        if (block.urlOrPath.isNotEmpty() && block.urlOrPath != "Mantener pulsado para editar") {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(130.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color.Black.copy(alpha = 0.3f)),
-                contentAlignment = Alignment.Center
-            ) {
-                val model: Any = if (block.urlOrPath.startsWith("/")) java.io.File(block.urlOrPath) else block.urlOrPath
-                coil.compose.AsyncImage(
-                    model = model,
-                    contentDescription = block.caption,
-                    modifier = Modifier.fillMaxHeight(),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Fit
-                )
-            }
-        }
-
-        // Action tools: Rotation and editing
-        Text("Herramientas de Edición", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(
-                onClick = {
-                    val rotatedPath = rotateImage(context, block.urlOrPath, 90f)
-                    if (rotatedPath != null) {
-                        onBlockChange(block.copy(urlOrPath = rotatedPath))
-                        Toast.makeText(context, "Imagen rotada 90°", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, "No se pudo rotar la imagen", Toast.LENGTH_SHORT).show()
-                    }
-                },
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
-            ) {
-                Icon(Icons.Default.RotateRight, null, tint = GeminiBlue, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Girar 90°", fontSize = 11.sp, color = TextPrimary)
-            }
-
-            OutlinedButton(
-                onClick = {
-                    val rotatedPath = rotateImage(context, block.urlOrPath, -90f)
-                    if (rotatedPath != null) {
-                        onBlockChange(block.copy(urlOrPath = rotatedPath))
-                        Toast.makeText(context, "Imagen rotada -90°", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, "No se pudo rotar la imagen", Toast.LENGTH_SHORT).show()
-                    }
-                },
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
-            ) {
-                Icon(Icons.Default.RotateLeft, null, tint = GeminiBlue, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Girar -90°", fontSize = 11.sp, color = TextPrimary)
-            }
-
-            OutlinedButton(
-                onClick = {
-                    val flippedPath = flipImage(context, block.urlOrPath, horizontal = true)
-                    if (flippedPath != null) {
-                        onBlockChange(block.copy(urlOrPath = flippedPath))
-                        Toast.makeText(context, "Imagen invertida", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, "No se pudo invertir", Toast.LENGTH_SHORT).show()
-                    }
-                },
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
-            ) {
-                Icon(Icons.Default.Flip, null, tint = GeminiBlue, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Espejo", fontSize = 11.sp, color = TextPrimary)
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(
-                onClick = {
-                    val bAndWPath = applyGrayscale(context, block.urlOrPath)
-                    if (bAndWPath != null) {
-                        onBlockChange(block.copy(urlOrPath = bAndWPath))
-                        Toast.makeText(context, "Filtro B/N aplicado", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, "No se pudo aplicar filtro", Toast.LENGTH_SHORT).show()
-                    }
-                },
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
-            ) {
-                Icon(Icons.Default.Tune, null, tint = GeminiBlue, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Filtro B/N", fontSize = 11.sp, color = TextPrimary)
-            }
-
-            Button(
-                onClick = { launcher.launch(arrayOf("image/*")) },
-                colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
-                modifier = Modifier.weight(1.5f),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-            ) {
-                Icon(Icons.Default.PhotoLibrary, null, tint = Color.White, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Reemplazar", color = Color.White, fontSize = 12.sp)
-            }
-        }
-
-        HorizontalDivider(color = CosmicBorder)
-
         OutlinedTextField(
             value = block.caption,
             onValueChange = { onBlockChange(block.copy(caption = it)) },
-            label = { Text("Pie de foto / Título de imagen") },
+            label = { Text("Pie de foto / Descripción") },
             modifier = Modifier.fillMaxWidth()
         )
-
-        Text("Ancho de imagen", color = TextPrimary, fontSize = 13.sp)
+        Button(
+            onClick = { launcher.launch(arrayOf("image/*")) },
+            colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Default.PhotoLibrary, null, tint = Color.White)
+            Spacer(Modifier.width(8.dp))
+            Text("Seleccionar / Cambiar Imagen", color = Color.White)
+        }
+        Text("Ancho", color = TextPrimary)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Match" to "Completo (100%)", "Wrap" to "Mediano (50%)").forEach { (key, label) ->
+            listOf("Match" to "Completo", "Wrap" to "Ajustado").forEach { (w, label) ->
                 FilterChip(
-                    selected = block.width == key,
-                    onClick = { onBlockChange(block.copy(width = key)) },
+                    selected = block.width == w,
+                    onClick = { onBlockChange(block.copy(width = w)) },
                     label = { Text(label, fontSize = 11.sp) },
                     colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = Color.White)
                 )
             }
         }
-
-        Text("Ajuste de altura", color = TextPrimary, fontSize = 13.sp)
+        Text("Alto", color = TextPrimary)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Wrap" to "Natural / Proporcional", "Fixed" to "Fijo (250dp)").forEach { (key, label) ->
+            listOf("Wrap" to "Proporcional", "Fixed" to "Fijo").forEach { (h, label) ->
                 FilterChip(
-                    selected = block.height == key,
-                    onClick = { onBlockChange(block.copy(height = key)) },
+                    selected = block.height == h,
+                    onClick = { onBlockChange(block.copy(height = h)) },
                     label = { Text(label, fontSize = 11.sp) },
                     colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = Color.White)
                 )
@@ -7376,7 +7197,7 @@ class PageElementExtractor(
             val imageObj = renderInfo.getImage()
             if (imageObj != null) {
                 val imageBytes = imageObj.getImageAsBytes()
-                if (imageBytes != null && imageBytes.isNotEmpty()) {
+                if (imageBytes != null && imageBytes.size >= 800) {
                     val fileType = imageObj.getFileType() ?: "png"
                     val ext = if (fileType.equals("jpg", ignoreCase = true) || fileType.equals("jpeg", ignoreCase = true)) "jpg" else "png"
                     
@@ -7462,21 +7283,75 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                     continue
                 }
 
-                // 3. Eliminar contadores de páginas ("Página 1", "Pág. 1", "Page 1 of 10", "1/10", "--- Página 2 ---", etc.)
-                val isPageCounter = rawText.matches(Regex("^(p[aá]g(ina)?\\.?\\s*\\d+(\\s*(de|/|-|of)\\s*\\d+)?|page\\s*\\d+(\\s*(of|/|-|de)\\s*\\d+)?|[-—–~]+\\s*(p[aá]gina\\s*)?\\d+\\s*[-—–~]+|\\d+\\s*(/|of|de)\\s*\\d+|\\[?\\s*\\d+\\s*\\]?)$", RegexOption.IGNORE_CASE)) ||
+                // 3. Eliminar contadores de páginas y pie de página ("Inicio 1", "Inicio 2", "nombredelarchivo1", "''2", "''3", etc.)
+                val isFooterZone = element.y < 50f
+                val isHeaderZone = element.y > 760f
+                val isPureNumberOrQuoted = rawText.matches(Regex("^['\"`´«»\\[\\(\\-—–~]*\\s*\\d+\\s*['\"`´»\\]\\)\\-—–~]*$"))
+                val isTitlePlusPage = rawText.matches(Regex("^[a-zA-Z0-9_áéíóúñÁÉÍÓÚÑ\\s.\\-]{1,35}\\s*\\d+$", RegexOption.IGNORE_CASE)) && (isFooterZone || isHeaderZone || rawText.length < 25)
+                val isPageKeyword = rawText.matches(Regex("^(p[aá]g(ina)?\\.?|page)\\s*\\d+.*", RegexOption.IGNORE_CASE)) ||
                                     rawText.matches(Regex("^[–—\\-~]*\\s*P[aá]gina\\s+\\d+.*", RegexOption.IGNORE_CASE))
-                if (isPageCounter) {
+
+                if (isPureNumberOrQuoted || isTitlePlusPage || isPageKeyword || (isFooterZone && (rawText.any { it.isDigit() } || rawText.length < 20))) {
                     continue
                 }
 
                 val fSize = element.fontSize
                 val bold = element.isBold
 
+                // 4. Menús desplegables / Secciones contraíbles (ej. "▼ Una nueva vida.")
+                val isDropdown = rawText.startsWith("▼") || rawText.startsWith("▶") || rawText.startsWith("▾")
+                if (isDropdown) {
+                    flushParagraph()
+                    val cleanDropdown = rawText.removePrefix("▼").removePrefix("▶").removePrefix("▾").trim()
+                    blocks.add(
+                        EditorBlock.Text(
+                            content = cleanDropdown,
+                            fontSize = 20,
+                            isBold = true,
+                            isHeader = true,
+                            isCollapsedHeader = true,
+                            isCollapsed = false
+                        )
+                    )
+                    lastLineY = element.y
+                    lastLineFontSize = fSize
+                    continue
+                }
+
+                // 5. Citas o líneas destacadas (ej. "| Cuida y protege...")
+                val isQuote = rawText.startsWith("| ") || rawText.startsWith("|") || rawText.startsWith("> ")
+                if (isQuote) {
+                    flushParagraph()
+                    val cleanQuote = rawText.removePrefix("|").removePrefix(">").trim()
+                    blocks.add(EditorBlock.Quote(content = cleanQuote))
+                    lastLineY = element.y
+                    lastLineFontSize = fSize
+                    continue
+                }
+
+                // 6. Sub-viñetas (ej. "◦ ¿Soy alguien malo?...")
+                val isSubBullet = rawText.startsWith("◦") || rawText.startsWith("  ◦") || rawText.startsWith("\t◦")
+                if (isSubBullet) {
+                    flushParagraph()
+                    val cleanSub = rawText.removePrefix("◦").removePrefix("  ◦").removePrefix("\t◦").trim()
+                    blocks.add(
+                        EditorBlock.Text(
+                            content = "  ◦ $cleanSub",
+                            fontSize = 14,
+                            isBullet = true
+                        )
+                    )
+                    lastLineY = element.y
+                    lastLineFontSize = fSize
+                    continue
+                }
+
                 // Heading hierarchy detection (preservar títulos, subtítulos, encabezados y secciones menores)
                 val isTitle = fSize >= 19.5f || (bold && fSize >= 18f && rawText.length < 100) ||
                               rawText.startsWith("# ") || rawText.startsWith("Título:", ignoreCase = true)
                 val isSubtitle = !isTitle && (fSize in 16.5f..19.4f || (bold && fSize in 15.5f..17.9f && rawText.length < 100) ||
                                  rawText.startsWith("## ") || rawText.startsWith("Subtítulo:", ignoreCase = true) ||
+                                 rawText.endsWith("**") ||
                                  Regex("^(Capítulo|Capitulo|Chapter)\\s+[\\dA-Za-z]+", RegexOption.IGNORE_CASE).find(rawText) != null)
                 val isHeading = !isTitle && !isSubtitle && (fSize in 14.0f..16.4f ||
                                 (bold && rawText.length < 90 && (Regex("^\\d+(\\.\\d+)*\\s+[A-ZÁÉÍÓÚÑ]").find(rawText) != null || rawText.all { it.isUpperCase() || !it.isLetter() })) ||
@@ -7489,7 +7364,7 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
 
                 // Bullet or list item
                 val isBullet = rawText.startsWith("•") || rawText.startsWith("–") || rawText.startsWith("- ") || rawText.startsWith("* ")
-                val isNumbered = Regex("^\\d+\\.\\s+(.*)").matchEntire(rawText) != null
+                val isNumbered = Regex("^\\d+[\\.\\-]\\s+(.*)").matchEntire(rawText) != null
 
                 // Checkbox item
                 val todoMatch = Regex("^[-*+]?\\s*\\[([ xX])\\]\\s*(.*)").matchEntire(rawText)
@@ -7503,7 +7378,7 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                         isHeading -> 18
                         else -> 16
                     }
-                    val cleanText = rawText.removePrefix("#").removePrefix("#").removePrefix("#").removePrefix("#").trim()
+                    val cleanText = rawText.removePrefix("#").removePrefix("#").removePrefix("#").removePrefix("#").removeSuffix("**").trim()
                     blocks.add(
                         EditorBlock.Text(
                             content = cleanText,
@@ -7528,7 +7403,7 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                     lastLineFontSize = fSize
                 } else if (isNumbered) {
                     flushParagraph()
-                    val match = Regex("^\\d+\\.\\s+(.*)").matchEntire(rawText)
+                    val match = Regex("^\\d+[\\.\\-]\\s+(.*)").matchEntire(rawText)
                     val cleanNumbered = match?.groupValues?.get(1)?.trim() ?: rawText
                     blocks.add(
                         EditorBlock.Text(
@@ -7553,7 +7428,12 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                     lastLineFontSize = fSize
                 } else {
                     val prevY = lastLineY
-                    if (prevY != null && Math.abs(prevY - element.y) > (lastLineFontSize * 1.8f + 6f)) {
+                    val isLineDistanceBreak = prevY != null && Math.abs(prevY - element.y) > (lastLineFontSize * 1.30f)
+                    val startsWithDialogueOrPunct = rawText.startsWith("—") || rawText.startsWith("–") ||
+                                                    rawText.startsWith("¿") || rawText.startsWith("¡") ||
+                                                    rawText.startsWith("\"") || rawText.startsWith("“") ||
+                                                    rawText.startsWith("«")
+                    if (isLineDistanceBreak || (startsWithDialogueOrPunct && currentParagraph.isNotEmpty())) {
                         flushParagraph()
                     }
                     if (currentParagraph.isNotEmpty()) {
