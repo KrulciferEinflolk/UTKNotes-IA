@@ -181,14 +181,19 @@ class MainActivity : ComponentActivity() {
                                     color = TextSecondary.copy(alpha = 0.5f)
                                 )
                             },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .fillMaxHeight(0.95f)
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            ChatbotUI(
-                                viewModel = viewModel,
-                                onDismiss = { viewModel.closeChatbot() }
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .fillMaxHeight(0.88f)
+                                    .background(CosmicBackground)
+                            ) {
+                                ChatbotUI(
+                                    viewModel = viewModel,
+                                    onDismiss = { viewModel.closeChatbot() }
+                                )
+                            }
                         }
                     }
                 }
@@ -269,41 +274,6 @@ fun AetherAppScreen(
                     val blocks = mutableListOf<EditorBlock>()
 
                     if (isPdf) {
-                        val coverPath = renderPdfFirstPage(context, destFile)
-                        blocks.add(
-                            EditorBlock.Text(
-                                content = "PDF Importado: $originalName",
-                                isBold = true,
-                                fontSize = 20,
-                                isHeader = true
-                            )
-                        )
-                        if (coverPath != null) {
-                            blocks.add(
-                                EditorBlock.Image(
-                                    urlOrPath = coverPath,
-                                    caption = "Portada de $originalName",
-                                    width = "Match",
-                                    height = "Wrap"
-                                )
-                            )
-                        }
-                        blocks.add(
-                            EditorBlock.File(
-                                name = originalName,
-                                sourceUrl = destFile.absolutePath,
-                                size = sizeString
-                            )
-                        )
-                        blocks.add(
-                            EditorBlock.Text(
-                                content = "Contenido extraído del PDF:",
-                                isBold = true,
-                                fontSize = 16,
-                                isHeader = true
-                            )
-                        )
-
                         var totalElementsExtracted = 0
                         val imageDir = java.io.File(context.filesDir, "extracted_pdf_images").apply { mkdirs() }
                         try {
@@ -316,14 +286,6 @@ fun AetherAppScreen(
                                 val pageBlocks = processPageElements(extractor.elements)
                                 if (pageBlocks.isNotEmpty()) {
                                     totalElementsExtracted += extractor.elements.size
-                                    blocks.add(
-                                        EditorBlock.Text(
-                                            content = "--- Página $page ---",
-                                            isBold = true,
-                                            fontSize = 12,
-                                            fontColor = "Purple"
-                                        )
-                                    )
                                     blocks.addAll(pageBlocks)
                                 }
                             }
@@ -334,19 +296,10 @@ fun AetherAppScreen(
                         if (totalElementsExtracted == 0) {
                             blocks.add(
                                 EditorBlock.Text(
-                                    content = "No se pudo extraer texto legible ni elementos gráficos de las páginas de este PDF. Puedes ver el archivo tocándolo arriba.",
+                                    content = "No se pudo extraer texto legible ni imágenes de las páginas de este PDF.",
                                     isItalic = true,
                                     fontSize = 13,
                                     fontColor = "Red"
-                                )
-                            )
-                        } else {
-                            blocks.add(
-                                EditorBlock.Text(
-                                    content = "Puedes pulsar prolongadamente el archivo de arriba para cambiar su configuración, o tocarlo para abrirlo con el visor de PDF de tu dispositivo.",
-                                    isItalic = true,
-                                    fontSize = 13,
-                                    fontColor = "Normal"
                                 )
                             )
                         }
@@ -1866,9 +1819,7 @@ fun parseBlocks(content: String): List<EditorBlock> {
     val trimmed = content.trim()
     if (!trimmed.startsWith("[")) {
         if (trimmed.isBlank()) return listOf(EditorBlock.Text(content = ""))
-        return trimmed.split("\n").map { line ->
-            EditorBlock.Text(content = line)
-        }
+        return parseTextContentToBlocks(trimmed)
     }
     return try {
         val array = org.json.JSONArray(trimmed)
@@ -2037,7 +1988,7 @@ fun parseBlocks(content: String): List<EditorBlock> {
         if (list.isEmpty()) list.add(EditorBlock.Text(content = ""))
         list
     } catch (e: Exception) {
-        listOf(EditorBlock.Text(content = content))
+        parseTextContentToBlocks(trimmed)
     }
 }
 
@@ -2619,40 +2570,79 @@ fun ImageBlockView(
                 }
                 .clip(RoundedCornerShape(8.dp))
                 .combinedClickable(
-                    onClick = {},
+                    onClick = onOpenSettings,
                     onLongClick = onOpenSettings
                 )
             
-            if (isPlaceholder) {
-                Box(
-                    modifier = mod.background(Brush.linearGradient(listOf(Color(0xFF4285F4), Color(0xFF9B72F3)))),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.Palette, null, tint = Color.White, modifier = Modifier.size(32.dp))
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("Mantener pulsado para editar", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            val imageModel: Any = remember(resolvedUrl, block.urlOrPath) {
+                val target = if (resolvedUrl.isNotEmpty()) resolvedUrl else block.urlOrPath
+                if (target.startsWith("/") || target.startsWith("file://")) {
+                    val cleanPath = if (target.startsWith("file://")) target.removePrefix("file://") else target
+                    java.io.File(cleanPath)
+                } else {
+                    target
+                }
+            }
+
+            Box(contentAlignment = Alignment.TopEnd) {
+                if (isPlaceholder) {
+                    Box(
+                        modifier = mod.background(Brush.linearGradient(listOf(Color(0xFF4285F4), Color(0xFF9B72F3)))),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.Palette, null, tint = Color.White, modifier = Modifier.size(32.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("Toca para editar imagen", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        }
+                    }
+                } else {
+                    coil.compose.AsyncImage(
+                        model = imageModel,
+                        contentDescription = block.caption,
+                        modifier = mod.background(Color.DarkGray),
+                        onSuccess = { state ->
+                            val drawable = state.result.drawable
+                            val w = drawable.intrinsicWidth
+                            val h = drawable.intrinsicHeight
+                            if (w > 0 && h > 0) {
+                                imageAspectRatio = w.toFloat() / h.toFloat()
+                            }
+                        },
+                        contentScale = if (block.height == "Wrap") {
+                            androidx.compose.ui.layout.ContentScale.FillWidth
+                        } else {
+                            androidx.compose.ui.layout.ContentScale.Crop
+                        }
+                    )
+
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.72f),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .padding(8.dp)
+                            .clickable { onOpenSettings() }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "Editar imagen",
+                                tint = Color.White,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                "Editar imagen",
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                 }
-            } else {
-                coil.compose.AsyncImage(
-                    model = if (resolvedUrl.isNotEmpty()) resolvedUrl else block.urlOrPath,
-                    contentDescription = block.caption,
-                    modifier = mod.background(Color.DarkGray),
-                    onSuccess = { state ->
-                        val drawable = state.result.drawable
-                        val w = drawable.intrinsicWidth
-                        val h = drawable.intrinsicHeight
-                        if (w > 0 && h > 0) {
-                            imageAspectRatio = w.toFloat() / h.toFloat()
-                        }
-                    },
-                    contentScale = if (block.height == "Wrap") {
-                        androidx.compose.ui.layout.ContentScale.FillWidth
-                    } else {
-                        androidx.compose.ui.layout.ContentScale.Crop
-                    }
-                )
             }
             
             if (block.caption.isNotEmpty()) {
@@ -3801,44 +3791,6 @@ fun NoteEditorWorkspace(
                     val newExtractedBlocks = mutableListOf<EditorBlock>()
                     
                     if (isPdf) {
-                        val coverPath = renderPdfFirstPage(context, destFile)
-                        newExtractedBlocks.add(
-                            EditorBlock.Text(
-                                content = "PDF Importado: $originalName",
-                                isBold = true,
-                                fontSize = 20,
-                                isHeader = true
-                            )
-                        )
-                        
-                        if (coverPath != null) {
-                            newExtractedBlocks.add(
-                                EditorBlock.Image(
-                                    urlOrPath = coverPath,
-                                    caption = "Portada de $originalName",
-                                    width = "Match",
-                                    height = "Wrap"
-                                )
-                            )
-                        }
-                        
-                        newExtractedBlocks.add(
-                            EditorBlock.File(
-                                name = originalName,
-                                sourceUrl = destFile.absolutePath,
-                                size = sizeString
-                            )
-                        )
-                        
-                        newExtractedBlocks.add(
-                            EditorBlock.Text(
-                                content = "Contenido extraído del PDF:",
-                                isBold = true,
-                                fontSize = 16,
-                                isHeader = true
-                            )
-                        )
-
                         var totalElementsExtracted = 0
                         val imageDir = java.io.File(context.filesDir, "extracted_pdf_images").apply { mkdirs() }
                         
@@ -3854,14 +3806,6 @@ fun NoteEditorWorkspace(
                                 val pageBlocks = processPageElements(extractor.elements)
                                 if (pageBlocks.isNotEmpty()) {
                                     totalElementsExtracted += extractor.elements.size
-                                    newExtractedBlocks.add(
-                                        EditorBlock.Text(
-                                            content = "--- Página $page ---",
-                                            isBold = true,
-                                            fontSize = 12,
-                                            fontColor = "Purple"
-                                        )
-                                    )
                                     newExtractedBlocks.addAll(pageBlocks)
                                 }
                             }
@@ -3873,19 +3817,10 @@ fun NoteEditorWorkspace(
                         if (totalElementsExtracted == 0) {
                             newExtractedBlocks.add(
                                 EditorBlock.Text(
-                                    content = "No se pudo extraer texto legible ni elementos gráficos de las páginas de este PDF. Puedes ver el archivo tocándolo arriba.",
+                                    content = "No se pudo extraer texto legible ni imágenes de las páginas de este PDF.",
                                     isItalic = true,
                                     fontSize = 13,
                                     fontColor = "Red"
-                                )
-                            )
-                        } else {
-                            newExtractedBlocks.add(
-                                EditorBlock.Text(
-                                    content = "Puedes pulsar prolongadamente el archivo de arriba para cambiar su configuración, o tocarlo para abrirlo con el visor de PDF de tu dispositivo.",
-                                    isItalic = true,
-                                    fontSize = 13,
-                                    fontColor = "Normal"
                                 )
                             )
                         }
@@ -5042,13 +4977,17 @@ fun NoteEditorWorkspace(
                                                     "Right" -> TextAlign.Right
                                                     else -> TextAlign.Left
                                                 },
-                                                color = when (block.fontColor) {
-                                                    "Purple" -> Color(0xFFD0BCFF)
-                                                    "Blue" -> Color(0xFF8AB4F8)
-                                                    "Green" -> Color(0xFF81C784)
-                                                    "Red" -> Color(0xFFE57373)
-                                                    "Amber" -> Color(0xFFFFB74D)
-                                                    else -> TextPrimary
+                                                color = when (block.fontColor.lowercase()) {
+                                                    "purple" -> Color(0xFFD0BCFF)
+                                                    "blue" -> Color(0xFF8AB4F8)
+                                                    "green" -> Color(0xFF81C784)
+                                                    "red" -> Color(0xFFE57373)
+                                                    "amber" -> Color(0xFFFFB74D)
+                                                    "cyan" -> Color(0xFF80DEEA)
+                                                    "pink" -> Color(0xFFF48FB1)
+                                                    else -> if (block.fontColor.startsWith("#")) {
+                                                        try { Color(android.graphics.Color.parseColor(block.fontColor)) } catch (e: Exception) { TextPrimary }
+                                                    } else TextPrimary
                                                 }
                                             )
 
@@ -5661,6 +5600,64 @@ fun TableSettingsContent(block: EditorBlock.Table, onBlockChange: (EditorBlock) 
 }
 
 
+fun loadBitmapFromUrlOrPath(context: android.content.Context, urlOrPath: String): android.graphics.Bitmap? {
+    return try {
+        if (urlOrPath.startsWith("/") || urlOrPath.startsWith("file://")) {
+            val path = if (urlOrPath.startsWith("file://")) urlOrPath.removePrefix("file://") else urlOrPath
+            val file = java.io.File(path)
+            if (file.exists()) {
+                android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+            } else null
+        } else if (urlOrPath.startsWith("content://")) {
+            val uri = android.net.Uri.parse(urlOrPath)
+            context.contentResolver.openInputStream(uri)?.use {
+                android.graphics.BitmapFactory.decodeStream(it)
+            }
+        } else {
+            null
+        }
+    } catch (e: Exception) {
+        android.util.Log.e("ImageEdit", "Error loading bitmap: ${e.message}")
+        null
+    }
+}
+
+fun saveEditedBitmap(context: android.content.Context, bitmap: android.graphics.Bitmap): String {
+    val dir = java.io.File(context.filesDir, "edited_images").apply { mkdirs() }
+    val file = java.io.File(dir, "img_edit_${System.currentTimeMillis()}.jpg")
+    java.io.FileOutputStream(file).use { out ->
+        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
+    }
+    return file.absolutePath
+}
+
+fun rotateImage(context: android.content.Context, urlOrPath: String, degrees: Float): String? {
+    val bmp = loadBitmapFromUrlOrPath(context, urlOrPath) ?: return null
+    val matrix = android.graphics.Matrix().apply { postRotate(degrees) }
+    val rotated = android.graphics.Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+    return saveEditedBitmap(context, rotated)
+}
+
+fun flipImage(context: android.content.Context, urlOrPath: String, horizontal: Boolean): String? {
+    val bmp = loadBitmapFromUrlOrPath(context, urlOrPath) ?: return null
+    val matrix = android.graphics.Matrix().apply {
+        if (horizontal) postScale(-1f, 1f) else postScale(1f, -1f)
+    }
+    val flipped = android.graphics.Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+    return saveEditedBitmap(context, flipped)
+}
+
+fun applyGrayscale(context: android.content.Context, urlOrPath: String): String? {
+    val bmp = loadBitmapFromUrlOrPath(context, urlOrPath) ?: return null
+    val result = android.graphics.Bitmap.createBitmap(bmp.width, bmp.height, android.graphics.Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(result)
+    val paint = android.graphics.Paint()
+    val cm = android.graphics.ColorMatrix().apply { setSaturation(0f) }
+    paint.colorFilter = android.graphics.ColorMatrixColorFilter(cm)
+    canvas.drawBitmap(bmp, 0f, 0f, paint)
+    return saveEditedBitmap(context, result)
+}
+
 @Composable
 fun ImageSettingsContent(block: EditorBlock.Image, onBlockChange: (EditorBlock) -> Unit) {
     val context = LocalContext.current
@@ -5674,43 +5671,154 @@ fun ImageSettingsContent(block: EditorBlock.Image, onBlockChange: (EditorBlock) 
                 // Ignore if persistable permission is not available
             }
             onBlockChange(block.copy(urlOrPath = uri.toString()))
+            Toast.makeText(context, "Imagen reemplazada", Toast.LENGTH_SHORT).show()
         }
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        // Thumbnail preview
+        if (block.urlOrPath.isNotEmpty() && block.urlOrPath != "Mantener pulsado para editar") {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(130.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.Black.copy(alpha = 0.3f)),
+                contentAlignment = Alignment.Center
+            ) {
+                val model: Any = if (block.urlOrPath.startsWith("/")) java.io.File(block.urlOrPath) else block.urlOrPath
+                coil.compose.AsyncImage(
+                    model = model,
+                    contentDescription = block.caption,
+                    modifier = Modifier.fillMaxHeight(),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                )
+            }
+        }
+
+        // Action tools: Rotation and editing
+        Text("Herramientas de Edición", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(
+                onClick = {
+                    val rotatedPath = rotateImage(context, block.urlOrPath, 90f)
+                    if (rotatedPath != null) {
+                        onBlockChange(block.copy(urlOrPath = rotatedPath))
+                        Toast.makeText(context, "Imagen rotada 90°", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "No se pudo rotar la imagen", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+            ) {
+                Icon(Icons.Default.RotateRight, null, tint = GeminiBlue, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Girar 90°", fontSize = 11.sp, color = TextPrimary)
+            }
+
+            OutlinedButton(
+                onClick = {
+                    val rotatedPath = rotateImage(context, block.urlOrPath, -90f)
+                    if (rotatedPath != null) {
+                        onBlockChange(block.copy(urlOrPath = rotatedPath))
+                        Toast.makeText(context, "Imagen rotada -90°", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "No se pudo rotar la imagen", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+            ) {
+                Icon(Icons.Default.RotateLeft, null, tint = GeminiBlue, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Girar -90°", fontSize = 11.sp, color = TextPrimary)
+            }
+
+            OutlinedButton(
+                onClick = {
+                    val flippedPath = flipImage(context, block.urlOrPath, horizontal = true)
+                    if (flippedPath != null) {
+                        onBlockChange(block.copy(urlOrPath = flippedPath))
+                        Toast.makeText(context, "Imagen invertida", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "No se pudo invertir", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+            ) {
+                Icon(Icons.Default.Flip, null, tint = GeminiBlue, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Espejo", fontSize = 11.sp, color = TextPrimary)
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(
+                onClick = {
+                    val bAndWPath = applyGrayscale(context, block.urlOrPath)
+                    if (bAndWPath != null) {
+                        onBlockChange(block.copy(urlOrPath = bAndWPath))
+                        Toast.makeText(context, "Filtro B/N aplicado", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "No se pudo aplicar filtro", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+            ) {
+                Icon(Icons.Default.Tune, null, tint = GeminiBlue, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Filtro B/N", fontSize = 11.sp, color = TextPrimary)
+            }
+
+            Button(
+                onClick = { launcher.launch(arrayOf("image/*")) },
+                colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
+                modifier = Modifier.weight(1.5f),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+            ) {
+                Icon(Icons.Default.PhotoLibrary, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Reemplazar", color = Color.White, fontSize = 12.sp)
+            }
+        }
+
+        HorizontalDivider(color = CosmicBorder)
+
         OutlinedTextField(
             value = block.caption,
             onValueChange = { onBlockChange(block.copy(caption = it)) },
-            label = { Text("Pie de foto") },
+            label = { Text("Pie de foto / Título de imagen") },
             modifier = Modifier.fillMaxWidth()
         )
-        Button(
-            onClick = { launcher.launch(arrayOf("image/*")) },
-            colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Icon(Icons.Default.PhotoLibrary, null, tint = Color.White)
-            Spacer(Modifier.width(8.dp))
-            Text("Seleccionar Imagen (Archivos)", color = Color.White)
-        }
-        Text("Ancho", color = TextPrimary)
+
+        Text("Ancho de imagen", color = TextPrimary, fontSize = 13.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Match", "Wrap").forEach { w ->
+            listOf("Match" to "Completo (100%)", "Wrap" to "Mediano (50%)").forEach { (key, label) ->
                 FilterChip(
-                    selected = block.width == w,
-                    onClick = { onBlockChange(block.copy(width = w)) },
-                    label = { Text(w, fontSize = 10.sp) },
+                    selected = block.width == key,
+                    onClick = { onBlockChange(block.copy(width = key)) },
+                    label = { Text(label, fontSize = 11.sp) },
                     colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = Color.White)
                 )
             }
         }
-        Text("Alto", color = TextPrimary)
+
+        Text("Ajuste de altura", color = TextPrimary, fontSize = 13.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Wrap", "Fixed").forEach { h ->
+            listOf("Wrap" to "Natural / Proporcional", "Fixed" to "Fijo (250dp)").forEach { (key, label) ->
                 FilterChip(
-                    selected = block.height == h,
-                    onClick = { onBlockChange(block.copy(height = h)) },
-                    label = { Text(h, fontSize = 10.sp) },
+                    selected = block.height == key,
+                    onClick = { onBlockChange(block.copy(height = key)) },
+                    label = { Text(label, fontSize = 11.sp) },
                     colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = Color.White)
                 )
             }
@@ -7215,7 +7323,9 @@ sealed class ExtractedElement {
     data class Text(
         val text: String,
         val x: Float,
-        override val y: Float
+        override val y: Float,
+        val fontSize: Float = 12f,
+        val isBold: Boolean = false
     ) : ExtractedElement()
     
     data class Image(
@@ -7240,7 +7350,22 @@ class PageElementExtractor(
             val startPoint = renderInfo.getBaseline()?.getStartPoint()
             val x = startPoint?.get(0) ?: 0f
             val y = startPoint?.get(1) ?: 0f
-            elements.add(ExtractedElement.Text(text, x, y))
+
+            val fontHeight = try {
+                val ascent = renderInfo.getAscentLine()?.getStartPoint()?.get(1) ?: 0f
+                val descent = renderInfo.getDescentLine()?.getStartPoint()?.get(1) ?: 0f
+                Math.abs(ascent - descent)
+            } catch (e: Exception) { 12f }
+
+            val fontName = try {
+                renderInfo.getFont()?.getPostscriptFontName() ?: ""
+            } catch (e: Exception) { "" }
+
+            val isBold = fontName.contains("bold", ignoreCase = true) ||
+                         fontName.contains("black", ignoreCase = true) ||
+                         fontName.contains("heavy", ignoreCase = true)
+
+            elements.add(ExtractedElement.Text(text, x, y, fontHeight, isBold))
         }
     }
     
@@ -7306,35 +7431,159 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
     val blocks = mutableListOf<EditorBlock>()
     
     val currentParagraph = java.lang.StringBuilder()
+    var lastLineY: Float? = null
+    var lastLineFontSize: Float = 12f
+
+    fun flushParagraph() {
+        if (currentParagraph.isNotEmpty()) {
+            val pText = currentParagraph.toString().trim()
+            if (pText.isNotEmpty()) {
+                blocks.add(EditorBlock.Text(content = pText, fontSize = 15))
+            }
+            currentParagraph.setLength(0)
+        }
+    }
+
     for (element in sortedCombined) {
         when (element) {
             is ExtractedElement.Text -> {
-                if (currentParagraph.isNotEmpty()) {
-                    currentParagraph.append("\n")
+                val rawText = element.text.trim()
+                if (rawText.isEmpty()) continue
+
+                // 1. Eliminar subtítulo "PDF importado:" y variantes
+                if (rawText.startsWith("PDF Importado", ignoreCase = true) ||
+                    rawText.startsWith("PDF importado", ignoreCase = true) ||
+                    rawText.equals("PDF Importado:", ignoreCase = true)) {
+                    continue
                 }
-                currentParagraph.append(element.text)
+
+                // 2. Eliminar subtítulo "contenido extraído del PDF" y variantes
+                if (rawText.contains(Regex("contenido extra[íi]do del PDF", RegexOption.IGNORE_CASE))) {
+                    continue
+                }
+
+                // 3. Eliminar contadores de páginas ("Página 1", "Pág. 1", "Page 1 of 10", "1/10", "--- Página 2 ---", etc.)
+                val isPageCounter = rawText.matches(Regex("^(p[aá]g(ina)?\\.?\\s*\\d+(\\s*(de|/|-|of)\\s*\\d+)?|page\\s*\\d+(\\s*(of|/|-|de)\\s*\\d+)?|[-—–~]+\\s*(p[aá]gina\\s*)?\\d+\\s*[-—–~]+|\\d+\\s*(/|of|de)\\s*\\d+|\\[?\\s*\\d+\\s*\\]?)$", RegexOption.IGNORE_CASE)) ||
+                                    rawText.matches(Regex("^[–—\\-~]*\\s*P[aá]gina\\s+\\d+.*", RegexOption.IGNORE_CASE))
+                if (isPageCounter) {
+                    continue
+                }
+
+                val fSize = element.fontSize
+                val bold = element.isBold
+
+                // Heading hierarchy detection (preservar títulos, subtítulos, encabezados y secciones menores)
+                val isTitle = fSize >= 19.5f || (bold && fSize >= 18f && rawText.length < 100) ||
+                              rawText.startsWith("# ") || rawText.startsWith("Título:", ignoreCase = true)
+                val isSubtitle = !isTitle && (fSize in 16.5f..19.4f || (bold && fSize in 15.5f..17.9f && rawText.length < 100) ||
+                                 rawText.startsWith("## ") || rawText.startsWith("Subtítulo:", ignoreCase = true) ||
+                                 Regex("^(Capítulo|Capitulo|Chapter)\\s+[\\dA-Za-z]+", RegexOption.IGNORE_CASE).find(rawText) != null)
+                val isHeading = !isTitle && !isSubtitle && (fSize in 14.0f..16.4f ||
+                                (bold && rawText.length < 90 && (Regex("^\\d+(\\.\\d+)*\\s+[A-ZÁÉÍÓÚÑ]").find(rawText) != null || rawText.all { it.isUpperCase() || !it.isLetter() })) ||
+                                rawText.startsWith("### ") ||
+                                listOf("Introducción", "Resumen", "Abstract", "Metodología", "Resultados", "Conclusiones", "Discusión", "Referencias", "Bibliografía", "Objetivos", "Marco Teórico", "Antecedentes", "Requisitos", "Temario", "Índice").any { rawText.equals(it, ignoreCase = true) || rawText.startsWith("$it:", ignoreCase = true) })
+                val isMinorSection = !isTitle && !isSubtitle && !isHeading && (
+                                     (bold && fSize in 12.5f..13.9f && rawText.length < 80) ||
+                                     rawText.startsWith("#### ") ||
+                                     Regex("^\\d+\\.\\d+\\.\\d+\\s+").find(rawText) != null)
+
+                // Bullet or list item
+                val isBullet = rawText.startsWith("•") || rawText.startsWith("–") || rawText.startsWith("- ") || rawText.startsWith("* ")
+                val isNumbered = Regex("^\\d+\\.\\s+(.*)").matchEntire(rawText) != null
+
+                // Checkbox item
+                val todoMatch = Regex("^[-*+]?\\s*\\[([ xX])\\]\\s*(.*)").matchEntire(rawText)
+                val isUnicodeCheckbox = rawText.startsWith("☐") || rawText.startsWith("☑")
+
+                if (isTitle || isSubtitle || isHeading || isMinorSection) {
+                    flushParagraph()
+                    val targetSize = when {
+                        isTitle -> 24
+                        isSubtitle -> 20
+                        isHeading -> 18
+                        else -> 16
+                    }
+                    val cleanText = rawText.removePrefix("#").removePrefix("#").removePrefix("#").removePrefix("#").trim()
+                    blocks.add(
+                        EditorBlock.Text(
+                            content = cleanText,
+                            fontSize = targetSize,
+                            isBold = true,
+                            isHeader = true
+                        )
+                    )
+                    lastLineY = element.y
+                    lastLineFontSize = fSize
+                } else if (isBullet) {
+                    flushParagraph()
+                    val cleanBullet = rawText.removePrefix("•").removePrefix("–").removePrefix("-").removePrefix("*").trim()
+                    blocks.add(
+                        EditorBlock.Text(
+                            content = cleanBullet,
+                            fontSize = 14,
+                            isBullet = true
+                        )
+                    )
+                    lastLineY = element.y
+                    lastLineFontSize = fSize
+                } else if (isNumbered) {
+                    flushParagraph()
+                    val match = Regex("^\\d+\\.\\s+(.*)").matchEntire(rawText)
+                    val cleanNumbered = match?.groupValues?.get(1)?.trim() ?: rawText
+                    blocks.add(
+                        EditorBlock.Text(
+                            content = cleanNumbered,
+                            fontSize = 14,
+                            isNumbered = true
+                        )
+                    )
+                    lastLineY = element.y
+                    lastLineFontSize = fSize
+                } else if (todoMatch != null || isUnicodeCheckbox) {
+                    flushParagraph()
+                    val checked = todoMatch?.groupValues?.get(1)?.equals("x", ignoreCase = true) == true || rawText.startsWith("☑")
+                    val cleanTodo = if (todoMatch != null) todoMatch.groupValues[2].trim() else rawText.removePrefix("☐").removePrefix("☑").trim()
+                    blocks.add(
+                        EditorBlock.Todo(
+                            content = cleanTodo,
+                            isChecked = checked
+                        )
+                    )
+                    lastLineY = element.y
+                    lastLineFontSize = fSize
+                } else {
+                    val prevY = lastLineY
+                    if (prevY != null && Math.abs(prevY - element.y) > (lastLineFontSize * 1.8f + 6f)) {
+                        flushParagraph()
+                    }
+                    if (currentParagraph.isNotEmpty()) {
+                        if (currentParagraph.endsWith("-")) {
+                            currentParagraph.setLength(currentParagraph.length - 1)
+                        } else {
+                            currentParagraph.append(" ")
+                        }
+                    }
+                    currentParagraph.append(rawText)
+                    lastLineY = element.y
+                    lastLineFontSize = fSize
+                }
             }
             is ExtractedElement.Image -> {
-                if (currentParagraph.isNotEmpty()) {
-                    blocks.add(EditorBlock.Text(content = currentParagraph.toString(), fontSize = 14))
-                    currentParagraph.setLength(0)
-                }
+                flushParagraph()
                 blocks.add(
                     EditorBlock.Image(
                         urlOrPath = element.imagePath,
-                        caption = "Elemento gráfico extraído",
+                        caption = "",
                         width = "Match",
                         height = "Wrap"
                     )
                 )
+                lastLineY = null
             }
         }
     }
     
-    if (currentParagraph.isNotEmpty()) {
-        blocks.add(EditorBlock.Text(content = currentParagraph.toString(), fontSize = 14))
-    }
-    
+    flushParagraph()
     return blocks
 }
 
@@ -7343,7 +7592,9 @@ private fun mergeChunksToLine(chunks: List<ExtractedElement.Text>): ExtractedEle
     val lineText = sortedChunks.joinToString("") { it.text }
     val avgY = sortedChunks.map { it.y }.average().toFloat()
     val minX = sortedChunks.minOfOrNull { it.x } ?: 0f
-    return ExtractedElement.Text(lineText, minX, avgY)
+    val maxFontSize = sortedChunks.maxOfOrNull { it.fontSize } ?: 12f
+    val anyBold = sortedChunks.any { it.isBold }
+    return ExtractedElement.Text(lineText, minX, avgY, maxFontSize, anyBold)
 }
 
 fun isSupportedTextExtension(fileName: String, mimeType: String): Boolean {
@@ -7362,6 +7613,72 @@ fun isSupportedTextExtension(fileName: String, mimeType: String): Boolean {
            mimeType == "application/javascript"
 }
 
+fun parseSingleTextBlock(rawText: String): EditorBlock.Text {
+    var text = rawText
+    var fontColor = "Normal"
+    var isBold = false
+    var isItalic = false
+    var fontSize = 15
+    var isHeader = false
+
+    // Color tag extraction: [color:Purple]texto[/color] or [color=Purple]texto or [color:#HEX]texto
+    val colorTagRegex = Regex("\\[color[:=]([A-Za-z0-9#]+)\\](.*?)(?:\\[/color\\])?", RegexOption.DOT_MATCHES_ALL)
+    val colorMatch = colorTagRegex.find(text)
+    if (colorMatch != null) {
+        val col = colorMatch.groupValues[1]
+        fontColor = if (col.startsWith("#")) col else (col[0].uppercaseChar() + col.substring(1).lowercase())
+        text = text.replace(colorMatch.value, colorMatch.groupValues[2]).trim()
+    } else {
+        // [Purple] Texto
+        val prefixColorRegex = Regex("^\\[(Purple|Blue|Green|Red|Amber|Cyan|Pink|#[0-9A-Fa-f]{6})\\]\\s*(.*)", RegexOption.IGNORE_CASE)
+        val prefixMatch = prefixColorRegex.matchEntire(text)
+        if (prefixMatch != null) {
+            val col = prefixMatch.groupValues[1]
+            fontColor = if (col.startsWith("#")) col else (col[0].uppercaseChar() + col.substring(1).lowercase())
+            text = prefixMatch.groupValues[2].trim()
+        }
+    }
+
+    // Bold / Italic wrapping
+    if (text.startsWith("**") && text.endsWith("**") && text.length >= 4) {
+        isBold = true
+        text = text.removeSurrounding("**").trim()
+    } else if (text.startsWith("__") && text.endsWith("__") && text.length >= 4) {
+        isBold = true
+        text = text.removeSurrounding("__").trim()
+    }
+
+    if (text.startsWith("*") && text.endsWith("*") && text.length >= 2) {
+        isItalic = true
+        text = text.removeSurrounding("*").trim()
+    } else if (text.startsWith("_") && text.endsWith("_") && text.length >= 2) {
+        isItalic = true
+        text = text.removeSurrounding("_").trim()
+    }
+
+    // Explicit title / subtitle labels
+    if (text.startsWith("Título:", ignoreCase = true) || text.startsWith("Title:", ignoreCase = true)) {
+        fontSize = 24
+        isBold = true
+        isHeader = true
+        text = text.substringAfter(":").trim()
+    } else if (text.startsWith("Subtítulo:", ignoreCase = true) || text.startsWith("Subtitle:", ignoreCase = true)) {
+        fontSize = 20
+        isBold = true
+        isHeader = true
+        text = text.substringAfter(":").trim()
+    }
+
+    return EditorBlock.Text(
+        content = text,
+        fontSize = fontSize,
+        fontColor = fontColor,
+        isBold = isBold,
+        isItalic = isItalic,
+        isHeader = isHeader
+    )
+}
+
 fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
     val blocks = mutableListOf<EditorBlock>()
     if (textContent.isBlank()) return blocks
@@ -7373,7 +7690,7 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
         if (currentParagraph.isNotEmpty()) {
             val trimmed = currentParagraph.toString().trim()
             if (trimmed.isNotEmpty()) {
-                blocks.add(EditorBlock.Text(content = trimmed, fontSize = 14))
+                blocks.add(parseSingleTextBlock(trimmed))
             }
             currentParagraph.setLength(0)
         }
@@ -7383,7 +7700,14 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
     while (i < lines.size) {
         val line = lines[i].trim()
 
-        // 1. Check if it's a Markdown Table
+        // Empty line handling: flushes paragraph to give spacing
+        if (line.isEmpty()) {
+            flushParagraph()
+            i++
+            continue
+        }
+
+        // 1. Markdown Table
         if (line.startsWith("|") && line.endsWith("|") && line.length > 2) {
             flushParagraph()
             val tableLines = mutableListOf<String>()
@@ -7391,22 +7715,16 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
                 tableLines.add(lines[i].trim())
                 i++
             }
-            
-            // Parse table lines
             val rows = mutableListOf<List<String>>()
             for (tblLine in tableLines) {
-                // Check if it's a separator line like |---| or | :--- |
                 val isSeparator = tblLine.replace("|", "").replace("-", "").replace(":", "").replace(" ", "").trim().isEmpty()
                 if (isSeparator) continue
-                
-                // Split cells, removing first and last empty elements if they exist due to leading/trailing |
                 val parts = tblLine.split("|").map { it.trim() }
                 if (parts.size > 2) {
                     val cells = parts.subList(1, parts.size - 1)
                     rows.add(cells)
                 }
             }
-            
             if (rows.isNotEmpty()) {
                 val maxCols = rows.maxOf { it.size }.coerceAtLeast(1)
                 val numRows = rows.size
@@ -7427,23 +7745,46 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
             continue
         }
 
-        // 1b. Check if it's a To-Do item (- [ ] / - [x] / [ ] / [x])
-        val todoUnchecked = Regex("^[-*+]?\\s*\\[ \\]\\s*(.*)").matchEntire(line)
-        if (todoUnchecked != null) {
+        // 2. To-Do / Checkbox item (- [ ] / - [x] / * [ ] / * [x] / + [ ] / [ ] / [x])
+        val todoMatch = Regex("^[-*+]?\\s*\\[([ xX])\\]\\s*(.*)").matchEntire(line)
+        if (todoMatch != null) {
             flushParagraph()
-            blocks.add(EditorBlock.Todo(content = todoUnchecked.groupValues[1].trim(), isChecked = false))
+            val isChecked = todoMatch.groupValues[1].equals("x", ignoreCase = true)
+            val todoContent = todoMatch.groupValues[2].trim()
+            blocks.add(EditorBlock.Todo(content = todoContent, isChecked = isChecked))
             i++
             continue
         }
-        val todoChecked = Regex("^[-*+]?\\s*\\[[xX]\\]\\s*(.*)").matchEntire(line)
-        if (todoChecked != null) {
+        val todoKeywordMatch = Regex("^(?:TODO|TAREA|CHECKBOX):\\s*(.*)", RegexOption.IGNORE_CASE).matchEntire(line)
+        if (todoKeywordMatch != null) {
             flushParagraph()
-            blocks.add(EditorBlock.Todo(content = todoChecked.groupValues[1].trim(), isChecked = true))
+            blocks.add(EditorBlock.Todo(content = todoKeywordMatch.groupValues[1].trim(), isChecked = false))
             i++
             continue
         }
 
-        // 1c. Check if it's a Quote (> text)
+        // 3. Markdown Admonitions (> [!NOTE], > [!TIP], > [!WARNING], > [!IMPORTANT], > [!CAUTION])
+        val admonitionMatch = Regex("^>\\s*\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION|INFO)\\]\\s*(.*)", RegexOption.IGNORE_CASE).matchEntire(line)
+        if (admonitionMatch != null) {
+            flushParagraph()
+            val type = admonitionMatch.groupValues[1].uppercase()
+            var content = admonitionMatch.groupValues[2].trim()
+            if (content.isEmpty() && i + 1 < lines.size && lines[i + 1].trim().startsWith(">")) {
+                i++
+                content = lines[i].trim().removePrefix(">").trim()
+            }
+            val (emoji, col) = when (type) {
+                "TIP" -> "💡" to "Purple"
+                "WARNING", "CAUTION" -> "⚠️" to "Amber"
+                "IMPORTANT" -> "⭐" to "Red"
+                else -> "📌" to "Blue"
+            }
+            blocks.add(EditorBlock.Callout(emoji = emoji, colorVariant = col, content = content))
+            i++
+            continue
+        }
+
+        // 4. Quote (> text)
         if (line.startsWith("> ")) {
             flushParagraph()
             blocks.add(EditorBlock.Quote(content = line.substring(2).trim()))
@@ -7451,25 +7792,45 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
             continue
         }
 
-        // 1d. Check if it's a Callout (💡, ⚠️, 📌, 🚀, ⭐)
-        val calloutEmojis = listOf("💡", "⚠️", "📌", "🚀", "⭐")
+        // 5. Callout with Emojis (💡, ⚠️, 📌, 🚀, ⭐, 🔥, ℹ️, 📝, ✅)
+        val calloutEmojis = listOf("💡", "⚠️", "📌", "🚀", "⭐", "🔥", "ℹ️", "📝", "✅")
         val matchingEmoji = calloutEmojis.firstOrNull { line.startsWith(it) }
         if (matchingEmoji != null) {
             flushParagraph()
-            blocks.add(EditorBlock.Callout(emoji = matchingEmoji, content = line.substring(matchingEmoji.length).trim()))
+            var calloutText = line.substring(matchingEmoji.length).trim()
+            var variant = when (matchingEmoji) {
+                "💡" -> "Purple"
+                "⚠️" -> "Amber"
+                "📌" -> "Blue"
+                "🚀" -> "Green"
+                "⭐" -> "Red"
+                else -> "Purple"
+            }
+            val colorPrefix = Regex("^\\[(Purple|Blue|Green|Red|Amber)\\]\\s*(.*)", RegexOption.IGNORE_CASE).matchEntire(calloutText)
+            if (colorPrefix != null) {
+                val c = colorPrefix.groupValues[1]
+                variant = c[0].uppercaseChar() + c.substring(1).lowercase()
+                calloutText = colorPrefix.groupValues[2].trim()
+            }
+            blocks.add(EditorBlock.Callout(emoji = matchingEmoji, content = calloutText, colorVariant = variant))
             i++
             continue
         }
 
-        // 1e. Check if it's a Divider (---, ***, ___)
-        if (line == "---" || line == "***" || line == "___") {
+        // 6. Divider (---, ***, ___, --- [dotted], --- [dashed])
+        if (line == "---" || line == "***" || line == "___" || line.startsWith("---") || line.startsWith("***")) {
             flushParagraph()
-            blocks.add(EditorBlock.Divider())
+            val style = when {
+                line.contains("dotted", ignoreCase = true) -> "Dotted"
+                line.contains("dashed", ignoreCase = true) -> "Dashed"
+                else -> "Solid"
+            }
+            blocks.add(EditorBlock.Divider(style = style))
             i++
             continue
         }
 
-        // 1f. Check if it's a Code block (```lang ... ```)
+        // 7. Code block (```lang ... ```)
         if (line.startsWith("```")) {
             flushParagraph()
             val lang = line.removePrefix("```").trim().ifEmpty { "Kotlin" }
@@ -7484,42 +7845,51 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
             continue
         }
 
-        // 2. Check if it's a Markdown Header (#, ##, ###, ####)
+        // 8. Markdown Headers (#, ##, ###, ####)
         if (line.startsWith("#")) {
             flushParagraph()
             val headerLevel = line.takeWhile { it == '#' }.length
-            val headerText = line.substring(headerLevel).trim()
+            var headerText = line.substring(headerLevel).trim()
+            var fontColor = "Normal"
+            val colMatch = Regex("\\[color[:=]([A-Za-z0-9#]+)\\](.*?)(?:\\[/color\\])?").find(headerText)
+            if (colMatch != null) {
+                val col = colMatch.groupValues[1]
+                fontColor = if (col.startsWith("#")) col else (col[0].uppercaseChar() + col.substring(1).lowercase())
+                headerText = headerText.replace(colMatch.value, colMatch.groupValues[2]).trim()
+            }
             val fontSize = when (headerLevel) {
                 1 -> 24
                 2 -> 20
                 3 -> 18
                 else -> 16
             }
-            blocks.add(EditorBlock.Text(content = headerText, isHeader = true, fontSize = fontSize))
+            blocks.add(EditorBlock.Text(content = headerText, isHeader = true, fontSize = fontSize, isBold = true, fontColor = fontColor))
             i++
             continue
         }
 
-        // 3. Check if it's a Bullet List item (*, -, +)
+        // 9. Bullet List item (*, -, +)
         if (line.startsWith("* ") || line.startsWith("- ") || line.startsWith("+ ")) {
             flushParagraph()
             val bulletText = line.substring(2).trim()
-            blocks.add(EditorBlock.Text(content = bulletText, isBullet = true, fontSize = 14))
+            val parsedText = parseSingleTextBlock(bulletText)
+            blocks.add(parsedText.copy(isBullet = true, fontSize = 14))
             i++
             continue
         }
 
-        // 4. Check if it's a Numbered List item
+        // 10. Numbered List item
         val numberedMatch = Regex("^\\d+\\.\\s+(.*)").matchEntire(line)
         if (numberedMatch != null) {
             flushParagraph()
             val numberedText = numberedMatch.groupValues[1].trim()
-            blocks.add(EditorBlock.Text(content = numberedText, isNumbered = true, fontSize = 14))
+            val parsedText = parseSingleTextBlock(numberedText)
+            blocks.add(parsedText.copy(isNumbered = true, fontSize = 14))
             i++
             continue
         }
 
-        // 5. Parse inline Markdown Images or default Paragraph text
+        // 11. Parse inline Markdown Images or default Paragraph text
         val mdImageRegex = Regex("!\\[(.*?)\\]\\((.*?)\\)")
         val htmlImageRegex = Regex("<img[^>]+src=[\\\"']([^\\\"']+)[\\\"'][^>]*>")
         

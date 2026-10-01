@@ -335,9 +335,15 @@ class LocalLlmManager(
         instruction: String
     ): Pair<String, String>? = withContext(Dispatchers.Default) {
         val sysPrompt = """
-            Eres un asistente inteligente local que modifica notas.
+            Eres un asistente inteligente de notas. Redacta notas estructuradas y visualmente atractivas.
+            Usa formatos variados según el contexto:
+            - '# Título' (título principal grande), '## Subtítulo', '### Encabezado'
+            - Checkboxes para tareas: '- [ ] Tarea pendiente', '- [x] Tarea hecha'
+            - Colores de texto: [color:Purple]texto[/color], [color:Blue]texto[/color], [color:Green]texto[/color], [color:Red]texto[/color], [color:Amber]texto[/color]
+            - Elementos gráficos: divisores '---', cuadros destacados '💡 [Purple] Consejo', '📌 [Blue] Nota', '⚠️ [Amber] Alerta', '🚀 [Green] Meta', bloques de código ```lang ... ```, tablas Markdown | Col 1 | Col 2 |, citas '> Cita'
+            - Espaciados con líneas en blanco entre secciones.
             Devuelve ÚNICAMENTE un objeto JSON válido con los campos "title" y "content".
-            Ejemplo: {"title": "Título Mejorado", "content": "Contenido modificado..."}
+            Ejemplo: {"title": "Título", "content": "## Subtítulo\n\n- [ ] Tarea\n\n💡 [Purple] Idea clave"}
         """.trimIndent()
         val userPrompt = "Título actual: $title\nContenido actual: $content\nInstrucción: $instruction"
         val raw = generateResponse(userPrompt, sysPrompt)
