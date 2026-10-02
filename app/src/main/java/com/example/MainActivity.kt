@@ -71,6 +71,11 @@ import com.example.data.local.llm.LlmModelState
 import com.example.ui.AetherViewModel
 import com.example.ui.LibraryMainScreen
 import com.example.ui.UTKNotesWelcomeScreen
+import com.example.ui.HexColorBox
+import com.example.ui.HexColorPickerDialog
+import com.example.ui.parseHexColorSafe
+import com.example.ui.colorToHex
+import com.example.ui.graphicElement2SecondHold
 import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -1585,7 +1590,8 @@ sealed class EditorBlock {
     data class Divider(
         override val id: String = UUID.randomUUID().toString(),
         var style: String = "Solid", // "Solid", "Dotted", "Dashed"
-        var thickness: Int = 1
+        var thickness: Int = 1,
+        var colorHex: String? = null
     ) : EditorBlock()
 
     data class Code(
@@ -1730,7 +1736,9 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
                         "Green" -> 0xFF27AE60.toInt()
                         "Red" -> 0xFFEB5757.toInt()
                         "Amber" -> 0xFFF2994A.toInt()
-                        else -> android.graphics.Color.BLACK
+                        else -> if (block.fontColor.startsWith("#")) {
+                            try { android.graphics.Color.parseColor(block.fontColor) } catch (e: Exception) { android.graphics.Color.BLACK }
+                        } else android.graphics.Color.BLACK
                     }
                     drawTextWithWrap(
                         text = block.content,
@@ -1968,7 +1976,8 @@ fun parseBlocks(content: String): List<EditorBlock> {
                         EditorBlock.Divider(
                             id = id,
                             style = obj.optString("style", "Solid"),
-                            thickness = obj.optInt("thickness", 1)
+                            thickness = obj.optInt("thickness", 1),
+                            colorHex = if (obj.has("colorHex")) obj.getString("colorHex") else null
                         )
                     )
                 }
@@ -2093,6 +2102,7 @@ fun serializeBlocks(blocks: List<EditorBlock>): String {
                     obj.put("id", block.id)
                     obj.put("style", block.style)
                     obj.put("thickness", block.thickness)
+                    block.colorHex?.let { obj.put("colorHex", it) }
                 }
                 is EditorBlock.Code -> {
                     obj.put("type", "code")
@@ -2420,16 +2430,27 @@ fun TableBlockView(
     onDelete: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = block.margin.dp)
-            .combinedClickable(
-                onClick = {},
-                onLongClick = onOpenSettings
+            .graphicElement2SecondHold(
+                onOpenSettings = onOpenSettings
             ),
-        horizontalArrangement = Arrangement.Center
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth(if (block.tableWidth == "Match") 1f else 0.8f)
+                .padding(horizontal = 4.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Tabla (${block.rows}×${block.cols}) • Mantén presionado 2s para editar", color = TextTertiary, fontSize = 10.sp)
+            IconButton(onClick = onOpenSettings, modifier = Modifier.size(20.dp)) {
+                Icon(Icons.Default.Settings, contentDescription = "Editar tabla", tint = GeminiCyanAccent, modifier = Modifier.size(14.dp))
+            }
+        }
         Column(
             modifier = Modifier
                 .fillMaxWidth(if (block.tableWidth == "Match") 1f else 0.8f)
@@ -2447,7 +2468,10 @@ fun TableBlockView(
                     "Green" -> Color(0xFF22422C)
                     "Red" -> Color(0xFF4A2328)
                     "Slate" -> Color(0xFF37474F)
-                    else -> Color.Transparent
+                    "None" -> Color.Transparent
+                    else -> if (block.headerColor.startsWith("#")) {
+                        parseHexColorSafe(block.headerColor, Color(0xFF3B2E5C))
+                    } else Color.Transparent
                 }
                 
                 val isRowHeader = r == 0
@@ -2569,9 +2593,8 @@ fun ImageBlockView(
                     }
                 }
                 .clip(RoundedCornerShape(8.dp))
-                .combinedClickable(
-                    onClick = {},
-                    onLongClick = onOpenSettings
+                .graphicElement2SecondHold(
+                    onOpenSettings = onOpenSettings
                 )
             
             val imageModel: Any = remember(resolvedUrl, block.urlOrPath) {
@@ -2723,13 +2746,13 @@ fun AudioBlockView(
             .padding(vertical = 8.dp)
             .clip(RoundedCornerShape(24.dp))
             .background(Color(0xFF1E1E22)) // Dark gray/black background
-            .combinedClickable(
+            .graphicElement2SecondHold(
+                onOpenSettings = onOpenSettings,
                 onClick = {
                     if (block.sourceUrl.isEmpty()) {
                         onOpenSettings()
                     }
-                },
-                onLongClick = onOpenSettings
+                }
             )
             .padding(horizontal = 16.dp, vertical = 16.dp)
     ) {
@@ -3086,13 +3109,13 @@ fun VideoBlockView(
                     .height(if (block.height == "Wrap") 200.dp else 250.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .background(Color(0xFF1E1C24))
-                    .combinedClickable(
+                    .graphicElement2SecondHold(
+                        onOpenSettings = onOpenSettings,
                         onClick = {
                             if (block.sourceUrl.isEmpty()) {
                                 onOpenSettings()
                             }
-                        },
-                        onLongClick = onOpenSettings
+                        }
                     ),
                 contentAlignment = Alignment.Center
             ) {
@@ -3152,9 +3175,9 @@ fun VideoBlockView(
                                     )
                                 )
                             )
-                            .combinedClickable(
-                                onClick = { isPlaying = !isPlaying },
-                                onLongClick = onOpenSettings
+                            .graphicElement2SecondHold(
+                                onOpenSettings = onOpenSettings,
+                                onClick = { isPlaying = !isPlaying }
                             )
                     ) {
                         Text(
@@ -3264,7 +3287,8 @@ fun FileBlockView(
             .clip(RoundedCornerShape(8.dp))
             .background(CosmicSurface)
             .border(1.dp, CosmicBorder, RoundedCornerShape(8.dp))
-            .combinedClickable(
+            .graphicElement2SecondHold(
+                onOpenSettings = onOpenSettings,
                 onClick = {
                     val urlToUse = if (resolvedUrl.isNotEmpty()) resolvedUrl else block.sourceUrl
                     if (urlToUse.isNotEmpty()) {
@@ -3278,9 +3302,10 @@ fun FileBlockView(
                         } catch (e: Exception) {
                             Toast.makeText(context, "No se puede abrir el archivo", Toast.LENGTH_SHORT).show()
                         }
+                    } else {
+                        onOpenSettings()
                     }
-                },
-                onLongClick = onOpenSettings
+                }
             )
             .padding(16.dp)
     ) {
@@ -3310,9 +3335,8 @@ fun TodoBlockView(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
-            .combinedClickable(
-                onClick = {},
-                onLongClick = onOpenSettings
+            .graphicElement2SecondHold(
+                onOpenSettings = onOpenSettings
             ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -3398,9 +3422,8 @@ fun CalloutBlockView(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 5.dp)
-            .combinedClickable(
-                onClick = {},
-                onLongClick = onOpenSettings
+            .graphicElement2SecondHold(
+                onOpenSettings = onOpenSettings
             ),
         shape = RoundedCornerShape(12.dp),
         color = bgColor,
@@ -3462,9 +3485,8 @@ fun QuoteBlockView(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
-            .combinedClickable(
-                onClick = {},
-                onLongClick = onOpenSettings
+            .graphicElement2SecondHold(
+                onOpenSettings = onOpenSettings
             ),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -3504,14 +3526,13 @@ fun DividerBlockView(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 8.dp)
-            .combinedClickable(
-                onClick = {},
-                onLongClick = onOpenSettings
+            .graphicElement2SecondHold(
+                onOpenSettings = onOpenSettings
             ),
         contentAlignment = Alignment.Center
     ) {
         val thickness = block.thickness.dp
-        val color = CosmicBorder
+        val color = parseHexColorSafe(block.colorHex, CosmicBorder)
         
         when (block.style) {
             "Dotted" -> {
@@ -3574,9 +3595,8 @@ fun CodeBlockView(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 5.dp)
-            .combinedClickable(
-                onClick = {},
-                onLongClick = onOpenSettings
+            .graphicElement2SecondHold(
+                onOpenSettings = onOpenSettings
             ),
         shape = RoundedCornerShape(8.dp),
         color = bgColor,
@@ -3741,6 +3761,8 @@ fun NoteEditorWorkspace(
     var showFormattingPanel by remember { mutableStateOf(false) }
     var showInsertionPanel by remember { mutableStateOf(false) }
     var showAiPanel by remember { mutableStateOf(false) }
+    var showTextFontPicker by remember { mutableStateOf(false) }
+    var showTextColorPicker by remember { mutableStateOf(false) }
 
     var isImportingPdfInNote by remember { mutableStateOf(false) }
     val pdfPickerLauncherInNote = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -4038,8 +4060,10 @@ fun NoteEditorWorkspace(
         },
         bottomBar = {
             val isKeyboardVisible = WindowInsets.isImeVisible
+            val hasSelectedTextBlock = selectedBlockIndex in blocks.indices && blocks[selectedBlockIndex] is EditorBlock.Text
+            val showEditorToolbar = hasSelectedTextBlock || showFormattingPanel || showInsertionPanel || showAiPanel || showTextFontPicker || showTextColorPicker
             
-            if (isKeyboardVisible) {
+            if (showEditorToolbar) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -4234,62 +4258,75 @@ fun NoteEditorWorkspace(
                                     }
                                 }
                                 item { VerticalDivider(color = CosmicBorder, modifier = Modifier.height(20.dp)) }
-                                // Font Family
+                                // Font Family Selector
                                 item {
-                                    AssistChip(
-                                        onClick = {
-                                            val nextFamily = when (activeBlock.fontFamily) {
-                                                "Sans" -> "Serif"
-                                                "Serif" -> "Monospace"
-                                                "Monospace" -> "Cursive"
-                                                else -> "Sans"
-                                            }
-                                            pushHistory()
-                                            val updated = blocks.mapIndexed { idx, block ->
-                                                if (idx == selectedBlockIndex && block is EditorBlock.Text) {
-                                                    block.copy(fontFamily = nextFamily)
-                                                } else block
-                                            }
-                                            updateBlocksAndSave(updated)
-                                        },
-                                        label = { Text(activeBlock.fontFamily, fontSize = 11.sp, color = TextPrimary) }
-                                    )
-                                }
-                                // Color Selector Circle Dots
-                                item {
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = CosmicSurface,
+                                        border = BorderStroke(1.dp, CosmicBorder),
+                                        modifier = Modifier.clickable { showFormattingPanel = true; showTextFontPicker = true }
                                     ) {
-                                        val colors = listOf("Normal", "Purple", "Blue", "Green", "Red", "Amber")
-                                        colors.forEach { colorName ->
-                                            val colorHex = when (colorName) {
-                                                "Purple" -> Color(0xFFD0BCFF)
-                                                "Blue" -> Color(0xFF8AB4F8)
-                                                "Green" -> Color(0xFF81C784)
-                                                "Red" -> Color(0xFFE57373)
-                                                "Amber" -> Color(0xFFFFB74D)
-                                                else -> TextPrimary
-                                            }
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(16.dp)
-                                                    .clip(CircleShape)
-                                                    .background(colorHex)
-                                                    .border(
-                                                        width = if (activeBlock.fontColor == colorName) 1.5.dp else 0.dp,
-                                                        color = if (activeBlock.fontColor == colorName) GeminiCyanAccent else Color.Transparent,
-                                                        shape = CircleShape
-                                                    )
-                                                    .clickable {
-                                                        pushHistory()
-                                                        val updated = blocks.mapIndexed { idx, block ->
-                                                            if (idx == selectedBlockIndex && block is EditorBlock.Text) {
-                                                                block.copy(fontColor = colorName)
-                                                            } else block
-                                                        }
-                                                        updateBlocksAndSave(updated)
-                                                    }
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.TextFields,
+                                                contentDescription = "Paquete de tipografías",
+                                                tint = GeminiCyanAccent,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text(
+                                                text = getAppFontDisplayName(activeBlock.fontFamily),
+                                                fontFamily = getAppFontFamily(activeBlock.fontFamily),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = TextPrimary
+                                            )
+                                            Icon(
+                                                Icons.Default.ArrowDropDown,
+                                                contentDescription = null,
+                                                tint = TextSecondary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                                // Text Color Recuadro (Opens HEX Color Dialog)
+                                item {
+                                    val textHex = if (activeBlock.fontColor.startsWith("#")) {
+                                        activeBlock.fontColor
+                                    } else when (activeBlock.fontColor.lowercase()) {
+                                        "purple" -> "#D0BCFF"
+                                        "blue" -> "#8AB4F8"
+                                        "green" -> "#81C784"
+                                        "red" -> "#E57373"
+                                        "amber" -> "#FFB74D"
+                                        "cyan" -> "#80DEEA"
+                                        "pink" -> "#F48FB1"
+                                        else -> "#FFFFFF"
+                                    }
+                                    val displayColor = parseHexColorSafe(textHex)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text("Color:", fontSize = 11.sp, color = TextSecondary)
+                                        Box(
+                                            modifier = Modifier
+                                                .size(30.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(displayColor)
+                                                .border(1.5.dp, Color.White.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                                                .clickable { showFormattingPanel = true; showTextColorPicker = true },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Palette,
+                                                contentDescription = "Elegir color hex",
+                                                tint = if (displayColor.red * 0.299 + displayColor.green * 0.587 + displayColor.blue * 0.114 > 0.6) Color.Black.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.85f),
+                                                modifier = Modifier.size(16.dp)
                                             )
                                         }
                                     }
@@ -4657,12 +4694,21 @@ fun NoteEditorWorkspace(
                             }
                         }
 
-                        // Hide keyboard on far right
+                        // Hide keyboard / dismiss selection on far right
                         val kbController = LocalSoftwareKeyboardController.current
-                        IconButton(onClick = { kbController?.hide() }) {
+                        IconButton(onClick = { 
+                            if (isKeyboardVisible) {
+                                kbController?.hide()
+                            } else {
+                                selectedBlockIndex = -1
+                                showFormattingPanel = false
+                                showInsertionPanel = false
+                                showAiPanel = false
+                            }
+                        }) {
                             Icon(
-                                imageVector = Icons.Default.KeyboardArrowDown,
-                                contentDescription = "Ocultar Teclado",
+                                imageVector = if (isKeyboardVisible) Icons.Default.KeyboardArrowDown else Icons.Default.Close,
+                                contentDescription = if (isKeyboardVisible) "Ocultar Teclado" else "Cerrar barra de formato",
                                 tint = TextPrimary
                             )
                         }
@@ -4896,6 +4942,7 @@ fun NoteEditorWorkspace(
                                     indication = null
                                 ) {
                                     selectedBlockIndex = index
+                                    showFormattingPanel = true
                                 }
                         ) {
                             Row(
@@ -4951,12 +4998,7 @@ fun NoteEditorWorkspace(
                                             var isFocused by remember { mutableStateOf(false) }
                                             val isSelected = selectedBlockIndex == index
                                             val textStyle = TextStyle(
-                                                fontFamily = when (block.fontFamily) {
-                                                    "Serif" -> androidx.compose.ui.text.font.FontFamily.Serif
-                                                    "Monospace" -> androidx.compose.ui.text.font.FontFamily.Monospace
-                                                    "Cursive" -> androidx.compose.ui.text.font.FontFamily.Cursive
-                                                    else -> androidx.compose.ui.text.font.FontFamily.SansSerif
-                                                },
+                                                fontFamily = getAppFontFamily(block.fontFamily),
                                                 fontSize = block.fontSize.sp,
                                                 fontWeight = if (block.isBold) FontWeight.Bold else FontWeight.Normal,
                                                 fontStyle = if (block.isItalic) FontStyle.Italic else FontStyle.Normal,
@@ -5449,6 +5491,63 @@ fun NoteEditorWorkspace(
                 }
             )
         }
+
+        val activeTextBlock = if (selectedBlockIndex in blocks.indices) blocks[selectedBlockIndex] as? EditorBlock.Text else null
+
+        if (showTextFontPicker && activeTextBlock != null) {
+            TypographyPickerDialog(
+                selectedFontId = activeTextBlock.fontFamily,
+                onFontSelected = { selectedFontId ->
+                    pushHistory()
+                    val updated = blocks.mapIndexed { idx, block ->
+                        if (idx == selectedBlockIndex && block is EditorBlock.Text) {
+                            block.copy(fontFamily = selectedFontId)
+                        } else block
+                    }
+                    updateBlocksAndSave(updated)
+                    showTextFontPicker = false
+                    showFormattingPanel = true
+                },
+                onDismiss = { 
+                    showTextFontPicker = false 
+                    showFormattingPanel = true
+                }
+            )
+        }
+
+        if (showTextColorPicker && activeTextBlock != null) {
+            val currentColorHex = if (activeTextBlock.fontColor.startsWith("#")) {
+                activeTextBlock.fontColor
+            } else when (activeTextBlock.fontColor.lowercase()) {
+                "purple" -> "#D0BCFF"
+                "blue" -> "#8AB4F8"
+                "green" -> "#81C784"
+                "red" -> "#E57373"
+                "amber" -> "#FFB74D"
+                "cyan" -> "#80DEEA"
+                "pink" -> "#F48FB1"
+                else -> "#FFFFFF"
+            }
+            HexColorPickerDialog(
+                initialColorHex = currentColorHex,
+                title = "Color de Texto",
+                onColorSelected = { selectedHex ->
+                    pushHistory()
+                    val updated = blocks.mapIndexed { idx, block ->
+                        if (idx == selectedBlockIndex && block is EditorBlock.Text) {
+                            block.copy(fontColor = selectedHex)
+                        } else block
+                    }
+                    updateBlocksAndSave(updated)
+                    showTextColorPicker = false
+                    showFormattingPanel = true
+                },
+                onDismiss = { 
+                    showTextColorPicker = false 
+                    showFormattingPanel = true
+                }
+            )
+        }
     }
 }
 }
@@ -5542,17 +5641,11 @@ fun TableSettingsContent(block: EditorBlock.Table, onBlockChange: (EditorBlock) 
             }
         }
         HorizontalDivider(color = CosmicBorder)
-        Text("Color de Encabezado", color = TextPrimary)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("None", "Purple", "Blue", "Green", "Red", "Slate").forEach { color ->
-                FilterChip(
-                    selected = block.headerColor == color,
-                    onClick = { onBlockChange(block.copy(headerColor = color)) },
-                    label = { Text(color, fontSize = 10.sp) },
-                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = Color.White)
-                )
-            }
-        }
+        HexColorBox(
+            selectedColorHex = block.headerColor,
+            onColorSelected = { onBlockChange(block.copy(headerColor = it)) },
+            label = "Color de Encabezado (HEX)"
+        )
         HorizontalDivider(color = CosmicBorder)
         Text("Alineación de Celdas", color = TextPrimary)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -5791,6 +5884,11 @@ fun FileSettingsContent(block: EditorBlock.File, onBlockChange: (EditorBlock) ->
 fun DividerSettingsContent(block: EditorBlock.Divider, onBlockChange: (EditorBlock) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Estilo de Línea", color = TextPrimary, fontWeight = FontWeight.Bold)
+        HexColorBox(
+            selectedColorHex = block.colorHex ?: "#2A3142",
+            onColorSelected = { onBlockChange(block.copy(colorHex = it)) },
+            label = "Color de Línea (HEX)"
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("Solid", "Dashed", "Dotted").forEach { style ->
                 FilterChip(
@@ -5970,39 +6068,12 @@ fun ColorPickerPreview(
     selectedColorHex: String,
     onColorSelected: (String) -> Unit
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    Column {
-        Text(label, color = TextSecondary, fontSize = 14.sp)
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { expanded = !expanded }
-                .padding(vertical = 8.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(try { Color(android.graphics.Color.parseColor(selectedColorHex)) } catch(e: Exception) { Color.Gray })
-                    .border(1.dp, CosmicBorder, RoundedCornerShape(8.dp))
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Text(selectedColorHex.uppercase(), color = TextPrimary, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.weight(1f))
-            Icon(
-                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                contentDescription = null,
-                tint = TextSecondary
-            )
-        }
-        if (expanded) {
-            ColorHexTable(
-                selectedColorHex = selectedColorHex,
-                onColorSelected = onColorSelected
-            )
-        }
-    }
+    HexColorBox(
+        selectedColorHex = selectedColorHex,
+        onColorSelected = onColorSelected,
+        label = label,
+        compact = false
+    )
 }
 
 fun getFileName(context: android.content.Context, uri: android.net.Uri): String? {
@@ -6590,270 +6661,130 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                             )
 
                             // ACTION ICONS UNDER MESSAGE
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                                modifier = Modifier.padding(top = 4.dp, start = 2.dp)
+                            Column(
+                                modifier = Modifier.padding(top = 4.dp, start = 2.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                IconButton(
-                                    onClick = {
-                                        if (!isMuted) {
-                                            tts?.speak(msg, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null)
-                                            Toast.makeText(context, "Leyendo mensaje...", Toast.LENGTH_SHORT).show()
-                                        } else {
-                                            Toast.makeText(context, "Desactiva el silencio para escuchar", Toast.LENGTH_SHORT).show()
-                                        }
-                                    },
-                                    modifier = Modifier.size(18.dp)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.VolumeUp,
-                                        contentDescription = "Escuchar",
-                                        tint = TextSecondary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-
-                                val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
-                                IconButton(
-                                    onClick = {
-                                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(msg))
-                                        Toast.makeText(context, "Mensaje copiado", Toast.LENGTH_SHORT).show()
-                                    },
-                                    modifier = Modifier.size(18.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.ContentCopy,
-                                        contentDescription = "Copiar",
-                                        tint = TextSecondary,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-
-                                IconButton(
-                                    onClick = {
-                                        Toast.makeText(context, "Gracias por tu reporte!", Toast.LENGTH_SHORT).show()
-                                    },
-                                    modifier = Modifier.size(18.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Flag,
-                                        contentDescription = "Reportar",
-                                        tint = TextSecondary,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-
-                                IconButton(
-                                    onClick = {
-                                        var lastUserMsg: String? = null
-                                        for (i in messagesList.indices.reversed()) {
-                                            if (messagesList[i].second) {
-                                                lastUserMsg = messagesList[i].first
-                                                break
+                                    IconButton(
+                                        onClick = {
+                                            if (!isMuted) {
+                                                tts?.speak(msg, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null)
+                                                Toast.makeText(context, "Leyendo mensaje...", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                Toast.makeText(context, "Desactiva el silencio para escuchar", Toast.LENGTH_SHORT).show()
                                             }
-                                        }
-                                        if (lastUserMsg != null) {
-                                            viewModel.sendChatbotMessage(lastUserMsg, lastUserMsg)
-                                        }
-                                    },
-                                    modifier = Modifier.size(18.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Refresh,
-                                        contentDescription = "Regenerar",
-                                        tint = TextSecondary,
-                                        modifier = Modifier.size(15.dp)
-                                    )
+                                        },
+                                        modifier = Modifier.size(18.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.VolumeUp,
+                                            contentDescription = "Escuchar",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+
+                                    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                                    IconButton(
+                                        onClick = {
+                                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(msg))
+                                            Toast.makeText(context, "Mensaje copiado", Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.size(18.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ContentCopy,
+                                            contentDescription = "Copiar",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            Toast.makeText(context, "Gracias por tu reporte!", Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.size(18.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Flag,
+                                            contentDescription = "Reportar",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            var lastUserMsg: String? = null
+                                            for (i in messagesList.indices.reversed()) {
+                                                if (messagesList[i].second) {
+                                                    lastUserMsg = messagesList[i].first
+                                                    break
+                                                }
+                                            }
+                                            if (lastUserMsg != null) {
+                                                viewModel.sendChatbotMessage(lastUserMsg, lastUserMsg)
+                                            }
+                                        },
+                                        modifier = Modifier.size(18.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Refresh,
+                                            contentDescription = "Regenerar",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
                                 }
-                            }
-                        }
-                    }
-                }
 
-                if (isSending) {
-                    item {
-                        Text(
-                            text = "Qwen pensando...",
-                            color = TextSecondary,
-                            fontSize = 13.sp,
-                            style = TextStyle(fontStyle = FontStyle.Italic),
-                            modifier = Modifier.padding(start = 2.dp)
-                        )
-                    }
-                }
-            }
-        }
+                                                                 // Export to Note Actions (Pasar a Nota / Convertir en Bloques)
+                                 Row(
+                                     verticalAlignment = Alignment.CenterVertically,
+                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                 ) {
+                                     TextButton(
+                                         onClick = {
+                                             viewModel.sendChatbotMessage(
+                                                 "Pasar a Nota",
+                                                 "Crea una nueva nota titulada 'Resumen de IA' basada en el siguiente contenido usando el comando:\n[CREATE_NOTE_START]\nTITLE: Resumen de IA\nCONTENT_START\n$msg\nCONTENT_END\n[CREATE_NOTE_END]"
+                                             )
+                                             Toast.makeText(context, "Pasando a nota...", Toast.LENGTH_SHORT).show()
+                                             onDismiss()
+                                         },
+                                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                         colors = ButtonDefaults.textButtonColors(contentColor = GeminiCyanAccent)
+                                     ) {
+                                         Icon(Icons.Default.NoteAdd, contentDescription = null, modifier = Modifier.size(13.dp))
+                                         Spacer(modifier = Modifier.width(3.dp))
+                                         Text("Pasar a Nota", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                     }
 
-        // AUTOCOMPLETE POPUP FOR @ MENTION
-        val atIndex = message.lastIndexOf('@')
-        val isMentioning = atIndex != -1 && (atIndex == 0 || message[atIndex - 1] == ' ' || message[atIndex - 1] == '\n') && !message.substring(atIndex).contains(' ')
-        val mentionQuery = if (isMentioning) message.substring(atIndex + 1) else ""
-        val matchingNotes = if (isMentioning) {
-            allNotes.filter { it.title.contains(mentionQuery, ignoreCase = true) }
-        } else {
-            emptyList()
-        }
+                                     TextButton(
+                                         onClick = {
+                                             viewModel.sendChatbotMessage(
+                                                 "Convertir en Bloques",
+                                                 "Crea una nueva nota estructurada y formateada en bloques visuales (títulos, listas, viñetas) basada en el siguiente contenido usando el comando:\n[CREATE_NOTE_START]\nTITLE: Representación y Bloques de IA\nCONTENT_START\n$msg\nCONTENT_END\n[CREATE_NOTE_END]"
+                                             )
+                                             Toast.makeText(context, "Convirtiendo en bloques...", Toast.LENGTH_SHORT).show()
+                                             onDismiss()
+                                         },
+                                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                         colors = ButtonDefaults.textButtonColors(contentColor = GeminiBlue)
+                                     ) {
+                                         Icon(Icons.Default.Dashboard, contentDescription = null, modifier = Modifier.size(13.dp))
+                                         Spacer(modifier = Modifier.width(3.dp))
+                                         Text("Convertir en Bloques", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                     }
+                                 }
 
-        if (isMentioning && matchingNotes.isNotEmpty()) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 8.dp),
-                colors = CardDefaults.cardColors(containerColor = CosmicSurface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-                border = BorderStroke(1.dp, Color(0xFF907CFF))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 160.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    matchingNotes.forEach { note ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    val textBeforeAt = message.substring(0, atIndex)
-                                    message = textBeforeAt + "@" + note.title + " "
-                                }
-                                .padding(horizontal = 16.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Description, contentDescription = null, tint = Color(0xFF907CFF), modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(note.title, color = TextPrimary, fontSize = 14.sp)
-                        }
-                        HorizontalDivider(color = CosmicBorder)
-                    }
-                }
-            }
-        }
+                                 Spacer(modifier = Modifier.height(6.dp))
 
-        // PREVIEW CHIPS ABOVE PILL INPUT
-        if (attachedImageUri != null || attachedFileName != null || attachedNoteFromScreen != null || attachedTextFromScreen != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (attachedTextFromScreen != null) {
-                    Box(
-                        modifier = Modifier
-                            .height(60.dp)
-                            .widthIn(max = 240.dp)
-                            .background(CosmicSurface, RoundedCornerShape(8.dp))
-                            .border(1.dp, Color(0xFF907CFF), RoundedCornerShape(8.dp))
-                            .padding(8.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.FormatQuote, contentDescription = "Párrafo", tint = Color(0xFF907CFF), modifier = Modifier.size(20.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(attachedTextFromScreen!!.ifEmpty { "Cita vacía" }, fontSize = 11.sp, color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("Párrafo citado", fontSize = 9.sp, color = TextSecondary)
-                            }
-                            IconButton(
-                                onClick = { attachedTextFromScreen = null },
-                                modifier = Modifier.size(20.dp)
-                            ) {
-                                Icon(Icons.Default.Close, contentDescription = "Eliminar", tint = TextSecondary, modifier = Modifier.size(12.dp))
-                            }
-                        }
-                    }
-                }
-                if (attachedImageUri != null) {
-                    Box(
-                        modifier = Modifier
-                            .size(60.dp)
-                            .background(CosmicSurface, RoundedCornerShape(8.dp))
-                            .border(1.dp, Color(0xFF907CFF), RoundedCornerShape(8.dp))
-                    ) {
-                        coil.compose.AsyncImage(
-                            model = attachedImageUri,
-                            contentDescription = "Imagen adjunta",
-                            modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp)),
-                            contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                        )
-                        IconButton(
-                            onClick = {
-                                attachedImageUri = null
-                                attachedImageBase64 = null
-                                attachedImageMimeType = null
-                            },
-                            modifier = Modifier
-                                .size(18.dp)
-                                .align(Alignment.TopEnd)
-                                .background(Color.Black.copy(alpha = 0.6f), CircleShape)
-                        ) {
-                            Icon(Icons.Default.Close, contentDescription = "Eliminar", tint = Color.White, modifier = Modifier.size(10.dp))
-                        }
-                    }
-                }
-
-                if (attachedFileName != null) {
-                    Box(
-                        modifier = Modifier
-                            .height(60.dp)
-                            .widthIn(max = 220.dp)
-                            .background(CosmicSurface, RoundedCornerShape(8.dp))
-                            .border(1.dp, Color(0xFF907CFF), RoundedCornerShape(8.dp))
-                            .padding(8.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.InsertDriveFile, contentDescription = "Archivo", tint = Color(0xFF907CFF), modifier = Modifier.size(20.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(attachedFileName!!, fontSize = 11.sp, color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("Archivo texto adjunto", fontSize = 9.sp, color = TextSecondary)
-                            }
-                            IconButton(
-                                onClick = {
-                                    attachedFileName = null
-                                    attachedFileContent = null
-                                    attachedFileUri = null
-                                },
-                                modifier = Modifier.size(20.dp)
-                            ) {
-                                Icon(Icons.Default.Close, contentDescription = "Eliminar", tint = TextSecondary, modifier = Modifier.size(12.dp))
-                            }
-                        }
-                    }
-                }
-
-                if (attachedNoteFromScreen != null) {
-                    Box(
-                        modifier = Modifier
-                            .height(60.dp)
-                            .widthIn(max = 220.dp)
-                            .background(CosmicSurface, RoundedCornerShape(8.dp))
-                            .border(1.dp, Color(0xFF907CFF), RoundedCornerShape(8.dp))
-                            .padding(8.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Description, contentDescription = "Nota", tint = Color(0xFF907CFF), modifier = Modifier.size(20.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(attachedNoteFromScreen!!.title, fontSize = 11.sp, color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("Contexto de la pantalla", fontSize = 9.sp, color = TextSecondary)
-                            }
-                            IconButton(
-                                onClick = { attachedNoteFromScreen = null },
-                                modifier = Modifier.size(20.dp)
-                            ) {
-                                Icon(Icons.Default.Close, contentDescription = "Eliminar", tint = TextSecondary, modifier = Modifier.size(12.dp))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        // INPUT ROW PILL
+// INPUT ROW PILL
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -7105,6 +7036,12 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
     }
 }
 
+}
+}
+}
+}
+}
+
 fun renderPdfFirstPage(context: android.content.Context, pdfFile: java.io.File): String? {
     try {
         val parcelFileDescriptor = android.os.ParcelFileDescriptor.open(pdfFile, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
@@ -7136,6 +7073,7 @@ fun renderPdfFirstPage(context: android.content.Context, pdfFile: java.io.File):
         android.util.Log.e("PDFRender", "Failed to render PDF cover", e)
     }
     return null
+}
 }
 
 sealed class ExtractedElement {

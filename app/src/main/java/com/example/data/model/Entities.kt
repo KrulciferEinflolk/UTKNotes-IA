@@ -16,6 +16,7 @@ data class BookEntity(
     val coverScale: Float = 1.0f,
     val coverOffsetX: Float = 0.0f,
     val coverOffsetY: Float = 0.0f,
+    val fontFamily: String = "Sans",
     val isDeleted: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),

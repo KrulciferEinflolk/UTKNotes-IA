@@ -26,6 +26,7 @@ class NotesRepository(private val notesDao: NotesDao) {
         coverScale: Float = 1.0f,
         coverOffsetX: Float = 0.0f,
         coverOffsetY: Float = 0.0f,
+        fontFamily: String = "Sans",
         userEmail: String = "offline"
     ): BookEntity {
         val book = BookEntity(
@@ -36,6 +37,7 @@ class NotesRepository(private val notesDao: NotesDao) {
             coverScale = coverScale,
             coverOffsetX = coverOffsetX,
             coverOffsetY = coverOffsetY,
+            fontFamily = fontFamily,
             userEmail = userEmail
         )
         notesDao.insertBook(book)

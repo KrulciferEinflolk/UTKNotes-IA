@@ -172,37 +172,17 @@ fun BookCustomizationDialog(
         coverUri: String?,
         scale: Float,
         offsetX: Float,
-        offsetY: Float
+        offsetY: Float,
+        fontFamily: String
     ) -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var title by remember { mutableStateOf(editingBook?.title ?: "") }
-    var selectedColor by remember {
-        mutableStateOf(
-            try {
-                if (editingBook?.colorHex != null) {
-                    Color(android.graphics.Color.parseColor(editingBook.colorHex))
-                } else {
-                    Color(0xFF907CFF)
-                }
-            } catch (e: Exception) {
-                Color(0xFF907CFF)
-            }
-        )
-    }
-    var selectedTextColor by remember {
-        mutableStateOf(
-            try {
-                if (editingBook?.textColorHex != null) {
-                    Color(android.graphics.Color.parseColor(editingBook.textColorHex))
-                } else {
-                    Color(0xFFFFFFFF)
-                }
-            } catch (e: Exception) {
-                Color(0xFFFFFFFF)
-            }
-        )
-    }
+    var selectedColorHex by remember { mutableStateOf(editingBook?.colorHex ?: "#907CFF") }
+    var selectedTextColorHex by remember { mutableStateOf(editingBook?.textColorHex ?: "#FFFFFF") }
+    var selectedFontFamily by remember { mutableStateOf(editingBook?.fontFamily ?: "Sans") }
+    var showFontPicker by remember { mutableStateOf(false) }
+
     var coverUri by remember { mutableStateOf<String?>(editingBook?.coverUri) }
     var coverScale by remember { mutableStateOf(editingBook?.coverScale ?: 1.0f) }
     var coverOffsetX by remember { mutableStateOf(editingBook?.coverOffsetX ?: 0f) }
@@ -227,14 +207,7 @@ fun BookCustomizationDialog(
         }
     }
 
-    val selectedColorHex = remember(selectedColor) {
-        String.format("#%06X", 0xFFFFFF and selectedColor.toArgb())
-    }
-    val selectedTextColorHex = remember(selectedTextColor) {
-        String.format("#%06X", 0xFFFFFF and selectedTextColor.toArgb())
-    }
-
-    val tempBook = remember(title, selectedColorHex, selectedTextColorHex, coverUri, coverScale, coverOffsetX, coverOffsetY) {
+    val tempBook = remember(title, selectedColorHex, selectedTextColorHex, coverUri, coverScale, coverOffsetX, coverOffsetY, selectedFontFamily) {
         BookEntity(
             id = "preview_id",
             title = if (title.isBlank()) "Título del Libro" else title,
@@ -243,7 +216,16 @@ fun BookCustomizationDialog(
             coverUri = coverUri,
             coverScale = coverScale,
             coverOffsetX = coverOffsetX,
-            coverOffsetY = coverOffsetY
+            coverOffsetY = coverOffsetY,
+            fontFamily = selectedFontFamily
+        )
+    }
+
+    if (showFontPicker) {
+        TypographyPickerDialog(
+            selectedFontId = selectedFontFamily,
+            onFontSelected = { selectedFontFamily = it },
+            onDismiss = { showFontPicker = false }
         )
     }
 
@@ -263,7 +245,8 @@ fun BookCustomizationDialog(
                         coverUri,
                         coverScale,
                         coverOffsetX,
-                        coverOffsetY
+                        coverOffsetY,
+                        selectedFontFamily
                     )
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
@@ -378,66 +361,69 @@ fun BookCustomizationDialog(
                             }
 
                             item {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                                ) {
-                                    Column(
-                                        modifier = Modifier.weight(1f),
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        Text(
-                                            "Color de Cubierta",
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = TextSecondary,
-                                            textAlign = TextAlign.Center
-                                        )
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(110.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            ColorWheel(
-                                                selectedColor = selectedColor,
-                                                onColorSelected = { selectedColor = it },
-                                                modifier = Modifier.size(100.dp)
-                                            )
-                                        }
-                                    }
+                                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                    HexColorBox(
+                                        selectedColorHex = selectedColorHex,
+                                        onColorSelected = { selectedColorHex = it },
+                                        label = "Color de Cubierta (HEX)"
+                                    )
 
-                                    Column(
-                                        modifier = Modifier.weight(1f),
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
+                                    HexColorBox(
+                                        selectedColorHex = selectedTextColorHex,
+                                        onColorSelected = { selectedTextColorHex = it },
+                                        label = "Color de Letra / Título (HEX)"
+                                    )
+
+                                    Column {
                                         Text(
-                                            "Color de Letra",
+                                            "Tipografía del Título",
                                             fontSize = 13.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             color = TextSecondary,
-                                            textAlign = TextAlign.Center
+                                            modifier = Modifier.padding(bottom = 6.dp)
                                         )
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Box(
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = Color(0xFF1B2130),
+                                            border = BorderStroke(1.dp, Color(0xFF2A3142)),
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .height(110.dp),
-                                            contentAlignment = Alignment.Center
+                                                .clickable { showFontPicker = true }
                                         ) {
-                                            ColorWheel(
-                                                selectedColor = selectedTextColor,
-                                                onColorSelected = { selectedTextColor = it },
-                                                modifier = Modifier.size(100.dp)
-                                            )
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Column {
+                                                    Text(
+                                                        text = getAppFontDisplayName(selectedFontFamily),
+                                                        fontFamily = getAppFontFamily(selectedFontFamily),
+                                                        fontSize = 16.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = Color.White
+                                                    )
+                                                    Text(
+                                                        text = "Toca para abrir paquete de letras",
+                                                        fontSize = 11.sp,
+                                                        color = GeminiCyanAccent
+                                                    )
+                                                }
+                                                Icon(
+                                                    imageVector = Icons.Default.TextFields,
+                                                    contentDescription = "Cambiar tipografía",
+                                                    tint = GeminiCyanAccent
+                                                )
+                                            }
                                         }
                                     }
                                 }
                             }
 
                             item {
-                                Divider(color = CosmicBorder)
+                                HorizontalDivider(color = CosmicBorder)
                             }
 
                             item {
@@ -577,66 +563,72 @@ fun BookCustomizationDialog(
                         }
 
                         item {
-                            Row(
+                            Column(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                verticalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
-                                Column(
-                                    modifier = Modifier.weight(1f),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Text(
-                                        "Color de Cubierta",
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = TextSecondary,
-                                        textAlign = TextAlign.Center
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(110.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        ColorWheel(
-                                            selectedColor = selectedColor,
-                                            onColorSelected = { selectedColor = it },
-                                            modifier = Modifier.size(100.dp)
-                                        )
-                                    }
-                                }
+                                HexColorBox(
+                                    selectedColorHex = selectedColorHex,
+                                    onColorSelected = { selectedColorHex = it },
+                                    label = "Color de Cubierta (HEX)"
+                                )
 
-                                Column(
-                                    modifier = Modifier.weight(1f),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
+                                HexColorBox(
+                                    selectedColorHex = selectedTextColorHex,
+                                    onColorSelected = { selectedTextColorHex = it },
+                                    label = "Color de Letra / Título (HEX)"
+                                )
+
+                                Column {
                                     Text(
-                                        "Color de Letra",
+                                        "Tipografía del Título",
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = TextSecondary,
-                                        textAlign = TextAlign.Center
+                                        modifier = Modifier.padding(bottom = 6.dp)
                                     )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Box(
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = Color(0xFF1B2130),
+                                        border = BorderStroke(1.dp, Color(0xFF2A3142)),
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(110.dp),
-                                        contentAlignment = Alignment.Center
+                                            .clickable { showFontPicker = true }
                                     ) {
-                                        ColorWheel(
-                                            selectedColor = selectedTextColor,
-                                            onColorSelected = { selectedTextColor = it },
-                                            modifier = Modifier.size(100.dp)
-                                        )
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Column {
+                                                Text(
+                                                    text = getAppFontDisplayName(selectedFontFamily),
+                                                    fontFamily = getAppFontFamily(selectedFontFamily),
+                                                    fontSize = 16.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color.White
+                                                )
+                                                Text(
+                                                    text = "Toca para abrir paquete de letras",
+                                                    fontSize = 11.sp,
+                                                    color = GeminiCyanAccent
+                                                )
+                                            }
+                                            Icon(
+                                                imageVector = Icons.Default.TextFields,
+                                                contentDescription = "Cambiar tipografía",
+                                                tint = GeminiCyanAccent
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
 
                         item {
-                            Divider(color = CosmicBorder)
+                            HorizontalDivider(color = CosmicBorder)
                         }
 
                         item {
@@ -881,7 +873,7 @@ fun LibraryMainScreen(viewModel: AetherViewModel, modifier: Modifier = Modifier)
         androidx.activity.compose.BackHandler { showAddBookDialog = false }
         BookCustomizationDialog(
             onDismiss = { showAddBookDialog = false },
-            onConfirm = { title, colorHex, textColorHex, coverUri, scale, offsetX, offsetY ->
+            onConfirm = { title, colorHex, textColorHex, coverUri, scale, offsetX, offsetY, fontFamily ->
                 viewModel.addBook(
                     title = title,
                     colorHex = colorHex,
@@ -889,7 +881,8 @@ fun LibraryMainScreen(viewModel: AetherViewModel, modifier: Modifier = Modifier)
                     coverUri = coverUri,
                     coverScale = scale,
                     coverOffsetX = offsetX,
-                    coverOffsetY = offsetY
+                    coverOffsetY = offsetY,
+                    fontFamily = fontFamily
                 )
                 showAddBookDialog = false
             }
@@ -905,7 +898,7 @@ fun LibraryMainScreen(viewModel: AetherViewModel, modifier: Modifier = Modifier)
                 viewModel.deleteBook(editingBookState!!)
                 editingBookState = null
             },
-            onConfirm = { title, colorHex, textColorHex, coverUri, scale, offsetX, offsetY ->
+            onConfirm = { title, colorHex, textColorHex, coverUri, scale, offsetX, offsetY, fontFamily ->
                 viewModel.updateBook(
                     editingBookState!!.copy(
                         title = title,
@@ -914,7 +907,8 @@ fun LibraryMainScreen(viewModel: AetherViewModel, modifier: Modifier = Modifier)
                         coverUri = coverUri,
                         coverScale = scale,
                         coverOffsetX = offsetX,
-                        coverOffsetY = offsetY
+                        coverOffsetY = offsetY,
+                        fontFamily = fontFamily
                     )
                 )
                 editingBookState = null
@@ -1269,6 +1263,7 @@ fun Book25D(
                     color = textColor,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
+                    fontFamily = getAppFontFamily(book.fontFamily),
                     maxLines = 5,
                     overflow = TextOverflow.Ellipsis,
                     style = LocalTextStyle.current.copy(shadow = textShadow)

@@ -300,7 +300,8 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         coverUri: String? = null,
         coverScale: Float = 1.0f,
         coverOffsetX: Float = 0.0f,
-        coverOffsetY: Float = 0.0f
+        coverOffsetY: Float = 0.0f,
+        fontFamily: String = "Sans"
     ) {
         android.util.Log.d("AetherViewModel", "Adding book: $title")
         viewModelScope.launch {
@@ -312,6 +313,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 coverScale = coverScale,
                 coverOffsetX = coverOffsetX,
                 coverOffsetY = coverOffsetY,
+                fontFamily = fontFamily,
                 userEmail = currentEmail.value
             )
             android.util.Log.d("AetherViewModel", "Book added: ${book.id}")
@@ -619,6 +621,8 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             _aiLoading.value = false
         }
     }
+
+
 
     private val moshi = com.squareup.moshi.Moshi.Builder()
         .addLast(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
