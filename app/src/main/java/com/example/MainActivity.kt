@@ -35,6 +35,9 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
@@ -191,7 +194,7 @@ class MainActivity : ComponentActivity() {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .fillMaxHeight(0.88f)
+                                    .fillMaxHeight(0.91f)
                                     .background(CosmicBackground)
                             ) {
                                 ChatbotUI(
@@ -1063,7 +1066,9 @@ fun NotesWorkspace(
 
 fun getNoteTextPreview(content: String): String {
     val trimmed = content.trim()
-    if (!trimmed.startsWith("[")) return content
+    if (!trimmed.startsWith("[")) {
+        return if (trimmed.length > 250) trimmed.take(250) + "..." else trimmed
+    }
     return try {
         val array = org.json.JSONArray(trimmed)
         val sb = java.lang.StringBuilder()
@@ -1074,13 +1079,14 @@ fun getNoteTextPreview(content: String): String {
                 if (text.isNotBlank()) {
                     if (sb.isNotEmpty()) sb.append(" ")
                     sb.append(text)
+                    if (sb.length > 250) break
                 }
             }
         }
         val result = sb.toString()
         if (result.isBlank()) "Documento enriquecido (toca para editar)" else result
     } catch (e: Exception) {
-        content
+        if (content.length > 250) content.take(250) + "..." else content
     }
 }
 
@@ -1102,6 +1108,7 @@ fun getNoteMediaBadges(content: String): List<String> {
                 "audio" -> hasAudio = true
                 "video" -> hasVideo = true
             }
+            if (hasTable && hasImage && hasAudio && hasVideo) break
         }
         if (hasTable) badges.add("📊 Tabla")
         if (hasImage) badges.add("📷 Imagen")
@@ -3664,7 +3671,11 @@ fun NoteEditorWorkspace(
     syncManager: com.example.data.remote.DriveSyncManager
 ) {
     var title by remember(note.id) { mutableStateOf(note.title) }
-    var blocks by remember(note.id) { mutableStateOf(parseBlocks(note.content)) }
+    val isSmallContent = note.content.length < 2500
+    var isLoadingBlocks by remember(note.id) { mutableStateOf(!isSmallContent) }
+    var blocks by remember(note.id) {
+        mutableStateOf(if (isSmallContent) parseBlocks(note.content) else emptyList())
+    }
     var tags by remember(note.id) { mutableStateOf(note.tags) }
     var aiQuery by remember { mutableStateOf("") }
     var inNoteSearchQuery by remember { mutableStateOf("") }
@@ -3684,7 +3695,44 @@ fun NoteEditorWorkspace(
     var pendingCursorOffset by remember { mutableStateOf<Pair<String, Int>?>(null) }
     var pendingTabInsertionTrigger by remember { mutableStateOf<String?>(null) }
 
+    val listState = rememberLazyListState()
+
+    // Asynchronous parsing on background thread for large content to prevent freezing/ANR
+    LaunchedEffect(note.id) {
+        if (!isSmallContent) {
+            val parsed = withContext(Dispatchers.Default) {
+                parseBlocks(note.content)
+            }
+            blocks = parsed
+            isLoadingBlocks = false
+        }
+    }
+
+    // Auto-sync if content was modified externally (e.g. AI Copilot or Sync)
+    LaunchedEffect(note.content) {
+        if (blocks.isNotEmpty()) {
+            val currentSerialized = serializeBlocks(blocks)
+            if (note.content != currentSerialized && note.content.isNotBlank()) {
+                val parsed = withContext(Dispatchers.Default) {
+                    parseBlocks(note.content)
+                }
+                blocks = parsed
+            }
+        }
+    }
+
+    // Debounced auto-save at the workspace level (prevents saving on every single keystroke)
+    LaunchedEffect(blocks, title, tags) {
+        delay(2500)
+        if (!isLoadingBlocks && blocks.isNotEmpty()) {
+            onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+        }
+    }
+
     fun pushHistory() {
+        if (undoStack.size >= 25) {
+            undoStack.removeAt(0)
+        }
         undoStack.add(cloneBlocks(blocks))
         redoStack.clear()
     }
@@ -3737,20 +3785,21 @@ fun NoteEditorWorkspace(
         }
     }
 
-    // Collapsed block filter list for collapsible dropdown sections
-    val visibleBlocks = remember(blocks) {
-        val list = mutableListOf<EditorBlock>()
+    // Precomputed list of visible (index, block) items - O(N) instead of O(N^2)
+    val displayItems = remember(blocks) {
+        val list = mutableListOf<Pair<Int, EditorBlock>>()
         var isHiding = false
-        for (b in blocks) {
+        for (i in blocks.indices) {
+            val b = blocks[i]
             if (b is EditorBlock.Text && b.isCollapsedHeader) {
-                list.add(b)
+                list.add(Pair(i, b))
                 isHiding = b.isCollapsed
             } else if (b is EditorBlock.Text && b.isHeader) {
-                list.add(b)
+                list.add(Pair(i, b))
                 isHiding = false
             } else {
                 if (!isHiding) {
-                    list.add(b)
+                    list.add(Pair(i, b))
                 }
             }
         }
@@ -4811,101 +4860,127 @@ fun NoteEditorWorkspace(
             }
         }
     ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
+        if (isLoadingBlocks) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    val lastBlock = blocks.lastOrNull()
-                    val shouldCreateNewBlock = blocks.isEmpty() ||
-                            lastBlock !is EditorBlock.Text ||
-                            lastBlock.content.isNotEmpty()
+                    CircularProgressIndicator(
+                        color = GeminiCyanAccent,
+                        modifier = Modifier.size(36.dp),
+                        strokeWidth = 3.dp
+                    )
+                    Text(
+                        "Cargando contenido...",
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                item(key = "note_header_section") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Document Header Title - Borderless
+                        TextField(
+                            value = title,
+                            onValueChange = {
+                                title = it
+                                onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                            },
+                            placeholder = { Text("Sin Título", color = TextTertiary, fontSize = 24.sp, fontWeight = FontWeight.Bold) },
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                disabledIndicatorColor = Color.Transparent,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            ),
+                            textStyle = TextStyle(fontWeight = FontWeight.Bold, fontSize = 24.sp, color = TextPrimary),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("editor_title_input")
+                        )
 
-                    if (shouldCreateNewBlock) {
-                        pushHistory()
-                        val newBlock = EditorBlock.Text(content = "")
-                        val newList = blocks + newBlock
-                        updateBlocksAndSave(newList)
-                        selectedBlockIndex = newList.size - 1
-                        scope.launch {
-                            delay(50)
-                            try {
-                                focusRequesters[newBlock.id]?.requestFocus()
-                            } catch (e: Exception) {
-                                // Ignore
-                            }
-                        }
-                    } else if (blocks.isNotEmpty()) {
-                        val lastBlockNonNull = blocks.last()
-                        selectedBlockIndex = blocks.size - 1
-                        scope.launch {
-                            delay(50)
-                            try {
-                                focusRequesters[lastBlockNonNull.id]?.requestFocus()
-                            } catch (e: Exception) {
-                                // Ignore
+                        // Tags - Borderless
+                        TextField(
+                            value = tags,
+                            onValueChange = {
+                                tags = it
+                                onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                            },
+                            placeholder = { Text("Etiquetas (separadas por comas)", color = TextTertiary.copy(alpha = 0.5f), fontSize = 12.sp) },
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                disabledIndicatorColor = Color.Transparent,
+                                focusedTextColor = GeminiBlue,
+                                unfocusedTextColor = GeminiBlue
+                            ),
+                            textStyle = TextStyle(fontSize = 12.sp, color = GeminiBlue),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        HorizontalDivider(color = CosmicBorder, modifier = Modifier.padding(vertical = 4.dp))
+                    }
+                }
+
+                if (note.reminderTime != null) {
+                    item(key = "note_reminder_banner") {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = CosmicSurfaceVariant),
+                            border = BorderStroke(1.dp, GeminiCyanAccent.copy(alpha = 0.4f)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.AccessTime, null, tint = GeminiCyanAccent, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        "Recordatorio programado:",
+                                        color = TextSecondary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                Text(
+                                    formatter.format(Date(note.reminderTime)),
+                                    color = TextPrimary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
                     }
                 }
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            // Document Header Title - Borderless
-            TextField(
-                value = title,
-                onValueChange = {
-                    title = it
-                    onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
-                },
-                placeholder = { Text("Sin Título", color = TextTertiary, fontSize = 24.sp, fontWeight = FontWeight.Bold) },
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    disabledIndicatorColor = Color.Transparent,
-                    focusedTextColor = TextPrimary,
-                    unfocusedTextColor = TextPrimary
-                ),
-                textStyle = TextStyle(fontWeight = FontWeight.Bold, fontSize = 24.sp, color = TextPrimary),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("editor_title_input")
-            )
 
-            // Tags - Borderless
-            TextField(
-                value = tags,
-                onValueChange = {
-                    tags = it
-                    onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
-                },
-                placeholder = { Text("Etiquetas (separadas por comas)", color = TextTertiary.copy(alpha = 0.5f), fontSize = 12.sp) },
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    disabledIndicatorColor = Color.Transparent,
-                    focusedTextColor = GeminiBlue,
-                    unfocusedTextColor = GeminiBlue
-                ),
-                textStyle = TextStyle(fontSize = 12.sp, color = GeminiBlue),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            HorizontalDivider(color = CosmicBorder, modifier = Modifier.padding(vertical = 4.dp))
-
-            // Render dynamic blocks inside the page canvas
-            blocks.forEachIndexed { index, block ->
-                val isVisible = visibleBlocks.contains(block)
-                if (isVisible) {
-                    key(block.id) {
+                items(
+                    items = displayItems,
+                    key = { it.second.id },
+                    contentType = { it.second::class.java.simpleName }
+                ) { (index, block) ->
                         val matchesSearch = remember(inNoteSearchQuery, block) {
                             if (inNoteSearchQuery.isEmpty()) false
                             else {
@@ -5263,16 +5338,7 @@ fun NoteEditorWorkspace(
                                                                     onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
                                                                 }
                                                             }
-                                                            .let { modifier ->
-                                                                // Periodically save while focused
-                                                                LaunchedEffect(blocks, isFocused) {
-                                                                    if (isFocused) {
-                                                                        delay(5000)
-                                                                        onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
-                                                                    }
-                                                                }
-                                                                modifier
-                                                            }
+
                                                             .onKeyEvent { keyEvent ->
                                                                  if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Tab) {
                                                                      pendingTabInsertionTrigger = block.id
@@ -5436,37 +5502,49 @@ fun NoteEditorWorkspace(
                     }
                 }
             }
-        }
-    }
+                }
 
-        // Scheduled reminder status banner inside Editor
-        if (note.reminderTime != null) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = CosmicSurfaceVariant),
-                border = BorderStroke(1.dp, GeminiCyanAccent.copy(alpha = 0.4f)),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.AccessTime, null, tint = GeminiCyanAccent, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            "Recordatorio programado:",
-                            color = TextSecondary,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    Text(
-                        formatter.format(Date(note.reminderTime)),
-                        color = TextPrimary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
+                item(key = "note_bottom_canvas_tap_target") {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) {
+                                val lastBlock = blocks.lastOrNull()
+                                val shouldCreateNewBlock = blocks.isEmpty() ||
+                                        lastBlock !is EditorBlock.Text ||
+                                        lastBlock.content.isNotEmpty()
+
+                                if (shouldCreateNewBlock) {
+                                    pushHistory()
+                                    val newBlock = EditorBlock.Text(content = "")
+                                    val newList = blocks + newBlock
+                                    updateBlocksAndSave(newList)
+                                    selectedBlockIndex = newList.size - 1
+                                    scope.launch {
+                                        delay(50)
+                                        try {
+                                            focusRequesters[newBlock.id]?.requestFocus()
+                                        } catch (e: Exception) {
+                                            // Ignore
+                                        }
+                                    }
+                                } else if (blocks.isNotEmpty()) {
+                                    val lastBlockNonNull = blocks.last()
+                                    selectedBlockIndex = blocks.size - 1
+                                    scope.launch {
+                                        delay(50)
+                                        try {
+                                            focusRequesters[lastBlockNonNull.id]?.requestFocus()
+                                        } catch (e: Exception) {
+                                            // Ignore
+                                        }
+                                    }
+                                }
+                            }
                     )
                 }
             }
@@ -5549,8 +5627,6 @@ fun NoteEditorWorkspace(
             )
         }
     }
-}
-}
 }
 
 @Composable
@@ -6476,7 +6552,6 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
             .background(CosmicBackground)
             .padding(top = 8.dp, bottom = 16.dp, start = 16.dp, end = 16.dp)
             .navigationBarsPadding()
-            .imePadding()
     ) {
         // HEADER ROW: Matching Actions Exactly!
         Row(
@@ -6557,11 +6632,14 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
         }
 
         // MESSAGES AREA / GREETING SCREEN
-        if (messagesList.isEmpty()) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) {
+            if (messagesList.isEmpty()) {
             Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
+                modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
@@ -6590,8 +6668,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
+                    .fillMaxSize()
                     .padding(bottom = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
@@ -6781,16 +6858,84 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                          Text("Convertir en Bloques", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                      }
                                  }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        }
 
-                                 Spacer(modifier = Modifier.height(6.dp))
+        // ATTACHMENT PREVIEW CHIPS
+        if (attachedImageUri != null || attachedFileName != null || attachedNoteFromScreen != null || attachedTextFromScreen != null) {
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (attachedImageUri != null) {
+                    item {
+                        AssistChip(
+                            onClick = {
+                                attachedImageUri = null
+                                attachedImageBase64 = null
+                                attachedImageMimeType = null
+                            },
+                            label = { Text("Imagen adjunta ✕", fontSize = 11.sp, color = TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(14.dp)) },
+                            colors = AssistChipDefaults.assistChipColors(containerColor = CosmicSurface)
+                        )
+                    }
+                }
+                if (attachedFileName != null) {
+                    item {
+                        AssistChip(
+                            onClick = {
+                                attachedFileName = null
+                                attachedFileContent = null
+                                attachedFileUri = null
+                            },
+                            label = { Text("${attachedFileName} ✕", fontSize = 11.sp, color = TextPrimary, maxLines = 1) },
+                            leadingIcon = { Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(14.dp)) },
+                            colors = AssistChipDefaults.assistChipColors(containerColor = CosmicSurface)
+                        )
+                    }
+                }
+                if (attachedNoteFromScreen != null) {
+                    item {
+                        AssistChip(
+                            onClick = { attachedNoteFromScreen = null },
+                            label = { Text("${attachedNoteFromScreen!!.title} ✕", fontSize = 11.sp, color = TextPrimary, maxLines = 1) },
+                            leadingIcon = { Icon(Icons.Default.Note, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(14.dp)) },
+                            colors = AssistChipDefaults.assistChipColors(containerColor = CosmicSurface)
+                        )
+                    }
+                }
+                if (attachedTextFromScreen != null) {
+                    item {
+                        AssistChip(
+                            onClick = { attachedTextFromScreen = null },
+                            label = { Text("Fragmento citado ✕", fontSize = 11.sp, color = TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.FormatQuote, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(14.dp)) },
+                            colors = AssistChipDefaults.assistChipColors(containerColor = CosmicSurface)
+                        )
+                    }
+                }
+            }
+        }
 
-// INPUT ROW PILL
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // INPUT ROW PILL (Placed higher up with comfortable bottom padding)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .border(2.dp, Color(0xFF907CFF), RoundedCornerShape(32.dp))
-                .background(Color.Transparent)
-                .padding(horizontal = 6.dp, vertical = 6.dp),
+                .padding(bottom = 16.dp)
+                .border(1.5.dp, Color(0xFF907CFF), RoundedCornerShape(32.dp))
+                .background(CosmicSurface)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box {
@@ -7036,12 +7181,6 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
     }
 }
 
-}
-}
-}
-}
-}
-
 fun renderPdfFirstPage(context: android.content.Context, pdfFile: java.io.File): String? {
     try {
         val parcelFileDescriptor = android.os.ParcelFileDescriptor.open(pdfFile, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
@@ -7073,7 +7212,6 @@ fun renderPdfFirstPage(context: android.content.Context, pdfFile: java.io.File):
         android.util.Log.e("PDFRender", "Failed to render PDF cover", e)
     }
     return null
-}
 }
 
 sealed class ExtractedElement {
@@ -7305,7 +7443,7 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                 val isNumbered = Regex("^\\d+[\\.\\-]\\s+(.*)").matchEntire(rawText) != null
 
                 // Checkbox item
-                val todoMatch = Regex("^[-*+]?\\s*\\[([ xX])\\]\\s*(.*)").matchEntire(rawText)
+                val todoMatch = REGEX_TODO.matchEntire(rawText)
                 val isUnicodeCheckbox = rawText.startsWith("☐") || rawText.startsWith("☑")
 
                 if (isTitle || isSubtitle || isHeading || isMinorSection) {
@@ -7431,6 +7569,18 @@ fun isSupportedTextExtension(fileName: String, mimeType: String): Boolean {
            mimeType == "application/javascript"
 }
 
+private val REGEX_COLOR_TAG = Regex("""\[color[:=]([A-Za-z0-9#]+)\](.*?)(?:\[/color\])?""", RegexOption.DOT_MATCHES_ALL)
+private val REGEX_PREFIX_COLOR = Regex("""^\[(Purple|Blue|Green|Red|Amber|Cyan|Pink|#[0-9A-Fa-f]{6})\]\s*(.*)""", RegexOption.IGNORE_CASE)
+private val REGEX_TODO = Regex("""^[-*+]?\s*\[([ xX])\]\s*(.*)""")
+private val REGEX_TODO_KEYWORD = Regex("""^(?:TODO|TAREA|CHECKBOX):\s*(.*)""", RegexOption.IGNORE_CASE)
+private val REGEX_ADMONITION = Regex("""^>\s*\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION|INFO)\]\s*(.*)""", RegexOption.IGNORE_CASE)
+private val REGEX_CALLOUT_COLOR = Regex("""^\[(Purple|Blue|Green|Red|Amber)\]\s*(.*)""", RegexOption.IGNORE_CASE)
+private val REGEX_HEADER_COLOR = Regex("""\[color[:=]([A-Za-z0-9#]+)\](.*?)(?:\[/color\])?""")
+private val REGEX_NUMBERED = Regex("""^\d+\.\s+(.*)""")
+private val REGEX_MD_IMAGE = Regex("""!\[(.*?)\]\((.*?)\)""")
+private val REGEX_HTML_IMAGE = Regex("""<img[^>]+src=["']([^"']+)["'][^>]*>""")
+private val REGEX_ALT = Regex("""alt=["']([^"']+)["']""")
+
 fun parseSingleTextBlock(rawText: String): EditorBlock.Text {
     var text = rawText
     var fontColor = "Normal"
@@ -7440,16 +7590,14 @@ fun parseSingleTextBlock(rawText: String): EditorBlock.Text {
     var isHeader = false
 
     // Color tag extraction: [color:Purple]texto[/color] or [color=Purple]texto or [color:#HEX]texto
-    val colorTagRegex = Regex("\\[color[:=]([A-Za-z0-9#]+)\\](.*?)(?:\\[/color\\])?", RegexOption.DOT_MATCHES_ALL)
-    val colorMatch = colorTagRegex.find(text)
+    val colorMatch = REGEX_COLOR_TAG.find(text)
     if (colorMatch != null) {
         val col = colorMatch.groupValues[1]
         fontColor = if (col.startsWith("#")) col else (col[0].uppercaseChar() + col.substring(1).lowercase())
         text = text.replace(colorMatch.value, colorMatch.groupValues[2]).trim()
     } else {
         // [Purple] Texto
-        val prefixColorRegex = Regex("^\\[(Purple|Blue|Green|Red|Amber|Cyan|Pink|#[0-9A-Fa-f]{6})\\]\\s*(.*)", RegexOption.IGNORE_CASE)
-        val prefixMatch = prefixColorRegex.matchEntire(text)
+        val prefixMatch = REGEX_PREFIX_COLOR.matchEntire(text)
         if (prefixMatch != null) {
             val col = prefixMatch.groupValues[1]
             fontColor = if (col.startsWith("#")) col else (col[0].uppercaseChar() + col.substring(1).lowercase())
@@ -7525,6 +7673,11 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
             continue
         }
 
+        // Periodic flush if paragraph is getting too large to prevent massive single blocks
+        if (currentParagraph.length > 3000) {
+            flushParagraph()
+        }
+
         // 1. Markdown Table
         if (line.startsWith("|") && line.endsWith("|") && line.length > 2) {
             flushParagraph()
@@ -7564,7 +7717,7 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
         }
 
         // 2. To-Do / Checkbox item (- [ ] / - [x] / * [ ] / * [x] / + [ ] / [ ] / [x])
-        val todoMatch = Regex("^[-*+]?\\s*\\[([ xX])\\]\\s*(.*)").matchEntire(line)
+        val todoMatch = REGEX_TODO.matchEntire(line)
         if (todoMatch != null) {
             flushParagraph()
             val isChecked = todoMatch.groupValues[1].equals("x", ignoreCase = true)
@@ -7573,7 +7726,7 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
             i++
             continue
         }
-        val todoKeywordMatch = Regex("^(?:TODO|TAREA|CHECKBOX):\\s*(.*)", RegexOption.IGNORE_CASE).matchEntire(line)
+        val todoKeywordMatch = REGEX_TODO_KEYWORD.matchEntire(line)
         if (todoKeywordMatch != null) {
             flushParagraph()
             blocks.add(EditorBlock.Todo(content = todoKeywordMatch.groupValues[1].trim(), isChecked = false))
@@ -7582,7 +7735,7 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
         }
 
         // 3. Markdown Admonitions (> [!NOTE], > [!TIP], > [!WARNING], > [!IMPORTANT], > [!CAUTION])
-        val admonitionMatch = Regex("^>\\s*\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION|INFO)\\]\\s*(.*)", RegexOption.IGNORE_CASE).matchEntire(line)
+        val admonitionMatch = REGEX_ADMONITION.matchEntire(line)
         if (admonitionMatch != null) {
             flushParagraph()
             val type = admonitionMatch.groupValues[1].uppercase()
@@ -7624,7 +7777,7 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
                 "⭐" -> "Red"
                 else -> "Purple"
             }
-            val colorPrefix = Regex("^\\[(Purple|Blue|Green|Red|Amber)\\]\\s*(.*)", RegexOption.IGNORE_CASE).matchEntire(calloutText)
+            val colorPrefix = REGEX_CALLOUT_COLOR.matchEntire(calloutText)
             if (colorPrefix != null) {
                 val c = colorPrefix.groupValues[1]
                 variant = c[0].uppercaseChar() + c.substring(1).lowercase()
@@ -7669,7 +7822,7 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
             val headerLevel = line.takeWhile { it == '#' }.length
             var headerText = line.substring(headerLevel).trim()
             var fontColor = "Normal"
-            val colMatch = Regex("\\[color[:=]([A-Za-z0-9#]+)\\](.*?)(?:\\[/color\\])?").find(headerText)
+            val colMatch = REGEX_HEADER_COLOR.find(headerText)
             if (colMatch != null) {
                 val col = colMatch.groupValues[1]
                 fontColor = if (col.startsWith("#")) col else (col[0].uppercaseChar() + col.substring(1).lowercase())
@@ -7697,7 +7850,7 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
         }
 
         // 10. Numbered List item
-        val numberedMatch = Regex("^\\d+\\.\\s+(.*)").matchEntire(line)
+        val numberedMatch = REGEX_NUMBERED.matchEntire(line)
         if (numberedMatch != null) {
             flushParagraph()
             val numberedText = numberedMatch.groupValues[1].trim()
@@ -7708,13 +7861,11 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
         }
 
         // 11. Parse inline Markdown Images or default Paragraph text
-        val mdImageRegex = Regex("!\\[(.*?)\\]\\((.*?)\\)")
-        val htmlImageRegex = Regex("<img[^>]+src=[\\\"']([^\\\"']+)[\\\"'][^>]*>")
         
         var remainingLine = lines[i]
         while (remainingLine.isNotEmpty()) {
-            val mdMatch = mdImageRegex.find(remainingLine)
-            val htmlMatch = htmlImageRegex.find(remainingLine)
+            val mdMatch = REGEX_MD_IMAGE.find(remainingLine)
+            val htmlMatch = REGEX_HTML_IMAGE.find(remainingLine)
 
             if (mdMatch != null && (htmlMatch == null || mdMatch.range.first < htmlMatch.range.first)) {
                 val beforeText = remainingLine.substring(0, mdMatch.range.first)
@@ -7741,8 +7892,7 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
                 flushParagraph()
 
                 val url = htmlMatch.groupValues[1]
-                val altRegex = Regex("alt=[\\\"']([^\\\"']+)[\\\"']")
-                val altMatch = altRegex.find(htmlMatch.value)
+                val altMatch = REGEX_ALT.find(htmlMatch.value)
                 val caption = altMatch?.groupValues?.get(1) ?: "Imagen"
 
                 blocks.add(EditorBlock.Image(
