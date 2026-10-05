@@ -122,6 +122,7 @@ dependencies {
   implementation(libs.retrofit)
   implementation("com.itextpdf:itextg:5.5.10")
   implementation("io.github.ljcamargo:llamacpp-kotlin:0.4.0")
+  implementation("com.google.mlkit:text-recognition:16.0.1")
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)

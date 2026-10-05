@@ -38,15 +38,17 @@ class LocalLlmManager(
     companion object {
         private const val TAG = "LocalLlmManager"
         // Contexto seguro para dispositivos móviles (evita agotar la RAM con el KV cache)
-        const val DEFAULT_CONTEXT_SIZE = 2048
+        const val DEFAULT_CONTEXT_SIZE = 4096
     }
 
     private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Unloaded)
     val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
 
     private val loadMutex = Mutex()
+    private val inferenceMutex = Mutex()
     private val llmEvents = MutableSharedFlow<LlamaHelper.LLMEvent>(extraBufferCapacity = 64)
     private var llamaHelper: LlamaHelper? = null
+    private var isGenerating = false
 
     private var activeModelPath: String? = null
 
@@ -269,62 +271,104 @@ class LocalLlmManager(
     /**
      * Genera una respuesta completa esperando a que finalice la inferencia de Qwen.
      */
-    suspend fun generateResponse(
-        prompt: String,
-        systemPrompt: String? = null,
-        history: List<Pair<String, String>> = emptyList()
-    ): String = withContext(Dispatchers.Default) {
-        val helper = llamaHelper
-        if (helper == null || _modelState.value !is LlmModelState.Ready) {
-            return@withContext "El modelo local Qwen no está cargado en memoria nativa. Abre Ajustes para verificar el estado de la IA local."
-        }
+     suspend fun generateResponse(
+         prompt: String,
+         systemPrompt: String? = null,
+         history: List<Pair<String, String>> = emptyList(),
+         imageUri: String? = null,
+         onStatusUpdate: ((String) -> Unit)? = null
+     ): String = inferenceMutex.withLock {
+         withContext(Dispatchers.Default) {
+             val helper = llamaHelper
+             if (helper == null || _modelState.value !is LlmModelState.Ready) {
+                 return@withContext "El modelo local Qwen no está cargado en memoria nativa. Abre Ajustes para verificar el estado de la IA local."
+             }
 
-        val formattedPrompt = formatQwenPrompt(prompt, systemPrompt, history)
-        val accumulatedText = StringBuilder()
-        val doneSignal = kotlinx.coroutines.CompletableDeferred<String>()
+             // Si había una generación previa aún activa, detenerla limpiamente y esperar drenaje
+             if (isGenerating) {
+                 try {
+                     helper.stopPrediction()
+                     kotlinx.coroutines.delay(100L)
+                 } catch (e: Exception) {
+                     Log.w(TAG, "Advertencia al detener predicción previa", e)
+                 }
+                 isGenerating = false
+             }
 
-        val job = scope.launch {
-            llmEvents.collect { event ->
-                when (event) {
-                    is LlamaHelper.LLMEvent.Ongoing -> {
-                        accumulatedText.append(event.word)
-                    }
-                    is LlamaHelper.LLMEvent.Done -> {
-                        val text = event.fullText.ifBlank { accumulatedText.toString() }.trim()
-                        doneSignal.complete(text)
-                    }
-                    is LlamaHelper.LLMEvent.Error -> {
-                        doneSignal.complete("Error de inferencia en Qwen local: ${event.message}")
-                    }
-                    else -> Unit
-                }
-            }
-        }
+             onStatusUpdate?.invoke("Aura está pensando...")
 
-        try {
-            helper.predict(formattedPrompt, null, true)
-            val result = kotlinx.coroutines.withTimeoutOrNull(90_000L) {
-                doneSignal.await()
-            } ?: accumulatedText.toString().ifEmpty { "Tiempo de inferencia de Qwen agotado." }
-            val cleanResult = result.replace("<|im_end|>", "").replace("<|endoftext|>", "").trim()
-            if (cleanResult.isBlank()) {
-                "Qwen local procesó la instrucción. Si solicitaste crear o modificar una nota o libro, la acción se aplicará en tu espacio de trabajo."
-            } else {
-                cleanResult
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error en inferencia local con Qwen", e)
-            val msg = e.localizedMessage ?: e.message ?: "Error desconocido"
-            if (msg.contains("not loaded", ignoreCase = true)) {
-                _modelState.value = LlmModelState.Unloaded
-                "El modelo se descargó de la memoria RAM o aún no ha finalizado su inicialización. Abre Ajustes y pulsa 'Cargar en Memoria RAM'."
-            } else {
-                "Error en inferencia local: $msg"
-            }
-        } finally {
-            job.cancel()
-        }
-    }
+             val formattedPrompt = formatQwenPrompt(prompt, systemPrompt, history)
+             val accumulatedText = StringBuilder()
+             val doneSignal = kotlinx.coroutines.CompletableDeferred<String>()
+             var hasStarted = false
+
+             val job = scope.launch {
+                 llmEvents.collect { event ->
+                     when (event) {
+                         is LlamaHelper.LLMEvent.Started -> {
+                             hasStarted = true
+                             isGenerating = true
+                             onStatusUpdate?.invoke("Aura está pensando...")
+                         }
+                         is LlamaHelper.LLMEvent.Ongoing -> {
+                             hasStarted = true
+                             isGenerating = true
+                             accumulatedText.append(event.word)
+                             if (accumulatedText.length in 1..30) {
+                                 onStatusUpdate?.invoke("Aura está redactando respuesta...")
+                             }
+                         }
+                         is LlamaHelper.LLMEvent.Done -> {
+                             val text = event.fullText.ifBlank { accumulatedText.toString() }.trim()
+                             isGenerating = false
+                             doneSignal.complete(text.ifBlank { accumulatedText.toString().trim() })
+                         }
+                         is LlamaHelper.LLMEvent.Error -> {
+                             isGenerating = false
+                             doneSignal.complete("Error de inferencia en Qwen local: ${event.message}")
+                         }
+                         else -> Unit
+                     }
+                 }
+             }
+
+             try {
+                 isGenerating = true
+                 helper.predict(formattedPrompt, imageUri, true)
+                 val result = kotlinx.coroutines.withTimeoutOrNull(120_000L) {
+                     doneSignal.await()
+                 } ?: accumulatedText.toString().ifEmpty { "Tiempo de inferencia de Qwen agotado." }
+                 val cleanResult = result.replace("<|im_end|>", "").replace("<|endoftext|>", "").trim()
+                 if (cleanResult.isBlank()) {
+                     val fallbackText = accumulatedText.toString().trim()
+                     if (fallbackText.isNotBlank()) {
+                         fallbackText
+                     } else {
+                         "Aura no pudo generar texto de respuesta para esta solicitud. Por favor intenta de nuevo con una pregunta o instrucción más específica."
+                     }
+                 } else {
+                     cleanResult
+                 }
+             } catch (e: Exception) {
+                 Log.e(TAG, "Error en inferencia local con Qwen", e)
+                 val msg = e.localizedMessage ?: e.message ?: "Error desconocido"
+                 if (msg.contains("not loaded", ignoreCase = true)) {
+                     _modelState.value = LlmModelState.Unloaded
+                     "El modelo se descargó de la memoria RAM o aún no ha finalizado su inicialización. Abre Ajustes y pulsa 'Cargar en Memoria RAM'."
+                 } else {
+                     "Error en inferencia local: $msg"
+                 }
+             } finally {
+                 isGenerating = false
+                 job.cancel()
+                 try {
+                     helper.stopPrediction()
+                 } catch (e: Exception) {
+                     Log.w(TAG, "Error limpiando predicción en finally", e)
+                 }
+             }
+         }
+     }
 
     /**
      * Modifica el título y contenido de una nota usando Qwen local.

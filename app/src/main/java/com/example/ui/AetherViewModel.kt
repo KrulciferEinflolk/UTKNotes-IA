@@ -1,6 +1,8 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppDatabase
@@ -17,6 +19,8 @@ import com.example.data.local.memory.NoteMemoryVaultManager
 import com.example.ui.reminders.NotificationHelper
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 class AetherViewModel(application: Application) : AndroidViewModel(application) {
@@ -80,6 +84,11 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     private val _isChatbotSending = MutableStateFlow(false)
     val isChatbotSending: StateFlow<Boolean> = _isChatbotSending.asStateFlow()
 
+    private val _chatbotStatusText = MutableStateFlow<String?>(null)
+    val chatbotStatusText: StateFlow<String?> = _chatbotStatusText.asStateFlow()
+
+    private var chatbotJob: kotlinx.coroutines.Job? = null
+
     fun openChatbot(preAttachedNote: NoteEntity? = null, preAttachedText: String? = null) {
         if (preAttachedNote != null) _chatbotPreAttachedNote.value = preAttachedNote
         if (preAttachedText != null) _chatbotPreAttachedText.value = preAttachedText
@@ -92,32 +101,45 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setChatSession(sessionId: String?, messages: List<Pair<String, Boolean>>) {
+        chatbotJob?.cancel()
+        chatbotJob = null
+        localLlm.stopGeneration()
         _currentChatSessionId.value = sessionId
         _chatMessages.value = messages
+        _isChatbotSending.value = false
+        _chatbotStatusText.value = null
     }
 
     fun clearChat() {
+        chatbotJob?.cancel()
+        chatbotJob = null
+        localLlm.stopGeneration()
         _currentChatSessionId.value = null
         _chatMessages.value = emptyList()
         _chatbotPreAttachedNote.value = null
         _chatbotPreAttachedText.value = null
+        _isChatbotSending.value = false
+        _chatbotStatusText.value = null
     }
 
     fun sendChatbotMessage(
         userDisplayMsg: String,
         promptWithContext: String,
         imgB64: String? = null,
-        imgMime: String? = null
+        imgMime: String? = null,
+        alreadyAddedToChat: Boolean = false
     ) {
-        val updatedList = _chatMessages.value + (userDisplayMsg to true)
+        val updatedList = if (alreadyAddedToChat) _chatMessages.value else (_chatMessages.value + (userDisplayMsg to true))
         _chatMessages.value = updatedList
         _isChatbotSending.value = true
+        if (_chatbotStatusText.value.isNullOrBlank()) {
+            _chatbotStatusText.value = "🧠 Aura está pensando..."
+        }
 
         if (_currentChatSessionId.value == null) {
             _currentChatSessionId.value = java.util.UUID.randomUUID().toString()
         }
         val sId = _currentChatSessionId.value!!
-        val chatTitle = userDisplayMsg.take(35).ifBlank { "Conversación" }
 
         val serializeChatMessagesFunc: (List<Pair<String, Boolean>>) -> String = { list ->
             val array = org.json.JSONArray()
@@ -130,21 +152,231 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             array.toString()
         }
 
-        saveChatSession(sId, chatTitle, serializeChatMessagesFunc(updatedList))
+        viewModelScope.launch {
+            val existing = repository.getChatSession(sId)
+            val chatTitle = existing?.title ?: userDisplayMsg.take(35).ifBlank { "Conversación" }
+            saveChatSession(sId, chatTitle, serializeChatMessagesFunc(updatedList))
+        }
 
+        chatbotJob?.cancel()
+        chatbotJob = viewModelScope.launch {
+            try {
+                // Pass recent history turns to local LLM so it maintains multi-turn conversation context
+                val recentHistory = _chatMessages.value.dropLast(1).takeLast(6).map { (text, isUser) ->
+                    (if (isUser) "user" else "assistant") to text
+                }
+                val response = sendMessage(promptWithContext, imgB64, imgMime, recentHistory)
+                val finalResult = response ?: "Error al obtener respuesta de Aura"
+                
+                // Save to database regardless of current session UI state
+                val dbSession = repository.getChatSession(sId)
+                val currentMsgs = if (dbSession != null) {
+                    deserializeChatMessages(dbSession.messagesJson)
+                } else {
+                    updatedList
+                }
+                val finalMessages = currentMsgs + (finalResult to false)
+                val sessionTitle = dbSession?.title ?: userDisplayMsg.take(35).ifBlank { "Conversación" }
+                saveChatSession(sId, sessionTitle, serializeChatMessagesFunc(finalMessages))
+
+                // Update UI only if we are still in the same session
+                if (_currentChatSessionId.value == sId) {
+                    _chatMessages.value = finalMessages
+                    _isChatbotSending.value = false
+                    _chatbotStatusText.value = null
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                if (_currentChatSessionId.value == sId) {
+                    _isChatbotSending.value = false
+                    _chatbotStatusText.value = null
+                }
+            } catch (e: Exception) {
+                if (_currentChatSessionId.value == sId) {
+                    val finalMessages = _chatMessages.value + ("Error en la respuesta: ${e.message}" to false)
+                    _chatMessages.value = finalMessages
+                    _isChatbotSending.value = false
+                    _chatbotStatusText.value = null
+                }
+            } finally {
+                if (_currentChatSessionId.value == sId) {
+                    _isChatbotSending.value = false
+                    _chatbotStatusText.value = null
+                }
+            }
+        }
+    }
+
+    /**
+     * Exporta instantáneamente cualquier mensaje del chatbot a una nota en la base de datos local
+     * sin necesidad de esperar inferencias secundarias de la IA.
+     */
+    fun exportMessageToNote(
+        msgContent: String,
+        asBlocks: Boolean,
+        customTitle: String? = null,
+        onSuccess: (NoteEntity) -> Unit = {}
+    ) {
         viewModelScope.launch {
             try {
-                val response = sendMessage(promptWithContext, imgB64, imgMime)
-                val finalResult = response ?: "Error al obtener respuesta de Qwen local"
-                val finalMessages = _chatMessages.value + (finalResult to false)
-                _chatMessages.value = finalMessages
-                saveChatSession(sId, chatTitle, serializeChatMessagesFunc(finalMessages))
+                var targetPage = _selectedPage.value
+                if (targetPage == null) {
+                    var targetBook = _selectedBook.value
+                    if (targetBook == null) {
+                        val allBooks = repository.getAllBooksList(currentEmail.value)
+                        targetBook = allBooks.firstOrNull() ?: repository.createBook("Mis Notas", userEmail = currentEmail.value)
+                        _selectedBook.value = targetBook
+                    }
+                    val pages = repository.getPagesForBookList(targetBook.id)
+                    targetPage = pages.firstOrNull() ?: repository.createPage(targetBook.id, "General", userEmail = currentEmail.value)
+                    _selectedPage.value = targetPage
+                }
+
+                val lines = msgContent.lines().map { it.trim() }.filter { it.isNotBlank() }
+                val extractedTitle = lines.firstOrNull { it.startsWith("#") }?.removePrefix("#")?.trim()
+                    ?: lines.firstOrNull()?.take(40)?.replace(Regex("[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]"), "")?.trim()
+                    ?: (if (asBlocks) "Nota Estructurada de IA" else "Resumen de Aura")
+
+                val title = customTitle ?: extractedTitle.ifBlank { "Nota de Aura" }
+
+                val parsedBlocks = com.example.parseTextContentToBlocks(msgContent)
+                val serializedContent = com.example.serializeBlocks(parsedBlocks)
+
+                val note = repository.createNote(
+                    pageId = targetPage.id,
+                    title = title,
+                    content = serializedContent,
+                    tags = if (asBlocks) "Bloques, Aura" else "Resumen, Aura",
+                    attachments = "[]",
+                    reminderTime = null,
+                    userEmail = currentEmail.value
+                )
+                _selectedNote.value = note
+                if (syncManager.isConnected.value) {
+                    triggerDriveSync()
+                }
+                withContext(Dispatchers.Main) {
+                    onSuccess(note)
+                }
             } catch (e: Exception) {
-                val finalMessages = _chatMessages.value + ("Error en la respuesta: ${e.message}" to false)
-                _chatMessages.value = finalMessages
-            } finally {
-                _isChatbotSending.value = false
+                android.util.Log.e("AetherViewModel", "Error al exportar mensaje a nota", e)
             }
+        }
+    }
+
+    /**
+     * Envía un mensaje del usuario asegurando ejecución en segundo plano (viewModelScope),
+     * de modo que aunque el usuario cierre el Chatbot o cambie de pantalla,
+     * el procesamiento de imágenes, OCR e inferencia no se interrumpan.
+     */
+    fun sendUserMessageWithAttachments(
+        context: Context,
+        rawUserMsg: String,
+        fName: String?,
+        fContent: String?,
+        fUri: Uri? = null,
+        imgUri: Uri?,
+        imgB64: String?,
+        imgMime: String?,
+        pNote: NoteEntity?,
+        pText: String?,
+        allNotes: List<NoteEntity>
+    ) {
+        val displayMsg = when {
+            rawUserMsg.isNotBlank() -> rawUserMsg
+            fName != null -> "📎 Archivo: $fName"
+            imgUri != null -> "📷 [Imagen adjunta]"
+            pNote != null -> "📄 [Nota citada: ${pNote.title}]"
+            pText != null -> "📝 [Fragmento citado]"
+            else -> "Consulta"
+        }
+
+        // Add user message to chat immediately for instantaneous feedback
+        _chatMessages.value = _chatMessages.value + (displayMsg to true)
+        _isChatbotSending.value = true
+        _chatbotStatusText.value = if (fUri != null || fName != null) "📄 Leyendo \"${fName ?: "documento"}\"..." else "🧠 Aura está pensando..."
+
+        viewModelScope.launch {
+            // Extract document text if URI is provided and content is not already extracted
+            var actualFileContent = fContent
+            if (fUri != null && actualFileContent.isNullOrBlank()) {
+                _chatbotStatusText.value = "📄 Leyendo \"${fName ?: "documento"}\"..."
+                actualFileContent = com.example.util.LocalMediaAnalyzer.extractDocumentText(context, fUri, fName)
+            }
+
+            val isSummaryIntent = rawUserMsg.contains("resum", ignoreCase = true) ||
+                                  rawUserMsg.contains("sintetiz", ignoreCase = true) ||
+                                  rawUserMsg.isBlank()
+
+            var finalMsgForApi = if (rawUserMsg.isNotBlank()) {
+                if (isSummaryIntent && !actualFileContent.isNullOrBlank()) {
+                    "$rawUserMsg\n\n[Instrucción de resumen: Lee todo el documento y genera una síntesis global y unificada de todo el texto. NO desgloses página por página para evitar respuestas cortadas o saturadas. Presenta un resumen completo con título, resumen general, puntos clave con viñetas y conclusiones]."
+                } else {
+                    rawUserMsg
+                }
+            } else if (!actualFileContent.isNullOrBlank()) {
+                "Por favor lee todo el documento adjunto \"${fName ?: "documento"}\", analízalo en su conjunto y genera un resumen global, conciso y bien estructurado (sin desglosar página por página), destacando el tema principal, ideas clave con viñetas y conclusiones."
+            } else if (imgUri != null) {
+                "Por favor analiza la imagen adjunta, explícame qué contiene y describe el texto y elementos visuales presentes."
+            } else {
+                "¿En qué puedes ayudarme con mis notas?"
+            }
+
+            // Local On-Device Image Analysis & OCR via ML Kit
+            if (imgUri != null) {
+                _chatbotStatusText.value = "📷 Analizando imagen con OCR..."
+                val analysis = com.example.util.LocalMediaAnalyzer.analyzeImage(context, imgUri)
+                finalMsgForApi += "\n\n$analysis"
+            }
+
+            // Append screen note context
+            if (pNote != null) {
+                val mdContent = com.example.convertBlocksToMarkdown(pNote.content)
+                finalMsgForApi += "\n\n[Contexto - Nota de pantalla (ID: \"${pNote.id}\"): \"${pNote.title}\"\nContenido en Markdown:\n$mdContent]"
+            } else if (_selectedNote.value != null) {
+                val current = _selectedNote.value!!
+                val mdContent = com.example.convertBlocksToMarkdown(current.content)
+                finalMsgForApi += "\n\n[Contexto - Nota de pantalla actual (ID: \"${current.id}\"): \"${current.title}\"\nContenido en Markdown:\n$mdContent]"
+            }
+
+            // Append paragraph citation context
+            if (pText != null) {
+                finalMsgForApi += "\n\n[Contexto - Párrafo citado de la nota:\n\"$pText\"]"
+            }
+
+            // Append attached file context
+            if (!actualFileContent.isNullOrBlank()) {
+                finalMsgForApi += "\n\n[Contexto - Archivo Adjunto \"${fName ?: "archivo"}\":\n$actualFileContent]"
+            }
+
+            // Append inline @ mentioned notes context!
+            allNotes.forEach { note ->
+                if (rawUserMsg.contains("@${note.title}", ignoreCase = true)) {
+                    val mdContent = com.example.convertBlocksToMarkdown(note.content)
+                    finalMsgForApi += "\n\n[Contexto - Nota Mencionada (ID: \"${note.id}\") \"${note.title}\":\n$mdContent]"
+                }
+            }
+
+            sendChatbotMessage(
+                userDisplayMsg = displayMsg,
+                promptWithContext = finalMsgForApi,
+                imgB64 = imgB64,
+                imgMime = imgMime,
+                alreadyAddedToChat = true
+            )
+        }
+    }
+
+    private fun deserializeChatMessages(json: String): List<Pair<String, Boolean>> {
+        return try {
+            val array = org.json.JSONArray(json)
+            val list = mutableListOf<Pair<String, Boolean>>()
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                list.add(obj.getString("text") to obj.getBoolean("isUser"))
+            }
+            list
+        } catch (e: Exception) {
+            emptyList()
         }
     }
 
@@ -641,7 +873,22 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         sb.append("• Página seleccionada: ${currentPage?.title ?: "Ninguna"}\n")
         sb.append("• Nota seleccionada: ${currentNote?.let { "\"${it.title}\" (ID: ${it.id})" } ?: "Ninguna"}\n\n")
 
-        sb.append("COMANDOS DE ACCIÓN AUTÓNOMA (inclúyelos en tu respuesta cuando el usuario te pida crear o gestionar contenido):\n\n")
+        sb.append("DIRECTRICES DE RESPUESTA:\n")
+        sb.append("1. CONVERSACIÓN GENERAL, PREGUNTAS Y ANÁLISIS DE ARCHIVOS/IMÁGENES:\n")
+        sb.append("   - Si el usuario te hace una pregunta, consulta tus conocimientos, o te pide analizar un archivo de texto, documento o imagen adjunta, responde de forma directa, inteligente, clara, agradable y bien estructurada en español.\n")
+        sb.append("   - Utiliza formato Markdown enriquecido para estructurar tus respuestas: títulos principales con '# ', subtítulos con '## ' o '### ', negritas con '**palabra clave**', listas con viñetas ('- ' o '• ') y listas ordenadas con '1. ', '2. '.\n")
+        sb.append("   - REGLA FUNDAMENTAL PARA RESÚMENES DE DOCUMENTOS Y PDFs:\n")
+        sb.append("     * Analiza el documento en su TOTALIDAD como una unidad global y coherente.\n")
+        sb.append("     * ESTÁ ESTRICTAMENTE PROHIBIDO desglosar o resumir página por página (ej. 'Página 1: ...', 'Página 2: ...'). Hacerlo satura la memoria y corta la respuesta a la mitad.\n")
+        sb.append("     * Genera un resumen global y unificado que incluya:\n")
+        sb.append("       1. **Tema y Propósito General**: Breve descripción del objetivo central del documento.\n")
+        sb.append("       2. **Resumen Ejecutivo**: 1 o 2 párrafos concisos explicando la idea y narrativa principal.\n")
+        sb.append("       3. **Puntos Clave**: Lista de 4 a 6 viñetas con los datos, hallazgos o conceptos más importantes (usando negritas en los términos clave).\n")
+        sb.append("       4. **Conclusión o Síntesis Final**: Conclusión clara del documento.\n")
+        sb.append("     * Mantén una extensión moderada y completa (entre 250 y 450 palabras) para que el resumen NUNCA se corte a la mitad.\n")
+        sb.append("   - NO agregues bloques de comando [CREATE_NOTE_START], [CREATE_BOOK_START], etc. si el usuario sólo te pide analizar, explicar o conversar.\n\n")
+        sb.append("2. COMANDOS DE ACCIÓN EN EL ESPACIO DE TRABAJO (ÚNICAMENTE si el usuario te pide crear, guardar o modificar notas o libros):\n")
+        sb.append("   - Incluye los siguientes bloques sólo cuando sea requerido gestionar el espacio de trabajo:\n\n")
 
         sb.append("1. CREAR LIBRO:\n")
         sb.append("[CREATE_BOOK_START]\n")
@@ -704,11 +951,11 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         sb.append("• ESPACIADOS Y LEGIBILIDAD:\n")
         sb.append("  - Inserta líneas en blanco entre secciones y bloques para dar espaciado limpio y agradable a la vista.\n\n")
 
-        sb.append("REGLA: Responde siempre en español. Incluye tanto el bloque de comando como una explicación clara y cordial de lo que has realizado.")
+        sb.append("REGLA: Responde siempre en español con calidez y precisión. Si te pidieron análisis o conversación, explica el tema y responde con claridad; si te pidieron gestionar el espacio de trabajo, usa los comandos.")
         return sb.toString()
     }
 
-    fun parseAndApplyChatbotUpdates(response: String): String {
+    fun parseAndApplyChatbotUpdates(response: String, userPrompt: String = ""): String {
         var cleanResponse = response
         val actionsPerformed = mutableListOf<String>()
 
@@ -737,7 +984,9 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             }
             val startIdx = cleanResponse.indexOf(startTagBook)
             val endIdx = cleanResponse.indexOf(endTagBook)
-            cleanResponse = cleanResponse.substring(0, startIdx).trim() + "\n" + cleanResponse.substring(endIdx + endTagBook.length).trim()
+            cleanResponse = cleanResponse.substring(0, startIdx).trim() +
+                            "\n\n📚 *Libro creado en tu biblioteca.*\n\n" +
+                            cleanResponse.substring(endIdx + endTagBook.length).trim()
         }
 
         // 2. Check for CREATE_PAGE
@@ -769,20 +1018,22 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             }
             val startIdx = cleanResponse.indexOf(startTagPage)
             val endIdx = cleanResponse.indexOf(endTagPage)
-            cleanResponse = cleanResponse.substring(0, startIdx).trim() + "\n" + cleanResponse.substring(endIdx + endTagPage.length).trim()
+            cleanResponse = cleanResponse.substring(0, startIdx).trim() +
+                            "\n\n📄 *Página creada en el libro actual.*\n\n" +
+                            cleanResponse.substring(endIdx + endTagPage.length).trim()
         }
 
         // 3. Check for APPEND_NOTE
         val startTagAppend = "[APPEND_NOTE_START]"
         val endTagAppend = "[APPEND_NOTE_END]"
         if (cleanResponse.contains(startTagAppend) && cleanResponse.contains(endTagAppend)) {
+            var appendContent: String? = null
             try {
                 val startIdx = cleanResponse.indexOf(startTagAppend)
                 val endIdx = cleanResponse.indexOf(endTagAppend)
                 val blockContent = cleanResponse.substring(startIdx + startTagAppend.length, endIdx).trim()
                 val contentStartMarker = "CONTENT_START"
                 val contentEndMarker = "CONTENT_END"
-                var appendContent: String? = null
                 if (blockContent.contains(contentStartMarker) && blockContent.contains(contentEndMarker)) {
                     val cStartIdx = blockContent.indexOf(contentStartMarker)
                     val cEndIdx = blockContent.indexOf(contentEndMarker)
@@ -818,13 +1069,16 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             }
             val startIdx = cleanResponse.indexOf(startTagAppend)
             val endIdx = cleanResponse.indexOf(endTagAppend)
-            cleanResponse = cleanResponse.substring(0, startIdx).trim() + "\n" + cleanResponse.substring(endIdx + endTagAppend.length).trim()
+            val appendDisplay = if (!appendContent.isNullOrBlank()) "\n\n$appendContent\n\n✅ *Ideas agregadas a tu nota actual.*\n" else "\n"
+            cleanResponse = cleanResponse.substring(0, startIdx).trim() + appendDisplay + cleanResponse.substring(endIdx + endTagAppend.length).trim()
         }
 
         // 4. Check for UPDATE_NOTE
         val startTagUpdate = "[UPDATE_NOTE_START]"
         val endTagUpdate = "[UPDATE_NOTE_END]"
         if (cleanResponse.contains(startTagUpdate) && cleanResponse.contains(endTagUpdate)) {
+            var updateTitle: String? = null
+            var updateContent: String? = null
             try {
                 val startIndex = cleanResponse.indexOf(startTagUpdate)
                 val endIndex = cleanResponse.indexOf(endTagUpdate)
@@ -837,21 +1091,21 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 val titleRegex = Regex("^TITLE:\\s*(.*)", RegexOption.MULTILINE)
                 val titleMatch = titleRegex.find(blockContent)
                 val title = titleMatch?.groupValues?.get(1)?.trim()?.ifBlank { null } ?: _selectedNote.value?.title ?: "Nota"
+                updateTitle = title
 
                 val contentStartMarker = "CONTENT_START"
                 val contentEndMarker = "CONTENT_END"
-                var noteContent: String? = null
                 if (blockContent.contains(contentStartMarker) && blockContent.contains(contentEndMarker)) {
                     val cStartIdx = blockContent.indexOf(contentStartMarker)
                     val cEndIdx = blockContent.indexOf(contentEndMarker)
-                    noteContent = blockContent.substring(cStartIdx + contentStartMarker.length, cEndIdx).trim()
+                    updateContent = blockContent.substring(cStartIdx + contentStartMarker.length, cEndIdx).trim()
                 }
 
-                if (!id.isNullOrEmpty() && noteContent != null) {
+                if (!id.isNullOrEmpty() && updateContent != null) {
                     viewModelScope.launch {
                         val existingNote = repository.getNote(id) ?: _selectedNote.value
                         if (existingNote != null) {
-                            val parsedBlocks = com.example.parseTextContentToBlocks(noteContent)
+                            val parsedBlocks = com.example.parseTextContentToBlocks(updateContent)
                             val serializedContent = com.example.serializeBlocks(parsedBlocks)
                             val updatedNote = existingNote.copy(
                                 title = title,
@@ -876,15 +1130,18 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
 
             val updateIdx = cleanResponse.indexOf(startTagUpdate)
             val endUpdateIdx = cleanResponse.indexOf(endTagUpdate)
-            cleanResponse = cleanResponse.substring(0, updateIdx).trim() +
-                            "\n" +
-                            cleanResponse.substring(endUpdateIdx + endTagUpdate.length).trim()
+            val updateDisplay = if (!updateContent.isNullOrBlank()) {
+                "\n\n### 📝 ${updateTitle ?: "Nota Actualizada"}\n\n$updateContent\n\n✅ *Nota actualizada en tu espacio de trabajo.*\n"
+            } else "\n"
+            cleanResponse = cleanResponse.substring(0, updateIdx).trim() + updateDisplay + cleanResponse.substring(endUpdateIdx + endTagUpdate.length).trim()
         }
 
         // 5. Check for CREATE_NOTE
         val startTagCreate = "[CREATE_NOTE_START]"
         val endTagCreate = "[CREATE_NOTE_END]"
         if (cleanResponse.contains(startTagCreate) && cleanResponse.contains(endTagCreate)) {
+            var createdTitle: String? = null
+            var createdContent: String? = null
             try {
                 val startIndex = cleanResponse.indexOf(startTagCreate)
                 val endIndex = cleanResponse.indexOf(endTagCreate)
@@ -893,19 +1150,19 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 val titleRegex = Regex("^TITLE:\\s*(.*)", RegexOption.MULTILINE)
                 val titleMatch = titleRegex.find(blockContent)
                 val title = titleMatch?.groupValues?.get(1)?.trim() ?: "Nueva Nota"
+                createdTitle = title
 
                 val contentStartMarker = "CONTENT_START"
                 val contentEndMarker = "CONTENT_END"
-                var noteContent: String? = null
                 if (blockContent.contains(contentStartMarker) && blockContent.contains(contentEndMarker)) {
                     val cStartIdx = blockContent.indexOf(contentStartMarker)
                     val cEndIdx = blockContent.indexOf(contentEndMarker)
-                    noteContent = blockContent.substring(cStartIdx + contentStartMarker.length, cEndIdx).trim()
+                    createdContent = blockContent.substring(cStartIdx + contentStartMarker.length, cEndIdx).trim()
                 } else if (!blockContent.contains(contentStartMarker)) {
-                    noteContent = blockContent
+                    createdContent = blockContent
                 }
 
-                if (!noteContent.isNullOrBlank()) {
+                if (!createdContent.isNullOrBlank()) {
                     viewModelScope.launch {
                         var targetPage = _selectedPage.value
                         if (targetPage == null) {
@@ -920,7 +1177,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                             _selectedPage.value = targetPage
                         }
 
-                        val parsedBlocks = com.example.parseTextContentToBlocks(noteContent)
+                        val parsedBlocks = com.example.parseTextContentToBlocks(createdContent)
                         val serializedContent = com.example.serializeBlocks(parsedBlocks)
                         val note = repository.createNote(
                             pageId = targetPage.id,
@@ -944,34 +1201,73 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
 
             val createIdx = cleanResponse.indexOf(startTagCreate)
             val endCreateIdx = cleanResponse.indexOf(endTagCreate)
+            val noteDisplay = if (!createdContent.isNullOrBlank()) {
+                "\n\n### 📝 ${createdTitle ?: "Nueva Nota"}\n\n$createdContent\n\n✅ *Nota guardada automáticamente en tu espacio de trabajo.*\n"
+            } else "\n"
             cleanResponse = cleanResponse.substring(0, createIdx).trim() +
-                            "\n" +
+                            noteDisplay +
                             cleanResponse.substring(endCreateIdx + endTagCreate.length).trim()
         }
 
-        val trimmedClean = cleanResponse.trim()
-        return if (actionsPerformed.isNotEmpty()) {
-            if (trimmedClean.isNotBlank()) {
-                "$trimmedClean\n\n" + actionsPerformed.joinToString("\n")
-            } else {
-                actionsPerformed.joinToString("\n")
+        // 6. Si el usuario pidió explícitamente crear una nota o resumen y el modelo no generó las etiquetas cuadradas
+        val promptLower = userPrompt.lowercase()
+        val isNoteCreationRequest = promptLower.contains("crea una nota") ||
+                                    promptLower.contains("crear nota") ||
+                                    promptLower.contains("haz una nota") ||
+                                    promptLower.contains("guarda en una nota") ||
+                                    promptLower.contains("guardar en una nota") ||
+                                    promptLower.contains("crea un resumen") ||
+                                    promptLower.contains("nueva nota")
+
+        if (isNoteCreationRequest && actionsPerformed.isEmpty() && cleanResponse.length > 30) {
+            val lines = cleanResponse.lines().map { it.trim() }.filter { it.isNotBlank() }
+            val extractedTitle = lines.firstOrNull { it.startsWith("#") }?.removePrefix("#")?.trim()
+                ?: lines.firstOrNull()?.take(40)?.replace(Regex("[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]"), "")?.trim()
+                ?: "Resumen de Aura"
+
+            viewModelScope.launch {
+                var targetPage = _selectedPage.value
+                if (targetPage == null) {
+                    var targetBook = _selectedBook.value
+                    if (targetBook == null) {
+                        val allBooks = repository.getAllBooksList(currentEmail.value)
+                        targetBook = allBooks.firstOrNull() ?: repository.createBook("Mis Notas", userEmail = currentEmail.value)
+                        _selectedBook.value = targetBook
+                    }
+                    val pages = repository.getPagesForBookList(targetBook.id)
+                    targetPage = pages.firstOrNull() ?: repository.createPage(targetBook.id, "General", userEmail = currentEmail.value)
+                    _selectedPage.value = targetPage
+                }
+
+                val parsedBlocks = com.example.parseTextContentToBlocks(cleanResponse)
+                val serializedContent = com.example.serializeBlocks(parsedBlocks)
+                val note = repository.createNote(
+                    pageId = targetPage.id,
+                    title = extractedTitle,
+                    content = serializedContent,
+                    tags = "Generado, Qwen",
+                    attachments = "[]",
+                    reminderTime = null,
+                    userEmail = currentEmail.value
+                )
+                _selectedNote.value = note
+                if (syncManager.isConnected.value) {
+                    triggerDriveSync()
+                }
             }
-        } else {
-            trimmedClean
+            cleanResponse = "$cleanResponse\n\n✅ *Nota \"$extractedTitle\" guardada automáticamente en tu espacio de trabajo.*"
         }
+
+        val trimmedClean = cleanResponse.trim()
+        return trimmedClean
     }
 
-    suspend fun sendMessage(message: String, imageBase64: String? = null, mimeType: String? = null): String? {
-        val status = modelVerifier.checkCurrentStatus()
-        if (status !is ModelDownloadStatus.Ready) {
-            return "El modelo local Qwen2.5 (1.5B) aún no está descargado en tu dispositivo.\n\nPara poder conversar y analizar tus notas sin conexión a internet, abre Ajustes de IA y presiona 'Descargar Modelo Qwen'."
-        }
-
-        val isLoaded = localLlm.ensureModelLoaded(modelVerifier.modelFile)
-        if (!isLoaded) {
-            return "Cargando el modelo Qwen en la memoria del dispositivo... Por favor, intenta de nuevo en unos momentos."
-        }
-
+    suspend fun sendMessage(
+        message: String,
+        imageBase64: String? = null,
+        mimeType: String? = null,
+        history: List<Pair<String, String>> = emptyList()
+    ): String? {
         val noteId = _selectedNote.value?.id
         val agentPrompt = buildAgentSystemPrompt()
         val memoryContext = if (noteId != null) {
@@ -980,10 +1276,62 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         } else ""
 
         val finalSystemPrompt = agentPrompt + memoryContext
-        // Safely limit user prompt message length to avoid overflowing context
-        val safeMessage = if (message.length > 4000) message.take(4000) + "\n...[Contenido recortado por longitud]" else message
+        
+        // --- 100% LOCAL IA (Qwen) ---
+        val status = modelVerifier.checkCurrentStatus()
+        if (status !is ModelDownloadStatus.Ready) {
+            return "El modelo local Aura (Qwen2.5) aún no está descargado.\n\nVe a Ajustes de IA y pulsa 'Descargar Modelo' para habilitar las funciones de inteligencia artificial 100% privada y local."
+        }
 
-        val rawResponse = localLlm.generateResponse(safeMessage, finalSystemPrompt)
+        val isLoaded = localLlm.ensureModelLoaded(modelVerifier.modelFile)
+        if (!isLoaded) {
+            return "Cargando el cerebro de Aura en la memoria local... Por favor, intenta de nuevo en unos segundos."
+        }
+
+        // Only add generic image note if no local OCR/analysis has already been integrated
+        val imageDisclaimer = if (!imageBase64.isNullOrBlank() && !message.contains("INFORMACIÓN DE LA IMAGEN") && !message.contains("OCR")) {
+            "\n\n[Nota: Aura procesará el contexto y texto asociado a tu imagen]."
+        } else ""
+
+        val isDocumentSummary = message.contains("Instrucción de resumen", ignoreCase = true) ||
+                                message.contains("Archivo Adjunto", ignoreCase = true) ||
+                                (message.contains("resum", ignoreCase = true) && message.contains("Contexto"))
+
+        val effectiveSystemPrompt = if (isDocumentSummary) {
+            _chatbotStatusText.value = "📄 Aura está analizando el documento..."
+            """
+            Eres Aura, una IA asistente experta en toma de notas y análisis documental.
+            Tu misión es leer el documento proporcionado y redactar un RESUMEN GLOBAL, coherente y unificado.
+            REGLAS CRÍTICAS:
+            1. Lee y analiza todo el texto en su conjunto. NUNCA hagas un desglose página por página ni enumeres páginas individuales.
+            2. Presenta un resumen enriquecido usando Markdown:
+               # [Título representativo del tema]
+               ## Visión General
+               (Un párrafo sólido resumiendo la tesis y propósito global del documento)
+               ### Puntos Clave
+               - **Concepto clave 1**: desarrollo claro y conciso
+               - **Concepto clave 2**: desarrollo claro y conciso
+               - **Concepto clave 3**: desarrollo claro y conciso
+               ### Conclusiones y Aprendizajes
+               (Síntesis final clara)
+            3. Emplea negritas con **texto**, subtítulos con ## o ### y listas con viñetas '-' para una presentación visual limpia y estructurada.
+            """.trimIndent()
+        } else {
+            finalSystemPrompt
+        }
+
+        // Safely limit user prompt message length to avoid overflowing context for local model
+        val maxLen = if (isDocumentSummary) 3200 else 5500
+        val safeMessage = if (message.length > maxLen) message.take(maxLen) + "\n...[Contenido recortado para análisis global]" else message
+
+        val rawResponse = localLlm.generateResponse(
+            prompt = safeMessage + imageDisclaimer,
+            systemPrompt = effectiveSystemPrompt,
+            history = if (isDocumentSummary) emptyList() else history,
+            onStatusUpdate = { status ->
+                _chatbotStatusText.value = status
+            }
+        )
 
         if (noteId != null) {
             viewModelScope.launch {
@@ -1001,7 +1349,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
-        val clean = parseAndApplyChatbotUpdates(rawResponse).trim()
-        return clean.ifBlank { rawResponse.trim().ifBlank { "Aura ha procesado tu solicitud exitosamente." } }
+        val clean = parseAndApplyChatbotUpdates(rawResponse, message).trim()
+        return clean.ifBlank { rawResponse.trim().ifBlank { "Aura ha procesado tu solicitud localmente." } }
     }
 }

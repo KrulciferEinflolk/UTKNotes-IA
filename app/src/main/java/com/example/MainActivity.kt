@@ -1,5 +1,9 @@
 package com.example
 
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.focus.FocusRequester
@@ -3673,8 +3677,10 @@ fun NoteEditorWorkspace(
     var title by remember(note.id) { mutableStateOf(note.title) }
     val isSmallContent = note.content.length < 2500
     var isLoadingBlocks by remember(note.id) { mutableStateOf(!isSmallContent) }
-    var blocks by remember(note.id) {
-        mutableStateOf(if (isSmallContent) parseBlocks(note.content) else emptyList())
+    val blocks = remember(note.id) {
+        mutableStateListOf<EditorBlock>().apply {
+            if (isSmallContent) addAll(parseBlocks(note.content))
+        }
     }
     var tags by remember(note.id) { mutableStateOf(note.tags) }
     var aiQuery by remember { mutableStateOf("") }
@@ -3694,6 +3700,7 @@ fun NoteEditorWorkspace(
     val scope = rememberCoroutineScope()
     var pendingCursorOffset by remember { mutableStateOf<Pair<String, Int>?>(null) }
     var pendingTabInsertionTrigger by remember { mutableStateOf<String?>(null) }
+    var activeTextBlockState by remember { mutableStateOf<Triple<Int, TextFieldValue, (TextFieldValue) -> Unit>?>(null) }
 
     val listState = rememberLazyListState()
 
@@ -3703,7 +3710,8 @@ fun NoteEditorWorkspace(
             val parsed = withContext(Dispatchers.Default) {
                 parseBlocks(note.content)
             }
-            blocks = parsed
+            blocks.clear()
+            blocks.addAll(parsed)
             isLoadingBlocks = false
         }
     }
@@ -3716,7 +3724,8 @@ fun NoteEditorWorkspace(
                 val parsed = withContext(Dispatchers.Default) {
                     parseBlocks(note.content)
                 }
-                blocks = parsed
+                blocks.clear()
+                blocks.addAll(parsed)
             }
         }
     }
@@ -3738,9 +3747,12 @@ fun NoteEditorWorkspace(
     }
 
     // Auto-save on block structural change
-    fun updateBlocksAndSave(newBlocks: List<EditorBlock>) {
-        blocks = newBlocks
-        onSave(note.copy(title = title, content = serializeBlocks(newBlocks), tags = tags))
+    fun updateBlocksAndSave(newBlocks: List<EditorBlock>?) {
+        if (newBlocks != null && newBlocks !== blocks) {
+            blocks.clear()
+            blocks.addAll(newBlocks)
+        }
+        onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
     }
 
     fun moveBlockUp(fromIndex: Int) {
@@ -3785,25 +3797,27 @@ fun NoteEditorWorkspace(
         }
     }
 
-    // Precomputed list of visible (index, block) items - O(N) instead of O(N^2)
-    val displayItems = remember(blocks) {
-        val list = mutableListOf<Pair<Int, EditorBlock>>()
-        var isHiding = false
-        for (i in blocks.indices) {
-            val b = blocks[i]
-            if (b is EditorBlock.Text && b.isCollapsedHeader) {
-                list.add(Pair(i, b))
-                isHiding = b.isCollapsed
-            } else if (b is EditorBlock.Text && b.isHeader) {
-                list.add(Pair(i, b))
-                isHiding = false
-            } else {
-                if (!isHiding) {
+    // Precomputed list of visible (index, block) items - O(N) but optimized with derivedStateOf
+    val displayItems by remember(blocks) {
+        derivedStateOf {
+            val list = mutableListOf<Pair<Int, EditorBlock>>()
+            var isHiding = false
+            for (i in blocks.indices) {
+                val b = blocks[i]
+                if (b is EditorBlock.Text && b.isCollapsedHeader) {
                     list.add(Pair(i, b))
+                    isHiding = b.isCollapsed
+                } else if (b is EditorBlock.Text && b.isHeader) {
+                    list.add(Pair(i, b))
+                    isHiding = false
+                } else {
+                    if (!isHiding) {
+                        list.add(Pair(i, b))
+                    }
                 }
             }
+            list
         }
-        list
     }
 
     // Sleek formatting states
@@ -4167,107 +4181,222 @@ fun NoteEditorWorkspace(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Bold
-                                item {
-                                    IconToggleButton(
-                                        checked = activeBlock.isBold,
-                                        onCheckedChange = { 
-                                            pushHistory()
-                                            val updated = blocks.mapIndexed { idx, block ->
-                                                if (idx == selectedBlockIndex && block is EditorBlock.Text) {
-                                                    block.copy(isBold = it)
-                                                } else block
-                                            }
-                                            updateBlocksAndSave(updated)
+                                val findWordBoundsAtCursor: (String, Int) -> Pair<Int, Int>? = { text, cursor ->
+                                    if (text.isEmpty() || cursor < 0 || cursor > text.length) null
+                                    else {
+                                        val targetPos = if (cursor < text.length && !text[cursor].isWhitespace() && text[cursor] != '\u200B') {
+                                            cursor
+                                        } else if (cursor > 0 && !text[cursor - 1].isWhitespace() && text[cursor - 1] != '\u200B') {
+                                            cursor - 1
+                                        } else {
+                                            null
                                         }
-                                    ) {
-                                        Icon(Icons.Default.FormatBold, "Negrita", tint = if (activeBlock.isBold) GeminiCyanAccent else TextPrimary)
+
+                                        if (targetPos == null) null
+                                        else {
+                                            var start = targetPos
+                                            while (start > 0 && !text[start - 1].isWhitespace() && text[start - 1] != '\u200B') {
+                                                start--
+                                            }
+                                            var end = targetPos
+                                            while (end < text.length && !text[end].isWhitespace()) {
+                                                end++
+                                            }
+                                            if (start < end) Pair(start, end) else null
+                                        }
                                     }
                                 }
-                                // Italic
-                                item {
-                                    IconToggleButton(
-                                        checked = activeBlock.isItalic,
-                                        onCheckedChange = { 
-                                            pushHistory()
-                                            val updated = blocks.mapIndexed { idx, block ->
-                                                if (idx == selectedBlockIndex && block is EditorBlock.Text) {
-                                                    block.copy(isItalic = it)
-                                                } else block
-                                            }
-                                            updateBlocksAndSave(updated)
+
+                                val applyInlineFormatting: (String, String) -> Unit = { openTag, closeTag ->
+                                    val triple = activeTextBlockState?.takeIf { it.first == selectedBlockIndex }
+                                    if (triple != null) {
+                                        val tfv = triple.second
+                                        val fullText = tfv.text
+
+                                        val targetRange = if (tfv.selection.length > 0 && tfv.selection.min >= 1) {
+                                            Pair(tfv.selection.min, tfv.selection.max)
+                                        } else {
+                                            findWordBoundsAtCursor(fullText, tfv.selection.start)
                                         }
-                                    ) {
-                                        Icon(Icons.Default.FormatItalic, "Cursiva", tint = if (activeBlock.isItalic) GeminiCyanAccent else TextPrimary)
+
+                                        val newText: String
+                                        val newSelection: TextRange
+
+                                        if (targetRange != null) {
+                                            val s = targetRange.first
+                                            val e = targetRange.second
+                                            val textToWrap = fullText.substring(s, e)
+                                            val isAlreadyFormatted = textToWrap.startsWith(openTag, ignoreCase = true) &&
+                                                                     textToWrap.endsWith(closeTag, ignoreCase = true) &&
+                                                                     textToWrap.length >= (openTag.length + closeTag.length)
+
+                                            val replacement = if (isAlreadyFormatted) {
+                                                textToWrap.substring(openTag.length, textToWrap.length - closeTag.length)
+                                            } else {
+                                                "$openTag$textToWrap$closeTag"
+                                            }
+                                            newText = fullText.substring(0, s) + replacement + fullText.substring(e)
+                                            newSelection = TextRange(s, s + replacement.length)
+                                        } else {
+                                            val cursor = tfv.selection.start.coerceIn(1, fullText.length)
+                                            newText = fullText.substring(0, cursor) + openTag + closeTag + fullText.substring(cursor)
+                                            newSelection = TextRange(cursor + openTag.length)
+                                        }
+
+                                        val newTfv = TextFieldValue(newText, newSelection)
+                                        triple.third.invoke(newTfv)
+
+                                        val toSave = if (newText.startsWith("\u200B")) newText.substring(1) else newText
+                                        if (selectedBlockIndex in blocks.indices) {
+                                            val b = blocks[selectedBlockIndex]
+                                            if (b is EditorBlock.Text) {
+                                                blocks[selectedBlockIndex] = b.copy(content = toSave)
+                                            }
+                                        }
+                                        updateBlocksAndSave(null)
                                     }
                                 }
-                                // Underline
+
+                                // Bold (Sección o palabra independiente)
                                 item {
-                                    IconToggleButton(
-                                        checked = activeBlock.isUnderline,
-                                        onCheckedChange = { 
+                                    val triple = activeTextBlockState?.takeIf { it.first == selectedBlockIndex }
+                                    val tfv = triple?.second
+                                    val isBoldActive = if (tfv != null) {
+                                        if (tfv.selection.length > 0) {
+                                            val t = tfv.text.substring(tfv.selection.min, tfv.selection.max)
+                                            (t.startsWith("**") && t.endsWith("**") && t.length >= 4) || (t.startsWith("__") && t.endsWith("__") && t.length >= 4)
+                                        } else {
+                                            val wb = findWordBoundsAtCursor(tfv.text, tfv.selection.start)
+                                            if (wb != null) {
+                                                val t = tfv.text.substring(wb.first, wb.second)
+                                                (t.startsWith("**") && t.endsWith("**") && t.length >= 4) || (t.startsWith("__") && t.endsWith("__") && t.length >= 4)
+                                            } else false
+                                        }
+                                    } else false
+
+                                    IconButton(
+                                        onClick = {
                                             pushHistory()
-                                            val updated = blocks.mapIndexed { idx, block ->
-                                                if (idx == selectedBlockIndex && block is EditorBlock.Text) {
-                                                    block.copy(isUnderline = it)
-                                                } else block
-                                            }
-                                            updateBlocksAndSave(updated)
+                                            applyInlineFormatting("**", "**")
                                         }
                                     ) {
-                                        Icon(Icons.Default.FormatUnderlined, "Subrayado", tint = if (activeBlock.isUnderline) GeminiCyanAccent else TextPrimary)
+                                        Icon(Icons.Default.FormatBold, "Negrita (Texto independiente)", tint = if (isBoldActive) GeminiCyanAccent else TextPrimary)
+                                    }
+                                }
+                                // Italic (Sección o palabra independiente)
+                                item {
+                                    val triple = activeTextBlockState?.takeIf { it.first == selectedBlockIndex }
+                                    val tfv = triple?.second
+                                    val isItalicActive = if (tfv != null) {
+                                        if (tfv.selection.length > 0) {
+                                            val t = tfv.text.substring(tfv.selection.min, tfv.selection.max)
+                                            (t.startsWith("*") && t.endsWith("*") && t.length >= 2) || (t.startsWith("_") && t.endsWith("_") && t.length >= 2)
+                                        } else {
+                                            val wb = findWordBoundsAtCursor(tfv.text, tfv.selection.start)
+                                            if (wb != null) {
+                                                val t = tfv.text.substring(wb.first, wb.second)
+                                                (t.startsWith("*") && t.endsWith("*") && t.length >= 2) || (t.startsWith("_") && t.endsWith("_") && t.length >= 2)
+                                            } else false
+                                        }
+                                    } else false
+
+                                    IconButton(
+                                        onClick = {
+                                            pushHistory()
+                                            applyInlineFormatting("*", "*")
+                                        }
+                                    ) {
+                                        Icon(Icons.Default.FormatItalic, "Cursiva (Texto independiente)", tint = if (isItalicActive) GeminiCyanAccent else TextPrimary)
+                                    }
+                                }
+                                // Underline (Sección o palabra independiente)
+                                item {
+                                    val triple = activeTextBlockState?.takeIf { it.first == selectedBlockIndex }
+                                    val tfv = triple?.second
+                                    val isUnderlineActive = if (tfv != null) {
+                                        if (tfv.selection.length > 0) {
+                                            val t = tfv.text.substring(tfv.selection.min, tfv.selection.max)
+                                            t.startsWith("<u>", ignoreCase = true) && t.endsWith("</u>", ignoreCase = true) && t.length >= 7
+                                        } else {
+                                            val wb = findWordBoundsAtCursor(tfv.text, tfv.selection.start)
+                                            if (wb != null) {
+                                                val t = tfv.text.substring(wb.first, wb.second)
+                                                t.startsWith("<u>", ignoreCase = true) && t.endsWith("</u>", ignoreCase = true) && t.length >= 7
+                                            } else false
+                                        }
+                                    } else false
+
+                                    IconButton(
+                                        onClick = {
+                                            pushHistory()
+                                            applyInlineFormatting("<u>", "</u>")
+                                        }
+                                    ) {
+                                        Icon(Icons.Default.FormatUnderlined, "Subrayado (Texto independiente)", tint = if (isUnderlineActive) GeminiCyanAccent else TextPrimary)
+                                    }
+                                }
+                                // Strikethrough (Tachado en texto independiente)
+                                item {
+                                    val triple = activeTextBlockState?.takeIf { it.first == selectedBlockIndex }
+                                    val tfv = triple?.second
+                                    val isStrikeActive = if (tfv != null) {
+                                        if (tfv.selection.length > 0) {
+                                            val t = tfv.text.substring(tfv.selection.min, tfv.selection.max)
+                                            t.startsWith("~~") && t.endsWith("~~") && t.length >= 4
+                                        } else {
+                                            val wb = findWordBoundsAtCursor(tfv.text, tfv.selection.start)
+                                            if (wb != null) {
+                                                val t = tfv.text.substring(wb.first, wb.second)
+                                                t.startsWith("~~") && t.endsWith("~~") && t.length >= 4
+                                            } else false
+                                        }
+                                    } else false
+
+                                    IconButton(
+                                        onClick = {
+                                            pushHistory()
+                                            applyInlineFormatting("~~", "~~")
+                                        }
+                                    ) {
+                                        Icon(Icons.Default.FormatStrikethrough, "Tachado (Texto independiente)", tint = if (isStrikeActive) GeminiCyanAccent else TextPrimary)
                                     }
                                 }
                                 item { VerticalDivider(color = CosmicBorder, modifier = Modifier.height(20.dp)) }
-                                // Bullet List
+
+                                // Bullet List (Whole block / paragraph)
                                 item {
                                     IconToggleButton(
                                         checked = activeBlock.isBullet,
                                         onCheckedChange = { 
                                             pushHistory()
-                                            val updated = blocks.mapIndexed { idx, block ->
-                                                if (idx == selectedBlockIndex && block is EditorBlock.Text) {
-                                                    block.copy(isBullet = it, isNumbered = false)
-                                                } else block
-                                            }
-                                            updateBlocksAndSave(updated)
+                                            if (selectedBlockIndex in blocks.indices) { val b = blocks[selectedBlockIndex]; if (b is EditorBlock.Text) { blocks[selectedBlockIndex] = b.copy(isBullet = it, isNumbered = false); updateBlocksAndSave(null) } }
                                         }
                                     ) {
-                                        Icon(Icons.Default.FormatListBulleted, "Lista Viñetas", tint = if (activeBlock.isBullet) GeminiCyanAccent else TextPrimary)
+                                        Icon(Icons.Default.FormatListBulleted, "Lista Viñetas (Párrafo)", tint = if (activeBlock.isBullet) GeminiCyanAccent else TextPrimary)
                                     }
                                 }
-                                // Numbered List
+                                // Numbered List (Whole block / paragraph)
                                 item {
                                     IconToggleButton(
                                         checked = activeBlock.isNumbered,
                                         onCheckedChange = { 
                                             pushHistory()
-                                            val updated = blocks.mapIndexed { idx, block ->
-                                                if (idx == selectedBlockIndex && block is EditorBlock.Text) {
-                                                    block.copy(isNumbered = it, isBullet = false)
-                                                } else block
-                                            }
-                                            updateBlocksAndSave(updated)
+                                            if (selectedBlockIndex in blocks.indices) { val b = blocks[selectedBlockIndex]; if (b is EditorBlock.Text) { blocks[selectedBlockIndex] = b.copy(isNumbered = it, isBullet = false); updateBlocksAndSave(null) } }
                                         }
                                     ) {
-                                        Icon(Icons.Default.FormatListNumbered, "Lista Numerada", tint = if (activeBlock.isNumbered) GeminiCyanAccent else TextPrimary)
+                                        Icon(Icons.Default.FormatListNumbered, "Lista Numerada (Párrafo)", tint = if (activeBlock.isNumbered) GeminiCyanAccent else TextPrimary)
                                     }
                                 }
-                                // Collapsed Header
+                                // Collapsed Header (Whole block / paragraph)
                                 item {
                                     IconToggleButton(
                                         checked = activeBlock.isCollapsedHeader,
                                         onCheckedChange = { 
                                             pushHistory()
-                                            val updated = blocks.mapIndexed { idx, block ->
-                                                if (idx == selectedBlockIndex && block is EditorBlock.Text) {
-                                                    block.copy(isCollapsedHeader = it)
-                                                } else block
-                                            }
-                                            updateBlocksAndSave(updated)
+                                            if (selectedBlockIndex in blocks.indices) { val b = blocks[selectedBlockIndex]; if (b is EditorBlock.Text) { blocks[selectedBlockIndex] = b.copy(isCollapsedHeader = it); updateBlocksAndSave(null) } }
                                         }
                                     ) {
-                                        Icon(Icons.Default.UnfoldLess, "Título Contraíble", tint = if (activeBlock.isCollapsedHeader) GeminiCyanAccent else TextPrimary)
+                                        Icon(Icons.Default.UnfoldLess, "Párrafo Contraíble", tint = if (activeBlock.isCollapsedHeader) GeminiCyanAccent else TextPrimary)
                                     }
                                 }
                                 item { VerticalDivider(color = CosmicBorder, modifier = Modifier.height(20.dp)) }
@@ -4276,12 +4405,7 @@ fun NoteEditorWorkspace(
                                     IconButton(onClick = {
                                         if (activeBlock.fontSize > 10) {
                                             pushHistory()
-                                            val updated = blocks.mapIndexed { idx, block ->
-                                                if (idx == selectedBlockIndex && block is EditorBlock.Text) {
-                                                    block.copy(fontSize = block.fontSize - 2)
-                                                } else block
-                                            }
-                                            updateBlocksAndSave(updated)
+                                            if (selectedBlockIndex in blocks.indices) { val b = blocks[selectedBlockIndex]; if (b is EditorBlock.Text) { blocks[selectedBlockIndex] = b.copy(fontSize = b.fontSize - 2); updateBlocksAndSave(null) } }
                                         }
                                     }) {
                                         Text("-", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
@@ -4295,12 +4419,7 @@ fun NoteEditorWorkspace(
                                     IconButton(onClick = {
                                         if (activeBlock.fontSize < 36) {
                                             pushHistory()
-                                            val updated = blocks.mapIndexed { idx, block ->
-                                                if (idx == selectedBlockIndex && block is EditorBlock.Text) {
-                                                    block.copy(fontSize = block.fontSize + 2)
-                                                } else block
-                                            }
-                                            updateBlocksAndSave(updated)
+                                            if (selectedBlockIndex in blocks.indices) { val b = blocks[selectedBlockIndex]; if (b is EditorBlock.Text) { blocks[selectedBlockIndex] = b.copy(fontSize = b.fontSize + 2); updateBlocksAndSave(null) } }
                                         }
                                     }) {
                                         Text("+", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
@@ -4441,6 +4560,28 @@ fun NoteEditorWorkspace(
                                     },
                                     label = { Text("Cita", fontSize = 11.sp, color = TextPrimary) },
                                     leadingIcon = { Icon(Icons.Default.FormatQuote, null, modifier = Modifier.size(14.dp), tint = GeminiCyanAccent) }
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = {
+                                        pushHistory()
+                                        val newList = blocks.toMutableList()
+                                        newList.add(
+                                            EditorBlock.Text(
+                                                content = "Título contraíble\nEscribe aquí el contenido que se puede plegar o desplegar...",
+                                                isCollapsedHeader = true,
+                                                isCollapsed = false,
+                                                isHeader = true,
+                                                fontSize = 18,
+                                                isBold = true
+                                            )
+                                        )
+                                        updateBlocksAndSave(newList)
+                                        Toast.makeText(context, "Sección contraíble añadida", Toast.LENGTH_SHORT).show()
+                                    },
+                                    label = { Text("Contraíble", fontSize = 11.sp, color = TextPrimary) },
+                                    leadingIcon = { Icon(Icons.Default.UnfoldLess, null, modifier = Modifier.size(14.dp), tint = GeminiCyanAccent) }
                                 )
                             }
                             item {
@@ -4606,8 +4747,9 @@ fun NoteEditorWorkspace(
                                         if (undoStack.isNotEmpty()) {
                                             redoStack.add(cloneBlocks(blocks))
                                             val prev = undoStack.removeAt(undoStack.size - 1)
-                                            blocks = prev
-                                            updateBlocksAndSave(prev)
+                                            blocks.clear()
+                                            blocks.addAll(prev)
+                                            updateBlocksAndSave(null)
                                         }
                                     },
                                     enabled = undoStack.isNotEmpty()
@@ -4626,8 +4768,9 @@ fun NoteEditorWorkspace(
                                         if (redoStack.isNotEmpty()) {
                                             undoStack.add(cloneBlocks(blocks))
                                             val next = redoStack.removeAt(redoStack.size - 1)
-                                            blocks = next
-                                            updateBlocksAndSave(next)
+                                            blocks.clear()
+                                            blocks.addAll(next)
+                                            updateBlocksAndSave(null)
                                         }
                                     },
                                     enabled = redoStack.isNotEmpty()
@@ -5151,13 +5294,13 @@ fun NoteEditorWorkspace(
                                                         selection = newSelection
                                                     )
                                                     val textToSave = if (newText.startsWith("\u200B")) newText.substring(1) else newText
-                                                    val updated = blocks.mapIndexed { idx, b ->
-                                                        if (idx == index && b is EditorBlock.Text) {
-                                                            b.copy(content = textToSave)
-                                                        } else b
+                                                    if (index in blocks.indices) {
+                                                        val b = blocks[index]
+                                                        if (b is EditorBlock.Text) {
+                                                            blocks[index] = b.copy(content = textToSave)
+                                                        }
                                                     }
-                                                    blocks = updated
-                                                    onSave(note.copy(title = title, content = serializeBlocks(updated), tags = tags))
+                                                    onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
                                                     pendingTabInsertionTrigger = null
                                                 }
                                             }
@@ -5195,12 +5338,13 @@ fun NoteEditorWorkspace(
                                                          IconButton(
                                                              onClick = {
                                                                  pushHistory()
-                                                                 val updated = blocks.mapIndexed { idx, b ->
-                                                                     if (idx == index && b is EditorBlock.Text) {
-                                                                         b.copy(isCollapsed = !b.isCollapsed)
-                                                                     } else b
+                                                                 if (index in blocks.indices) {
+                                                                     val b = blocks[index]
+                                                                     if (b is EditorBlock.Text) {
+                                                                         blocks[index] = b.copy(isCollapsed = !b.isCollapsed)
+                                                                     }
+                                                                     updateBlocksAndSave(null)
                                                                  }
-                                                                 updateBlocksAndSave(updated)
                                                              },
                                                              modifier = Modifier
                                                                  .size(24.dp)
@@ -5312,20 +5456,31 @@ fun NoteEditorWorkspace(
                                                                      val cleanSelection = TextRange(cleanStart, cleanEnd)
                                                                      
                                                                      tfValue = updatedNewVal.copy(selection = cleanSelection)
+                                                                     if (isFocused) {
+                                                                         activeTextBlockState = Triple(index, tfValue) { newTfv ->
+                                                                             tfValue = newTfv
+                                                                         }
+                                                                     }
                                                                      
                                                                      if (block.content != textToSave) {
-                                                                         val updated = blocks.mapIndexed { idx, b ->
-                                                                             if (idx == index && b is EditorBlock.Text) {
-                                                                                 b.copy(content = textToSave)
-                                                                             } else b
+                                                                         if (index in blocks.indices) {
+                                                                             val b = blocks[index]
+                                                                             if (b is EditorBlock.Text) {
+                                                                                 blocks[index] = b.copy(content = textToSave)
+                                                                             }
                                                                          }
-                                                                         blocks = updated
                                                                          // NO LONGER SAVING ON EVERY KEYSTROKE
                                                                      }
                                                                  }
                                                              }
                                                          },
                                                         textStyle = textStyle,
+                                                        visualTransformation = MarkdownVisualTransformation(
+                                                            isBlockBold = block.isBold,
+                                                            isBlockItalic = block.isItalic,
+                                                            isBlockUnderline = block.isUnderline,
+                                                            blockColor = textStyle.color
+                                                        ),
                                                         modifier = Modifier
                                                             .weight(1f)
                                                             .focusRequester(focusRequester)
@@ -5333,7 +5488,13 @@ fun NoteEditorWorkspace(
                                                                 isFocused = focusState.isFocused
                                                                 if (focusState.isFocused) {
                                                                     selectedBlockIndex = index
+                                                                    activeTextBlockState = Triple(index, tfValue) { newTfv ->
+                                                                        tfValue = newTfv
+                                                                    }
                                                                 } else {
+                                                                    if (activeTextBlockState?.first == index) {
+                                                                        activeTextBlockState = null
+                                                                    }
                                                                     // Save when focus is lost
                                                                     onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
                                                                 }
@@ -5368,10 +5529,8 @@ fun NoteEditorWorkspace(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
                                         pushHistory()
-                                        val updated = blocks.mapIndexed { idx, b ->
-                                            if (idx == index) updatedBlock else b
-                                        }
-                                        updateBlocksAndSave(updated)
+                                        if (index in blocks.indices) blocks[index] = updatedBlock
+                                        updateBlocksAndSave(null)
                                     },
                                     onDelete = {},
                                     onOpenSettings = { editingBlockSettings = block }
@@ -5383,10 +5542,8 @@ fun NoteEditorWorkspace(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
                                         pushHistory()
-                                        val updated = blocks.mapIndexed { idx, b ->
-                                            if (idx == index) updatedBlock else b
-                                        }
-                                        updateBlocksAndSave(updated)
+                                        if (index in blocks.indices) blocks[index] = updatedBlock
+                                        updateBlocksAndSave(null)
                                     },
                                     onDelete = {},
                                     onOpenSettings = { editingBlockSettings = block },
@@ -5399,10 +5556,8 @@ fun NoteEditorWorkspace(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
                                         pushHistory()
-                                        val updated = blocks.mapIndexed { idx, b ->
-                                            if (idx == index) updatedBlock else b
-                                        }
-                                        updateBlocksAndSave(updated)
+                                        if (index in blocks.indices) blocks[index] = updatedBlock
+                                        updateBlocksAndSave(null)
                                     },
                                     onDelete = {},
                                     onOpenSettings = { editingBlockSettings = block },
@@ -5415,10 +5570,8 @@ fun NoteEditorWorkspace(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
                                         pushHistory()
-                                        val updated = blocks.mapIndexed { idx, b ->
-                                            if (idx == index) updatedBlock else b
-                                        }
-                                        updateBlocksAndSave(updated)
+                                        if (index in blocks.indices) blocks[index] = updatedBlock
+                                        updateBlocksAndSave(null)
                                     },
                                     onDelete = {},
                                     onOpenSettings = { editingBlockSettings = block },
@@ -5430,10 +5583,8 @@ fun NoteEditorWorkspace(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
                                         pushHistory()
-                                        val updated = blocks.mapIndexed { idx, b ->
-                                            if (idx == index) updatedBlock else b
-                                        }
-                                        updateBlocksAndSave(updated)
+                                        if (index in blocks.indices) blocks[index] = updatedBlock
+                                        updateBlocksAndSave(null)
                                     },
                                     onDelete = {},
                                     onOpenSettings = { editingBlockSettings = block },
@@ -5445,10 +5596,8 @@ fun NoteEditorWorkspace(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
                                         pushHistory()
-                                        val updated = blocks.mapIndexed { idx, b ->
-                                            if (idx == index) updatedBlock else b
-                                        }
-                                        updateBlocksAndSave(updated)
+                                        if (index in blocks.indices) blocks[index] = updatedBlock
+                                        updateBlocksAndSave(null)
                                     },
                                     onOpenSettings = { editingBlockSettings = block }
                                 )
@@ -5458,10 +5607,8 @@ fun NoteEditorWorkspace(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
                                         pushHistory()
-                                        val updated = blocks.mapIndexed { idx, b ->
-                                            if (idx == index) updatedBlock else b
-                                        }
-                                        updateBlocksAndSave(updated)
+                                        if (index in blocks.indices) blocks[index] = updatedBlock
+                                        updateBlocksAndSave(null)
                                     },
                                     onOpenSettings = { editingBlockSettings = block }
                                 )
@@ -5471,10 +5618,8 @@ fun NoteEditorWorkspace(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
                                         pushHistory()
-                                        val updated = blocks.mapIndexed { idx, b ->
-                                            if (idx == index) updatedBlock else b
-                                        }
-                                        updateBlocksAndSave(updated)
+                                        if (index in blocks.indices) blocks[index] = updatedBlock
+                                        updateBlocksAndSave(null)
                                     },
                                     onOpenSettings = { editingBlockSettings = block }
                                 )
@@ -5490,10 +5635,8 @@ fun NoteEditorWorkspace(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
                                         pushHistory()
-                                        val updated = blocks.mapIndexed { idx, b ->
-                                            if (idx == index) updatedBlock else b
-                                        }
-                                        updateBlocksAndSave(updated)
+                                        if (index in blocks.indices) blocks[index] = updatedBlock
+                                        updateBlocksAndSave(null)
                                     },
                                     onOpenSettings = { editingBlockSettings = block }
                                 )
@@ -5577,12 +5720,7 @@ fun NoteEditorWorkspace(
                 selectedFontId = activeTextBlock.fontFamily,
                 onFontSelected = { selectedFontId ->
                     pushHistory()
-                    val updated = blocks.mapIndexed { idx, block ->
-                        if (idx == selectedBlockIndex && block is EditorBlock.Text) {
-                            block.copy(fontFamily = selectedFontId)
-                        } else block
-                    }
-                    updateBlocksAndSave(updated)
+                    if (selectedBlockIndex in blocks.indices) { val b = blocks[selectedBlockIndex]; if (b is EditorBlock.Text) { blocks[selectedBlockIndex] = b.copy(fontFamily = selectedFontId); updateBlocksAndSave(null) } }
                     showTextFontPicker = false
                     showFormattingPanel = true
                 },
@@ -5611,12 +5749,36 @@ fun NoteEditorWorkspace(
                 title = "Color de Texto",
                 onColorSelected = { selectedHex ->
                     pushHistory()
-                    val updated = blocks.mapIndexed { idx, block ->
-                        if (idx == selectedBlockIndex && block is EditorBlock.Text) {
-                            block.copy(fontColor = selectedHex)
-                        } else block
+                    val triple = activeTextBlockState?.takeIf { it.first == selectedBlockIndex }
+                    val tfv = triple?.second
+                    val hasSelection = tfv != null && tfv.selection.length > 0 && tfv.selection.min >= 1
+                    if (hasSelection && tfv != null) {
+                        val selStart = tfv.selection.min
+                        val selEnd = tfv.selection.max
+                        val full = tfv.text
+                        val selText = full.substring(selStart, selEnd)
+                        val rep = "[color:$selectedHex]$selText[/color]"
+                        val newText = full.substring(0, selStart) + rep + full.substring(selEnd)
+                        val newSel = TextRange(selStart, selStart + rep.length)
+                        val newTfv = TextFieldValue(newText, newSel)
+                        triple.third.invoke(newTfv)
+                        val toSave = if (newText.startsWith("\u200B")) newText.substring(1) else newText
+                        if (selectedBlockIndex in blocks.indices) {
+                            val b = blocks[selectedBlockIndex]
+                            if (b is EditorBlock.Text) {
+                                blocks[selectedBlockIndex] = b.copy(content = toSave)
+                            }
+                        }
+                        updateBlocksAndSave(null)
+                    } else {
+                        if (selectedBlockIndex in blocks.indices) {
+                            val b = blocks[selectedBlockIndex]
+                            if (b is EditorBlock.Text) {
+                                blocks[selectedBlockIndex] = b.copy(fontColor = selectedHex)
+                                updateBlocksAndSave(null)
+                            }
+                        }
                     }
-                    updateBlocksAndSave(updated)
                     showTextColorPicker = false
                     showFormattingPanel = true
                 },
@@ -6235,46 +6397,787 @@ fun deserializeChatMessages(json: String): List<Pair<String, Boolean>> {
     return list
 }
 
-// Format note mentions with underlines and click listener
-@Composable
-fun formatMessageText(
+// Helper function to parse inline Markdown (bold, italic, underline, strikethrough, code, colors, @notes)
+fun parseInlineMarkdown(
     text: String,
-    notesList: List<NoteEntity>
-): androidx.compose.ui.text.AnnotatedString {
-    return androidx.compose.ui.text.buildAnnotatedString {
-        val words = text.split("(?<=\\s)|(?=\\s)|(?<=\\n)|(?=\\n)".toRegex())
-        for (word in words) {
-            if (word.startsWith("@") && word.length > 1) {
-                // Remove trailing punctuation for title matching
-                val cleanWord = word.substring(1).trimEnd { !it.isLetterOrDigit() && it != ' ' }
-                val matchingNote = notesList.find { it.title.equals(cleanWord, ignoreCase = true) }
-                if (matchingNote != null) {
-                    val start = this.length
-                    append(word)
-                    addStyle(
-                        style = androidx.compose.ui.text.SpanStyle(
-                            color = Color(0xFF907CFF),
-                            textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
-                            fontWeight = FontWeight.Bold
-                        ),
-                        start = start,
-                        end = this.length
-                    )
-                    addStringAnnotation(
-                        tag = "NOTE_LINK",
-                        annotation = matchingNote.id,
-                        start = start,
-                        end = this.length
-                    )
-                } else {
-                    append(word)
-                }
-            } else {
-                append(word)
+    notesList: List<NoteEntity> = emptyList(),
+    defaultColor: Color = TextPrimary
+): AnnotatedString {
+    return buildAnnotatedString {
+        val regex = Regex("""(\*\*\*[\s\S]*?\*\*\*|\*\*[\s\S]*?\*\*|__[\s\S]*?__|<u>[\s\S]*?<\/u>|~~[\s\S]*?~~|\*[\s\S]*?\*|_[\s\S]*?_|`[\s\S]*?`|\[color:[a-zA-Z0-9#]+\][\s\S]*?\[\/color\]|@[a-zA-Z0-9áéíóúÁÉÍÓÚñÑ_]+)""")
+        var lastIdx = 0
+        val matches = regex.findAll(text)
+        for (match in matches) {
+            if (match.range.first > lastIdx) {
+                append(text.substring(lastIdx, match.range.first))
             }
+            val token = match.value
+            when {
+                // Bold Italic (***text***)
+                token.startsWith("***") && token.endsWith("***") && token.length >= 6 -> {
+                    val inner = token.substring(3, token.length - 3)
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic, color = Color(0xFFFFFFFF))) {
+                        append(inner)
+                    }
+                }
+                // Bold (**text** or __text__)
+                (token.startsWith("**") && token.endsWith("**") && token.length >= 4) ||
+                (token.startsWith("__") && token.endsWith("__") && token.length >= 4) -> {
+                    val inner = token.substring(2, token.length - 2)
+                    withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold, color = Color(0xFFFFFFFF))) {
+                        append(inner)
+                    }
+                }
+                // Underline (<u>text</u>)
+                token.startsWith("<u>", ignoreCase = true) && token.endsWith("</u>", ignoreCase = true) && token.length >= 7 -> {
+                    val inner = token.substring(3, token.length - 4)
+                    withStyle(SpanStyle(textDecoration = TextDecoration.Underline, color = Color(0xFF80D8FF), fontWeight = FontWeight.SemiBold)) {
+                        append(inner)
+                    }
+                }
+                // Strikethrough (~~text~~)
+                token.startsWith("~~") && token.endsWith("~~") && token.length >= 4 -> {
+                    val inner = token.substring(2, token.length - 2)
+                    withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough, color = TextTertiary)) {
+                        append(inner)
+                    }
+                }
+                // Italic (*text* or _text_)
+                (token.startsWith("*") && token.endsWith("*") && token.length >= 2) ||
+                (token.startsWith("_") && token.endsWith("_") && token.length >= 2) -> {
+                    val inner = token.substring(1, token.length - 1)
+                    withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = Color(0xFFCCC2DC))) {
+                        append(inner)
+                    }
+                }
+                // Inline Code (`code`)
+                token.startsWith("`") && token.endsWith("`") && token.length >= 2 -> {
+                    val inner = token.substring(1, token.length - 1)
+                    withStyle(SpanStyle(fontFamily = FontFamily.Monospace, color = Color(0xFF80D8FF), background = Color(0xFF282530))) {
+                        append(" $inner ")
+                    }
+                }
+                // Color Tag ([color:Red]text[/color])
+                token.startsWith("[color:") && token.endsWith("[/color]") -> {
+                    val colorEndTag = token.indexOf("]")
+                    val colorName = token.substring(7, colorEndTag)
+                    val inner = token.substring(colorEndTag + 1, token.length - 8)
+                    val col = when (colorName.lowercase()) {
+                        "purple" -> Color(0xFFD0BCFF)
+                        "blue" -> Color(0xFF80D8FF)
+                        "green" -> Color(0xFF81C784)
+                        "red" -> Color(0xFFFF8A80)
+                        "amber", "yellow" -> Color(0xFFFFD54F)
+                        "cyan" -> Color(0xFF80DEEA)
+                        "pink" -> Color(0xFFF48FB1)
+                        else -> if (colorName.startsWith("#")) {
+                            try { Color(android.graphics.Color.parseColor(colorName)) } catch (e: Exception) { defaultColor }
+                        } else defaultColor
+                    }
+                    withStyle(SpanStyle(color = col, fontWeight = FontWeight.SemiBold)) {
+                        append(inner)
+                    }
+                }
+                // @Note link
+                token.startsWith("@") -> {
+                    val rawName = token.substring(1).trimEnd { !it.isLetterOrDigit() && it != ' ' }
+                    val matchingNote = notesList.find { it.title.equals(rawName, ignoreCase = true) }
+                    if (matchingNote != null) {
+                        pushStringAnnotation(tag = "NOTE_LINK", annotation = matchingNote.id)
+                        withStyle(SpanStyle(color = Color(0xFF907CFF), fontWeight = FontWeight.Bold, textDecoration = TextDecoration.Underline)) {
+                            append(token)
+                        }
+                        pop()
+                    } else {
+                        append(token)
+                    }
+                }
+                else -> append(token)
+            }
+            lastIdx = match.range.last + 1
+        }
+        if (lastIdx < text.length) {
+            append(text.substring(lastIdx))
         }
     }
 }
+
+/**
+ * VisualTransformation para que el editor de texto muestre en tiempo real las negritas,
+ * subrayados, cursivas, tachados y colores de secciones de texto.
+ */
+class MarkdownVisualTransformation(
+    private val isBlockBold: Boolean = false,
+    private val isBlockItalic: Boolean = false,
+    private val isBlockUnderline: Boolean = false,
+    private val blockColor: Color = Color.White
+) : androidx.compose.ui.text.input.VisualTransformation {
+
+    override fun filter(text: AnnotatedString): androidx.compose.ui.text.input.TransformedText {
+        val raw = text.text
+        if (raw.isEmpty()) {
+            return androidx.compose.ui.text.input.TransformedText(text, androidx.compose.ui.text.input.OffsetMapping.Identity)
+        }
+
+        data class HiddenTag(val start: Int, val end: Int)
+        data class StyledRange(val startInRaw: Int, val endInRaw: Int, val style: SpanStyle)
+
+        val hiddenTags = mutableListOf<HiddenTag>()
+        val styles = mutableListOf<StyledRange>()
+
+        // 1. Bold: **...** or __...__
+        val boldRegex = Regex("""(\*\*|__)(.*?)\1""")
+        for (m in boldRegex.findAll(raw)) {
+            val s = m.range.first
+            val e = m.range.last + 1
+            hiddenTags.add(HiddenTag(s, s + 2))
+            hiddenTags.add(HiddenTag(e - 2, e))
+            styles.add(StyledRange(s + 2, e - 2, SpanStyle(fontWeight = FontWeight.ExtraBold, color = Color.White)))
+        }
+
+        // 2. Underline: <u>...</u>
+        val underlineRegex = Regex("""<u>(.*?)</u>""", RegexOption.IGNORE_CASE)
+        for (m in underlineRegex.findAll(raw)) {
+            val s = m.range.first
+            val e = m.range.last + 1
+            hiddenTags.add(HiddenTag(s, s + 3))
+            hiddenTags.add(HiddenTag(e - 4, e))
+            styles.add(StyledRange(s + 3, e - 4, SpanStyle(textDecoration = TextDecoration.Underline, color = Color(0xFF80D8FF), fontWeight = FontWeight.SemiBold)))
+        }
+
+        // 3. Strikethrough: ~~...~~
+        val strikeRegex = Regex("""~~(.*?)~~""")
+        for (m in strikeRegex.findAll(raw)) {
+            val s = m.range.first
+            val e = m.range.last + 1
+            hiddenTags.add(HiddenTag(s, s + 2))
+            hiddenTags.add(HiddenTag(e - 2, e))
+            styles.add(StyledRange(s + 2, e - 2, SpanStyle(textDecoration = TextDecoration.LineThrough, color = Color(0xFF8E8E93))))
+        }
+
+        // 4. Color: [color:XYZ]...[/color]
+        val colRegex = Regex("""\[color:([a-zA-Z0-9#]+)\](.*?)\[/color\]""")
+        for (m in colRegex.findAll(raw)) {
+            val s = m.range.first
+            val e = m.range.last + 1
+            val colName = m.groupValues[1]
+            val openTagLen = colName.length + 8
+            hiddenTags.add(HiddenTag(s, s + openTagLen))
+            hiddenTags.add(HiddenTag(e - 8, e))
+            val c = when (colName.lowercase()) {
+                "purple" -> Color(0xFFD0BCFF)
+                "blue" -> Color(0xFF8AB4F8)
+                "green" -> Color(0xFF81C784)
+                "red" -> Color(0xFFE57373)
+                "amber", "yellow" -> Color(0xFFFFB74D)
+                "cyan" -> Color(0xFF80DEEA)
+                "pink" -> Color(0xFFF48FB1)
+                else -> if (colName.startsWith("#")) {
+                    try { Color(android.graphics.Color.parseColor(colName)) } catch (ex: Exception) { blockColor }
+                } else blockColor
+            }
+            styles.add(StyledRange(s + openTagLen, e - 8, SpanStyle(color = c, fontWeight = FontWeight.SemiBold)))
+        }
+
+        // 5. Italic: *...* (only if not overlapping bold)
+        val italicRegex = Regex("""(?<!\*)\*([^\*]+)\*(?!\*)""")
+        for (m in italicRegex.findAll(raw)) {
+            val s = m.range.first
+            val e = m.range.last + 1
+            val overlaps = hiddenTags.any { tag -> maxOf(s, tag.start) < minOf(e, tag.end) }
+            if (!overlaps) {
+                hiddenTags.add(HiddenTag(s, s + 1))
+                hiddenTags.add(HiddenTag(e - 1, e))
+                styles.add(StyledRange(s + 1, e - 1, SpanStyle(fontStyle = FontStyle.Italic, color = Color(0xFFCCC2DC))))
+            }
+        }
+
+        if (hiddenTags.isEmpty()) {
+            val annotated = buildAnnotatedString {
+                append(raw)
+                if (isBlockUnderline && raw.isNotEmpty()) addStyle(SpanStyle(textDecoration = TextDecoration.Underline), 0, raw.length)
+                if (isBlockBold && raw.isNotEmpty()) addStyle(SpanStyle(fontWeight = FontWeight.Bold), 0, raw.length)
+                if (isBlockItalic && raw.isNotEmpty()) addStyle(SpanStyle(fontStyle = FontStyle.Italic), 0, raw.length)
+            }
+            return androidx.compose.ui.text.input.TransformedText(annotated, androidx.compose.ui.text.input.OffsetMapping.Identity)
+        }
+
+        hiddenTags.sortBy { it.start }
+        val mergedHidden = mutableListOf<HiddenTag>()
+        for (tag in hiddenTags) {
+            if (mergedHidden.isEmpty()) {
+                mergedHidden.add(tag)
+            } else {
+                val last = mergedHidden.last()
+                if (tag.start <= last.end) {
+                    mergedHidden[mergedHidden.size - 1] = HiddenTag(last.start, maxOf(last.end, tag.end))
+                } else {
+                    mergedHidden.add(tag)
+                }
+            }
+        }
+
+        val transformedSb = StringBuilder()
+        val origToTrans = IntArray(raw.length + 1)
+        val transToOrigList = mutableListOf<Int>()
+
+        var currentOrig = 0
+        var currentTrans = 0
+
+        for (tag in mergedHidden) {
+            while (currentOrig < tag.start && currentOrig < raw.length) {
+                origToTrans[currentOrig] = currentTrans
+                transToOrigList.add(currentOrig)
+                transformedSb.append(raw[currentOrig])
+                currentOrig++
+                currentTrans++
+            }
+            while (currentOrig < tag.end && currentOrig < raw.length) {
+                origToTrans[currentOrig] = currentTrans
+                currentOrig++
+            }
+        }
+        while (currentOrig < raw.length) {
+            origToTrans[currentOrig] = currentTrans
+            transToOrigList.add(currentOrig)
+            transformedSb.append(raw[currentOrig])
+            currentOrig++
+            currentTrans++
+        }
+        origToTrans[raw.length] = currentTrans
+        transToOrigList.add(raw.length)
+
+        val transToOrig = transToOrigList.toIntArray()
+        val transformedText = transformedSb.toString()
+
+        val annotated = buildAnnotatedString {
+            append(transformedText)
+            if (isBlockUnderline && transformedText.isNotEmpty()) {
+                addStyle(SpanStyle(textDecoration = TextDecoration.Underline), 0, transformedText.length)
+            }
+            if (isBlockBold && transformedText.isNotEmpty()) {
+                addStyle(SpanStyle(fontWeight = FontWeight.Bold), 0, transformedText.length)
+            }
+            if (isBlockItalic && transformedText.isNotEmpty()) {
+                addStyle(SpanStyle(fontStyle = FontStyle.Italic), 0, transformedText.length)
+            }
+            for (st in styles) {
+                val transStart = origToTrans.getOrElse(st.startInRaw) { 0 }.coerceIn(0, transformedText.length)
+                val transEnd = origToTrans.getOrElse(st.endInRaw) { transformedText.length }.coerceIn(0, transformedText.length)
+                if (transStart < transEnd) {
+                    addStyle(st.style, transStart, transEnd)
+                }
+            }
+        }
+
+        val offsetMapping = object : androidx.compose.ui.text.input.OffsetMapping {
+            override fun originalToTransformed(offset: Int): Int {
+                return origToTrans.getOrElse(offset.coerceIn(0, raw.length)) { transformedText.length }
+            }
+
+            override fun transformedToOriginal(offset: Int): Int {
+                return transToOrig.getOrElse(offset.coerceIn(0, transformedText.length)) { raw.length }
+            }
+        }
+
+        return androidx.compose.ui.text.input.TransformedText(annotated, offsetMapping)
+    }
+}
+
+@Composable
+fun MarkdownChatBubble(
+    content: String,
+    notesList: List<NoteEntity>,
+    onNoteClick: (NoteEntity) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        val lines = content.lines()
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i]
+            val trimmed = line.trim()
+
+            // 1. Code Block
+            if (trimmed.startsWith("```")) {
+                val codeBuffer = StringBuilder()
+                val lang = trimmed.removePrefix("```").trim()
+                i++
+                while (i < lines.size && !lines[i].trim().startsWith("```")) {
+                    codeBuffer.append(lines[i]).append("\n")
+                    i++
+                }
+                if (i < lines.size && lines[i].trim().startsWith("```")) {
+                    i++
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFF1E1C24),
+                    border = BorderStroke(1.dp, Color(0xFF383540)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        if (lang.isNotBlank()) {
+                            Text(
+                                text = lang.uppercase(),
+                                fontSize = 11.sp,
+                                color = TextSecondary,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(bottom = 4.dp)
+                            )
+                        }
+                        Text(
+                            text = codeBuffer.toString().trimEnd(),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp,
+                            color = Color(0xFF80D8FF),
+                            lineHeight = 18.sp
+                        )
+                    }
+                }
+                continue
+            }
+
+            // 2. Divider
+            if (trimmed == "---" || trimmed == "***" || trimmed == "___") {
+                HorizontalDivider(
+                    color = Color(0xFF3F3B48),
+                    modifier = Modifier.padding(vertical = 6.dp)
+                )
+                i++
+                continue
+            }
+
+            // 3. Markdown Table (| col 1 | col 2 |)
+            if (trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.length > 2) {
+                val tableLines = mutableListOf<String>()
+                while (i < lines.size && lines[i].trim().startsWith("|") && lines[i].trim().endsWith("|")) {
+                    tableLines.add(lines[i].trim())
+                    i++
+                }
+                val parsedRows = mutableListOf<List<String>>()
+                for (tLine in tableLines) {
+                    val isSep = tLine.replace("|", "").replace("-", "").replace(":", "").replace(" ", "").isEmpty()
+                    if (isSep) continue
+                    val parts = tLine.split("|").map { it.trim() }
+                    if (parts.size > 2) {
+                        parsedRows.add(parts.subList(1, parts.size - 1))
+                    }
+                }
+                if (parsedRows.isNotEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFF1F1D24),
+                        border = BorderStroke(1.dp, Color(0xFF3F3B48)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(8.dp)) {
+                            parsedRows.forEachIndexed { rIdx, rowCells ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(if (rIdx == 0) Color(0xFF2C2836) else Color.Transparent)
+                                        .padding(vertical = 4.dp, horizontal = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    rowCells.forEach { cell ->
+                                        Text(
+                                            text = cell,
+                                            fontSize = if (rIdx == 0) 13.5.sp else 13.sp,
+                                            fontWeight = if (rIdx == 0) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (rIdx == 0) GeminiCyanAccent else TextPrimary,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                                if (rIdx < parsedRows.size - 1) {
+                                    HorizontalDivider(color = Color(0xFF332F3D), thickness = 0.5.dp)
+                                }
+                            }
+                        }
+                    }
+                }
+                continue
+            }
+
+            // 4. Callout with Emoji (💡, 📌, ⚠️, 🚀, ⭐, ✅, 🔥, ℹ️, 📝)
+            val calloutEmojis = listOf("💡", "⚠️", "📌", "🚀", "⭐", "🔥", "ℹ️", "📝", "✅")
+            val matchingEmoji = calloutEmojis.firstOrNull { trimmed.startsWith(it) }
+            if (matchingEmoji != null) {
+                val calloutBody = trimmed.substring(matchingEmoji.length).trim()
+                val parsed = parseInlineMarkdown(calloutBody, notesList)
+                val borderColor = when (matchingEmoji) {
+                    "💡" -> Color(0xFFD0BCFF)
+                    "⚠️" -> Color(0xFFFFB74D)
+                    "📌" -> Color(0xFF80D8FF)
+                    "🚀" -> Color(0xFF81C784)
+                    "⭐" -> Color(0xFFFF8A80)
+                    else -> Color(0xFFD0BCFF)
+                }
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFF232029),
+                    border = BorderStroke(1.dp, borderColor.copy(alpha = 0.5f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(text = matchingEmoji, fontSize = 16.sp)
+                        androidx.compose.foundation.text.ClickableText(
+                            text = parsed,
+                            style = TextStyle(
+                                color = TextPrimary,
+                                fontSize = 14.5.sp,
+                                lineHeight = 21.sp
+                            ),
+                            modifier = Modifier.weight(1f),
+                            onClick = { offset ->
+                                parsed.getStringAnnotations("NOTE_LINK", offset, offset)
+                                    .firstOrNull()?.let { annotation ->
+                                        notesList.find { it.id == annotation.item }?.let(onNoteClick)
+                                    }
+                            }
+                        )
+                    }
+                }
+                i++
+                continue
+            }
+
+            // 5. Checkboxes (- [ ] item, - [x] item)
+            val checkboxMatch = Regex("""^[-*•]\s+\[([ xX])\]\s+(.*)""").find(trimmed)
+            if (checkboxMatch != null) {
+                val isChecked = checkboxMatch.groupValues[1].equals("x", ignoreCase = true)
+                val taskText = checkboxMatch.groupValues[2].trim()
+                val parsed = parseInlineMarkdown(taskText, notesList)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isChecked) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                        contentDescription = if (isChecked) "Completada" else "Pendiente",
+                        tint = if (isChecked) Color(0xFF81C784) else TextSecondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    androidx.compose.foundation.text.ClickableText(
+                        text = parsed,
+                        style = TextStyle(
+                            color = if (isChecked) TextSecondary else TextPrimary,
+                            fontSize = 14.5.sp,
+                            textDecoration = if (isChecked) TextDecoration.LineThrough else TextDecoration.None,
+                            lineHeight = 21.sp
+                        ),
+                        modifier = Modifier.weight(1f),
+                        onClick = { offset ->
+                            parsed.getStringAnnotations("NOTE_LINK", offset, offset)
+                                .firstOrNull()?.let { annotation ->
+                                    notesList.find { it.id == annotation.item }?.let(onNoteClick)
+                                }
+                        }
+                    )
+                }
+                i++
+                continue
+            }
+
+            // 6. Headings (# Title, ## Subtitle, ### Heading, #### Minor)
+            val headerMatch = Regex("""^(#{1,6})\s*(.*)""").find(trimmed)
+            if (headerMatch != null) {
+                val level = headerMatch.groupValues[1].length
+                val titleText = headerMatch.groupValues[2].trim()
+                val parsed = parseInlineMarkdown(titleText, notesList)
+                val (fontSize, col, weight, topPad) = when (level) {
+                    1 -> Quad(20.sp, Color(0xFFF2E7FE), FontWeight.ExtraBold, 10.dp)
+                    2 -> Quad(17.5.sp, GeminiCyanAccent, FontWeight.Bold, 8.dp)
+                    3 -> Quad(16.sp, Color(0xFF80D8FF), FontWeight.Bold, 6.dp)
+                    else -> Quad(15.sp, Color(0xFF81C784), FontWeight.SemiBold, 4.dp)
+                }
+                androidx.compose.foundation.text.ClickableText(
+                    text = parsed,
+                    style = TextStyle(
+                        color = col,
+                        fontSize = fontSize,
+                        fontWeight = weight,
+                        lineHeight = (fontSize.value + 6).sp
+                    ),
+                    modifier = Modifier.padding(top = topPad, bottom = 3.dp),
+                    onClick = { offset ->
+                        parsed.getStringAnnotations("NOTE_LINK", offset, offset)
+                            .firstOrNull()?.let { annotation ->
+                                notesList.find { it.id == annotation.item }?.let(onNoteClick)
+                            }
+                    }
+                )
+                i++
+                continue
+            }
+
+            // 7. Standalone Bold Section Titles (e.g. **Resumen Ejecutivo:** or **1. Puntos Clave:**)
+            val standaloneBoldMatch = Regex("""^\*\*([^*]+)\*\*[:]?$""").find(trimmed)
+            if (standaloneBoldMatch != null) {
+                val titleText = standaloneBoldMatch.groupValues[1].trim()
+                val parsed = parseInlineMarkdown(titleText, notesList)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .background(GeminiCyanAccent, CircleShape)
+                    )
+                    androidx.compose.foundation.text.ClickableText(
+                        text = parsed,
+                        style = TextStyle(
+                            color = Color(0xFFEADDFF),
+                            fontSize = 16.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            lineHeight = 22.sp
+                        ),
+                        modifier = Modifier.weight(1f),
+                        onClick = { offset ->
+                            parsed.getStringAnnotations("NOTE_LINK", offset, offset)
+                                .firstOrNull()?.let { annotation ->
+                                    notesList.find { it.id == annotation.item }?.let(onNoteClick)
+                                }
+                        }
+                    )
+                }
+                i++
+                continue
+            }
+
+            // 8. Collapsible Sections (▶ Título, [+] Título, <details>)
+            val collapsibleMatch = Regex("""^(?:▶|\[\+\]|<details><summary>)\s*(.*)""").find(trimmed)
+            if (collapsibleMatch != null) {
+                var collTitle = collapsibleMatch.groupValues[1].removeSuffix("</summary>").trim()
+                var collBody = StringBuilder()
+                i++
+                while (i < lines.size && !lines[i].trim().startsWith("</details>") && !lines[i].trim().startsWith("▶") && !lines[i].trim().startsWith("[+]")) {
+                    collBody.append(lines[i]).append("\n")
+                    i++
+                }
+                if (i < lines.size && lines[i].trim().startsWith("</details>")) {
+                    i++
+                }
+                var isExpanded by remember(collTitle) { mutableStateOf(false) }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFF221F28),
+                    border = BorderStroke(1.dp, Color(0xFF3F3B48)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { isExpanded = !isExpanded },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = collTitle.ifBlank { "Sección contraíble" },
+                                color = GeminiCyanAccent,
+                                fontSize = 14.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Icon(
+                                imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null,
+                                tint = GeminiCyanAccent,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        if (isExpanded) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            HorizontalDivider(color = Color(0xFF383540), thickness = 0.5.dp)
+                            Spacer(modifier = Modifier.height(6.dp))
+                            val parsedBody = parseInlineMarkdown(collBody.toString().trim(), notesList)
+                            androidx.compose.foundation.text.ClickableText(
+                                text = parsedBody,
+                                style = TextStyle(
+                                    color = TextPrimary,
+                                    fontSize = 14.sp,
+                                    lineHeight = 20.sp
+                                ),
+                                onClick = { offset ->
+                                    parsedBody.getStringAnnotations("NOTE_LINK", offset, offset)
+                                        .firstOrNull()?.let { annotation ->
+                                            notesList.find { it.id == annotation.item }?.let(onNoteClick)
+                                        }
+                                }
+                            )
+                        }
+                    }
+                }
+                continue
+            }
+
+            // 9. Bullet List Item (- item, * item, • item, + item)
+            if (trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("• ") || trimmed.startsWith("+ ")) {
+                val itemText = trimmed.removePrefix("- ").removePrefix("* ").removePrefix("• ").removePrefix("+ ").trim()
+                val parsed = parseInlineMarkdown(itemText, notesList)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .padding(top = 7.dp, end = 8.dp)
+                            .size(6.dp)
+                            .background(GeminiCyanAccent, CircleShape)
+                    )
+                    androidx.compose.foundation.text.ClickableText(
+                        text = parsed,
+                        style = TextStyle(
+                            color = TextPrimary,
+                            fontSize = 15.sp,
+                            lineHeight = 22.sp
+                        ),
+                        modifier = Modifier.weight(1f),
+                        onClick = { offset ->
+                            parsed.getStringAnnotations("NOTE_LINK", offset, offset)
+                                .firstOrNull()?.let { annotation ->
+                                    notesList.find { it.id == annotation.item }?.let(onNoteClick)
+                                }
+                        }
+                    )
+                }
+                i++
+                continue
+            }
+
+            // 10. Numbered List Item (1. item, 2. item, 1) item)
+            val numMatch = Regex("""^(\d+)[\.\)]\s+(.*)""").find(trimmed)
+            if (numMatch != null) {
+                val num = numMatch.groupValues[1]
+                val itemText = numMatch.groupValues[2]
+                val parsed = parseInlineMarkdown(itemText, notesList)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text(
+                        text = "$num.",
+                        color = GeminiBlue,
+                        fontSize = 14.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.widthIn(min = 22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    androidx.compose.foundation.text.ClickableText(
+                        text = parsed,
+                        style = TextStyle(
+                            color = TextPrimary,
+                            fontSize = 15.sp,
+                            lineHeight = 22.sp
+                        ),
+                        modifier = Modifier.weight(1f),
+                        onClick = { offset ->
+                            parsed.getStringAnnotations("NOTE_LINK", offset, offset)
+                                .firstOrNull()?.let { annotation ->
+                                    notesList.find { it.id == annotation.item }?.let(onNoteClick)
+                                }
+                        }
+                    )
+                }
+                i++
+                continue
+            }
+
+            // 11. Blockquote (> quote)
+            if (trimmed.startsWith("> ")) {
+                val quoteText = trimmed.removePrefix("> ").trim()
+                val parsed = parseInlineMarkdown(quoteText, notesList)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(3.dp)
+                            .height(18.dp)
+                            .background(GeminiCyanAccent, RoundedCornerShape(2.dp))
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    androidx.compose.foundation.text.ClickableText(
+                        text = parsed,
+                        style = TextStyle(
+                            color = TextSecondary,
+                            fontSize = 14.5.sp,
+                            fontStyle = FontStyle.Italic,
+                            lineHeight = 20.sp
+                        ),
+                        onClick = { offset ->
+                            parsed.getStringAnnotations("NOTE_LINK", offset, offset)
+                                .firstOrNull()?.let { annotation ->
+                                    notesList.find { it.id == annotation.item }?.let(onNoteClick)
+                                }
+                        }
+                    )
+                }
+                i++
+                continue
+            }
+
+            // 12. Blank line
+            if (trimmed.isEmpty()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                i++
+                continue
+            }
+
+            // 13. Normal text line
+            val parsed = parseInlineMarkdown(trimmed, notesList)
+            androidx.compose.foundation.text.ClickableText(
+                text = parsed,
+                style = TextStyle(
+                    color = TextPrimary,
+                    fontSize = 15.sp,
+                    lineHeight = 22.sp
+                ),
+                modifier = Modifier.padding(vertical = 1.dp),
+                onClick = { offset ->
+                    parsed.getStringAnnotations("NOTE_LINK", offset, offset)
+                        .firstOrNull()?.let { annotation ->
+                            notesList.find { it.id == annotation.item }?.let(onNoteClick)
+                        }
+                }
+            )
+            i++
+        }
+    }
+}
+
+private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
@@ -6283,6 +7186,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
     val messagesList by viewModel.chatMessages.collectAsStateWithLifecycle()
     val currentSessionId by viewModel.currentChatSessionId.collectAsStateWithLifecycle()
     val isSending by viewModel.isChatbotSending.collectAsStateWithLifecycle()
+    val chatbotStatusText by viewModel.chatbotStatusText.collectAsStateWithLifecycle()
     
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -6469,9 +7373,10 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var showHistoryBottomSheet by remember { mutableStateOf(false) }
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-    LaunchedEffect(messagesList.size) {
-        if (messagesList.isNotEmpty()) {
-            listState.animateScrollToItem(messagesList.size - 1)
+    LaunchedEffect(messagesList.size, isSending) {
+        val total = messagesList.size + (if (isSending) 1 else 0)
+        if (total > 0) {
+            listState.animateScrollToItem(total - 1)
         }
     }
 
@@ -6502,41 +7407,26 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 } catch (e: Exception) {}
                 val contentResolver = context.contentResolver
-                var name = "archivo.txt"
+                var name = "documento"
                 contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                     val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
                     if (nameIndex != -1 && cursor.moveToFirst()) {
                         name = cursor.getString(nameIndex)
                     }
                 }
-                contentResolver.openInputStream(uri)?.use { inputStream ->
-                    val text = if (name.endsWith(".pdf", ignoreCase = true)) {
-                        try {
-                            val reader = com.itextpdf.text.pdf.PdfReader(inputStream)
-                            val numPages = reader.numberOfPages.coerceAtMost(10)
-                            val extracted = StringBuilder()
-                            for (p in 1..numPages) {
-                                val pageText = com.itextpdf.text.pdf.parser.PdfTextExtractor.getTextFromPage(reader, p)
-                                if (pageText.isNotBlank()) {
-                                    extracted.append(pageText).append("\n")
-                                }
-                            }
-                            reader.close()
-                            val fullExtracted = extracted.toString().trim()
-                            if (fullExtracted.isNotBlank()) fullExtracted else "Documento PDF sin texto extraíble."
-                        } catch (e: Exception) {
-                            "No se pudo extraer texto del PDF: ${e.message}"
-                        }
-                    } else {
-                        inputStream.bufferedReader().use { it.readText() }
+                attachedFileName = name
+                attachedFileUri = uri
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val text = com.example.util.LocalMediaAnalyzer.extractDocumentText(context, uri, name)
+                        attachedFileContent = text
+                    } catch (e: Exception) {
+                        android.util.Log.e("ChatbotUI", "Error extrayendo archivo en segundo plano", e)
                     }
-                    attachedFileContent = text.take(3500)
-                    attachedFileName = name
-                    attachedFileUri = uri
                 }
-                Toast.makeText(context, "Archivo cargado: $name", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Archivo adjunto: $name", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
-                Toast.makeText(context, "Error al leer archivo: ${e.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Error al adjuntar archivo: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -6637,7 +7527,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                 .weight(1f)
                 .fillMaxWidth()
         ) {
-            if (messagesList.isEmpty()) {
+            if (messagesList.isEmpty() && !isSending) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
@@ -6682,24 +7572,22 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .widthIn(max = 280.dp)
+                                    .widthIn(max = 290.dp)
                                     .background(Color(0xFF322F37), RoundedCornerShape(16.dp))
                                     .padding(horizontal = 14.dp, vertical = 10.dp)
                             ) {
-                                val annotatedText = formatMessageText(msg, allNotes)
+                                val userParsed = parseInlineMarkdown(msg, allNotes)
                                 androidx.compose.foundation.text.ClickableText(
-                                    text = annotatedText,
+                                    text = userParsed,
                                     style = TextStyle(
                                         color = TextPrimary,
                                         fontSize = 15.sp,
-                                        fontStyle = FontStyle.Italic
+                                        lineHeight = 21.sp
                                     ),
                                     onClick = { offset ->
-                                        annotatedText.getStringAnnotations(tag = "NOTE_LINK", start = offset, end = offset)
+                                        userParsed.getStringAnnotations(tag = "NOTE_LINK", start = offset, end = offset)
                                             .firstOrNull()?.let { annotation ->
-                                                val noteId = annotation.item
-                                                val matchingNote = allNotes.find { it.id == noteId }
-                                                if (matchingNote != null) {
+                                                allNotes.find { it.id == annotation.item }?.let { matchingNote ->
                                                     viewModel.selectNote(matchingNote)
                                                     onDismiss()
                                                 }
@@ -6713,28 +7601,16 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(end = 40.dp)
+                                .padding(end = 24.dp)
                         ) {
-                            val annotatedText = formatMessageText(msg, allNotes)
-                            androidx.compose.foundation.text.ClickableText(
-                                text = annotatedText,
-                                style = TextStyle(
-                                    color = TextPrimary,
-                                    fontSize = 15.sp,
-                                    fontStyle = FontStyle.Italic
-                                ),
-                                modifier = Modifier.padding(bottom = 8.dp),
-                                onClick = { offset ->
-                                    annotatedText.getStringAnnotations(tag = "NOTE_LINK", start = offset, end = offset)
-                                        .firstOrNull()?.let { annotation ->
-                                            val noteId = annotation.item
-                                            val matchingNote = allNotes.find { it.id == noteId }
-                                            if (matchingNote != null) {
-                                                viewModel.selectNote(matchingNote)
-                                                onDismiss()
-                                            }
-                                        }
-                                }
+                            MarkdownChatBubble(
+                                content = msg,
+                                notesList = allNotes,
+                                onNoteClick = { note ->
+                                    viewModel.selectNote(note)
+                                    onDismiss()
+                                },
+                                modifier = Modifier.padding(bottom = 6.dp)
                             )
 
                             // ACTION ICONS UNDER MESSAGE
@@ -6826,12 +7702,9 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                  ) {
                                      TextButton(
                                          onClick = {
-                                             viewModel.sendChatbotMessage(
-                                                 "Pasar a Nota",
-                                                 "Crea una nueva nota titulada 'Resumen de IA' basada en el siguiente contenido usando el comando:\n[CREATE_NOTE_START]\nTITLE: Resumen de IA\nCONTENT_START\n$msg\nCONTENT_END\n[CREATE_NOTE_END]"
-                                             )
-                                             Toast.makeText(context, "Pasando a nota...", Toast.LENGTH_SHORT).show()
-                                             onDismiss()
+                                             viewModel.exportMessageToNote(msg, asBlocks = false) { note ->
+                                                 Toast.makeText(context, "✨ Nota \"${note.title}\" guardada en tu biblioteca", Toast.LENGTH_SHORT).show()
+                                             }
                                          },
                                          contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                                          colors = ButtonDefaults.textButtonColors(contentColor = GeminiCyanAccent)
@@ -6843,12 +7716,9 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
 
                                      TextButton(
                                          onClick = {
-                                             viewModel.sendChatbotMessage(
-                                                 "Convertir en Bloques",
-                                                 "Crea una nueva nota estructurada y formateada en bloques visuales (títulos, listas, viñetas) basada en el siguiente contenido usando el comando:\n[CREATE_NOTE_START]\nTITLE: Representación y Bloques de IA\nCONTENT_START\n$msg\nCONTENT_END\n[CREATE_NOTE_END]"
-                                             )
-                                             Toast.makeText(context, "Convirtiendo en bloques...", Toast.LENGTH_SHORT).show()
-                                             onDismiss()
+                                             viewModel.exportMessageToNote(msg, asBlocks = true) { note ->
+                                                 Toast.makeText(context, "✨ Nota estructurada \"${note.title}\" creada en bloques", Toast.LENGTH_SHORT).show()
+                                             }
                                          },
                                          contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
                                          colors = ButtonDefaults.textButtonColors(contentColor = GeminiBlue)
@@ -6858,6 +7728,63 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                          Text("Convertir en Bloques", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                      }
                                  }
+                            }
+                        }
+                    }
+                }
+
+                if (isSending) {
+                    item {
+                        val statusMessage = chatbotStatusText ?: "Aura está pensando..."
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp),
+                            horizontalArrangement = Arrangement.Start,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .background(
+                                        Brush.linearGradient(listOf(GeminiCyanAccent, GeminiBlue)),
+                                        CircleShape
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(10.dp))
+
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = CosmicSurfaceVariant,
+                                tonalElevation = 2.dp,
+                                modifier = Modifier.border(1.dp, Color(0xFF49454F), RoundedCornerShape(16.dp))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = GeminiCyanAccent
+                                    )
+                                    Text(
+                                        text = statusMessage,
+                                        color = TextPrimary,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
                             }
                         }
                     }
@@ -6998,47 +7925,28 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
             // Send Button
             IconButton(
                 onClick = {
+                    if (isSending) return@IconButton
                     if (message.isBlank() && attachedImageUri == null && attachedFileName == null && attachedNoteFromScreen == null && attachedTextFromScreen == null) return@IconButton
-                    val userMsg = message
-                    var displayMsg = userMsg
-                    if (displayMsg.isBlank()) {
-                        displayMsg = if (attachedImageUri != null) "[Imagen]" else if (attachedFileName != null) "[Archivo]" else if (attachedNoteFromScreen != null) "[Nota]" else "[Párrafo]"
-                    }
-
-                    // Build final prompt for Gemini containing full context!
-                    var finalMsgForApi = userMsg
-
-                    // Append screen note context
-                    if (attachedNoteFromScreen != null) {
-                        val mdContent = convertBlocksToMarkdown(attachedNoteFromScreen!!.content)
-                        finalMsgForApi += "\n\n[Contexto - Nota de pantalla (ID: \"${attachedNoteFromScreen!!.id}\"): \"${attachedNoteFromScreen!!.title}\"\nContenido en Markdown:\n$mdContent]"
-                    } else if (selectedNote != null) {
-                        val mdContent = convertBlocksToMarkdown(selectedNote!!.content)
-                        finalMsgForApi += "\n\n[Contexto - Nota de pantalla actual (ID: \"${selectedNote!!.id}\"): \"${selectedNote!!.title}\"\nContenido en Markdown:\n$mdContent]"
-                    }
-
-                    // Append paragraph citation context
-                    if (attachedTextFromScreen != null) {
-                        finalMsgForApi += "\n\n[Contexto - Párrafo citado de la nota:\n\"${attachedTextFromScreen}\"]"
-                    }
-
-                    // Append attached file context
-                    if (attachedFileContent != null) {
-                        finalMsgForApi += "\n\n[Contexto - Archivo Adjunto \"${attachedFileName}\":\n${attachedFileContent}]"
-                    }
-
-                    // Append inline @ mentioned notes context!
-                    allNotes.forEach { note ->
-                        if (userMsg.contains("@${note.title}", ignoreCase = true)) {
-                            val mdContent = convertBlocksToMarkdown(note.content)
-                            finalMsgForApi += "\n\n[Contexto - Nota Mencionada (ID: \"${note.id}\") \"${note.title}\":\n$mdContent]"
-                        }
-                    }
-
+                    val rawUserMsg = message.trim()
+                    val imgUri = attachedImageUri
+                    val fName = attachedFileName
+                    val fContent = attachedFileContent
+                    val fUri = attachedFileUri
                     val imgB64 = attachedImageBase64
                     val imgMime = attachedImageMimeType
+                    val pNote = attachedNoteFromScreen
+                    val pText = attachedTextFromScreen
 
-                    // Clear attachments
+                    val displayMsg = when {
+                        rawUserMsg.isNotBlank() -> rawUserMsg
+                        fName != null -> "📎 Archivo: $fName"
+                        imgUri != null -> "📷 [Imagen adjunta]"
+                        pNote != null -> "📄 [Nota citada]"
+                        pText != null -> "📝 [Fragmento citado]"
+                        else -> "Consulta"
+                    }
+
+                    // Clear attachments and input immediately
                     attachedImageUri = null
                     attachedImageBase64 = null
                     attachedImageMimeType = null
@@ -7049,23 +7957,39 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     attachedTextFromScreen = null
                     message = ""
 
-                    viewModel.sendChatbotMessage(
-                        userDisplayMsg = displayMsg,
-                        promptWithContext = finalMsgForApi,
+                    viewModel.sendUserMessageWithAttachments(
+                        context = context,
+                        rawUserMsg = rawUserMsg,
+                        fName = fName,
+                        fContent = fContent,
+                        fUri = fUri,
+                        imgUri = imgUri,
                         imgB64 = imgB64,
-                        imgMime = imgMime
+                        imgMime = imgMime,
+                        pNote = pNote,
+                        pText = pText,
+                        allNotes = allNotes
                     )
                 },
+                enabled = !isSending,
                 modifier = Modifier
                     .size(38.dp)
-                    .background(Color(0xFF322F37), CircleShape)
+                    .background(if (isSending) Color(0xFF222026) else Color(0xFF322F37), CircleShape)
             ) {
-                Icon(
-                    imageVector = Icons.Default.FlashOn,
-                    contentDescription = "Enviar",
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
-                )
+                if (isSending) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = GeminiCyanAccent
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.FlashOn,
+                        contentDescription = "Enviar",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
     }
@@ -7920,21 +8844,28 @@ fun convertBlocksToMarkdown(content: String): String {
     for (block in blocks) {
         when (block) {
             is EditorBlock.Text -> {
-                val prefix = when {
-                    block.isHeader -> {
-                        val level = when (block.fontSize) {
-                            24 -> "# "
-                            20 -> "## "
-                            18 -> "### "
-                            else -> "#### "
+                if (block.isCollapsedHeader) {
+                    val lines = block.content.split("\n")
+                    val title = lines.firstOrNull() ?: "Sección"
+                    val body = if (lines.size > 1) lines.drop(1).joinToString("\n") else ""
+                    sb.append("<details><summary>$title</summary>\n\n$body\n</details>\n\n")
+                } else {
+                    val prefix = when {
+                        block.isHeader -> {
+                            val level = when (block.fontSize) {
+                                24 -> "# "
+                                20 -> "## "
+                                18 -> "### "
+                                else -> "#### "
+                            }
+                            level
                         }
-                        level
+                        block.isBullet -> "* "
+                        block.isNumbered -> "1. "
+                        else -> ""
                     }
-                    block.isBullet -> "* "
-                    block.isNumbered -> "1. "
-                    else -> ""
+                    sb.append(prefix).append(block.content).append("\n")
                 }
-                sb.append(prefix).append(block.content).append("\n")
             }
             is EditorBlock.Table -> {
                 sb.append("\n")
