@@ -1533,7 +1533,8 @@ sealed class EditorBlock {
         var isNumbered: Boolean = false,
         var isCollapsedHeader: Boolean = false,
         var isCollapsed: Boolean = false,
-        var isHeader: Boolean = false
+        var isHeader: Boolean = false,
+        var indentLevel: Int = 0
     ) : EditorBlock()
 
     data class Table(
@@ -1629,8 +1630,19 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
         val margin = 50f
         var yPosition = 60f
         
-        // Helper to draw text with word wrap, and handle page breaks
-        fun drawTextWithWrap(text: String, size: Float, isBold: Boolean, isItalic: Boolean, color: Int = android.graphics.Color.BLACK, isBullet: Boolean = false) {
+        // Helper to draw text with word wrap, indentation and bullet/numbered/dropdown support
+        fun drawTextWithWrap(
+            text: String,
+            size: Float,
+            isBold: Boolean,
+            isItalic: Boolean,
+            color: Int = android.graphics.Color.BLACK,
+            isBullet: Boolean = false,
+            isNumbered: Boolean = false,
+            isCollapsedHeader: Boolean = false,
+            indentLevel: Int = 0,
+            numberIndex: Int = 1
+        ) {
             paint.textSize = size
             val tf = when {
                 isBold && isItalic -> android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD_ITALIC)
@@ -1641,69 +1653,101 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
             paint.typeface = tf
             paint.color = color
             
-            val maxTextWidth = pageWidth - (margin * 2) - (if (isBullet) 15f else 0f)
+            val baseIndent = (indentLevel * 20f).coerceIn(0f, 160f)
+            val prefixWidth = when {
+                isBullet -> 16f
+                isNumbered -> 22f
+                isCollapsedHeader -> 18f
+                else -> 0f
+            }
+            val contentStartX = margin + baseIndent + prefixWidth
+            val maxTextWidth = (pageWidth - margin - contentStartX).coerceAtLeast(100f)
             
             // Clean up text
             val cleanText = text.replace("\r", "")
             val paragraphs = cleanText.split("\n")
             
-            for (paragraph in paragraphs) {
+            for (pIndex in paragraphs.indices) {
+                val paragraph = paragraphs[pIndex]
                 if (paragraph.isBlank()) {
-                    yPosition += size * 0.5f
+                    yPosition += size * 0.4f
                     continue
                 }
                 
-                val words = paragraph.split(" ")
-                var currentLine = StringBuilder()
+                // Extra indent if paragraph starts with tabs or multiple spaces
+                var leadingTabs = 0
+                var pTrimmed = paragraph
+                while (pTrimmed.startsWith("\t") || pTrimmed.startsWith("    ")) {
+                    leadingTabs++
+                    if (pTrimmed.startsWith("\t")) pTrimmed = pTrimmed.substring(1)
+                    else pTrimmed = pTrimmed.substring(4)
+                }
+                val lineExtraIndent = leadingTabs * 20f
+                val effectiveStartX = contentStartX + lineExtraIndent
+                val effectiveMaxWidth = (maxTextWidth - lineExtraIndent).coerceAtLeast(80f)
                 
-                for (word in words) {
-                    val testLine = if (currentLine.isEmpty()) word else "${currentLine} $word"
-                    val measuredWidth = paint.measureText(testLine)
-                    if (measuredWidth > maxTextWidth) {
-                        // Check if page needs to be broken
-                        if (yPosition + size + 10f > pageHeight - margin) {
-                            pdfDocument.finishPage(page)
-                            pageNumber++
-                            pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create()
-                            page = pdfDocument.startPage(pageInfo)
-                            canvas = page.canvas
-                            yPosition = margin
-                        }
-                        
-                        val drawX = if (isBullet) margin + 15f else margin
-                        if (isBullet && currentLine.toString() == words.firstOrNull()) {
-                            // draw bullet point
+                val words = pTrimmed.split(" ").filter { it.isNotEmpty() }
+                var currentLine = StringBuilder()
+                var isFirstLineOfParagraph = true
+                
+                fun drawLine(lineStr: String, isFirstLine: Boolean) {
+                    if (yPosition + size + 8f > pageHeight - margin) {
+                        pdfDocument.finishPage(page)
+                        pageNumber++
+                        pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create()
+                        page = pdfDocument.startPage(pageInfo)
+                        canvas = page.canvas
+                        yPosition = margin + 10f
+                    }
+                    
+                    if (isFirstLine && pIndex == 0) {
+                        if (isCollapsedHeader) {
                             paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-                            canvas.drawText("• ", margin, yPosition, paint)
+                            canvas.drawText("▼ ", margin + baseIndent, yPosition, paint)
+                            paint.typeface = tf
+                        } else if (isBullet) {
+                            val bulletChar = when (indentLevel) {
+                                0 -> "• "
+                                1 -> "◦ "
+                                else -> "▪ "
+                            }
+                            paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                            canvas.drawText(bulletChar, margin + baseIndent, yPosition, paint)
+                            paint.typeface = tf
+                        } else if (isNumbered) {
+                            paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                            canvas.drawText("$numberIndex. ", margin + baseIndent, yPosition, paint)
                             paint.typeface = tf
                         }
-                        
-                        canvas.drawText(currentLine.toString(), drawX, yPosition, paint)
-                        yPosition += size + 6f
-                        currentLine = StringBuilder(word)
+                    }
+                    
+                    canvas.drawText(lineStr, effectiveStartX, yPosition, paint)
+                    yPosition += size * 1.30f
+                }
+                
+                for (word in words) {
+                    val testLine = if (currentLine.isEmpty()) word else "$currentLine $word"
+                    val measuredWidth = paint.measureText(testLine)
+                    if (measuredWidth > effectiveMaxWidth) {
+                        if (currentLine.isNotEmpty()) {
+                            drawLine(currentLine.toString(), isFirstLineOfParagraph)
+                            isFirstLineOfParagraph = false
+                            currentLine = StringBuilder(word)
+                        } else {
+                            drawLine(testLine, isFirstLineOfParagraph)
+                            isFirstLineOfParagraph = false
+                            currentLine = StringBuilder()
+                        }
                     } else {
                         currentLine = StringBuilder(testLine)
                     }
                 }
                 
                 if (currentLine.isNotEmpty()) {
-                    if (yPosition + size + 10f > pageHeight - margin) {
-                        pdfDocument.finishPage(page)
-                        pageNumber++
-                        pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create()
-                        page = pdfDocument.startPage(pageInfo)
-                        canvas = page.canvas
-                        yPosition = margin
-                    }
-                    val drawX = if (isBullet) margin + 15f else margin
-                    if (isBullet) {
-                        paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-                        canvas.drawText("• ", margin, yPosition, paint)
-                        paint.typeface = tf
-                    }
-                    canvas.drawText(currentLine.toString(), drawX, yPosition, paint)
-                    yPosition += size + 8f
+                    drawLine(currentLine.toString(), isFirstLineOfParagraph)
                 }
+                
+                yPosition += size * 0.35f
             }
         }
         
@@ -1737,6 +1781,7 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
             listOf(EditorBlock.Text(content = note.content))
         }
         
+        var currentNumberedIndex = 1
         for (block in blocks) {
             when (block) {
                 is EditorBlock.Text -> {
@@ -1751,13 +1796,18 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
                             try { android.graphics.Color.parseColor(block.fontColor) } catch (e: Exception) { android.graphics.Color.BLACK }
                         } else android.graphics.Color.BLACK
                     }
+                    val numIdx = if (block.isNumbered) currentNumberedIndex++ else { currentNumberedIndex = 1; 1 }
                     drawTextWithWrap(
                         text = block.content,
                         size = fontSize,
                         isBold = block.isBold || block.isHeader,
                         isItalic = block.isItalic,
                         color = colorHex,
-                        isBullet = block.isBullet
+                        isBullet = block.isBullet,
+                        isNumbered = block.isNumbered,
+                        isCollapsedHeader = block.isCollapsedHeader,
+                        indentLevel = block.indentLevel,
+                        numberIndex = numIdx
                     )
                 }
                 is EditorBlock.Table -> {
@@ -1864,7 +1914,8 @@ fun parseBlocks(content: String): List<EditorBlock> {
                             isNumbered = obj.optBoolean("isNumbered", false),
                             isCollapsedHeader = obj.optBoolean("isCollapsedHeader", false),
                             isCollapsed = obj.optBoolean("isCollapsed", false),
-                            isHeader = obj.optBoolean("isHeader", false)
+                            isHeader = obj.optBoolean("isHeader", false),
+                            indentLevel = obj.optInt("indentLevel", 0)
                         )
                     )
                 }
@@ -2034,6 +2085,7 @@ fun serializeBlocks(blocks: List<EditorBlock>): String {
                     obj.put("isCollapsedHeader", block.isCollapsedHeader)
                     obj.put("isCollapsed", block.isCollapsed)
                     obj.put("isHeader", block.isHeader)
+                    obj.put("indentLevel", block.indentLevel)
                 }
                 is EditorBlock.Table -> {
                     obj.put("type", "table")
@@ -5281,27 +5333,39 @@ fun NoteEditorWorkspace(
 
                                             LaunchedEffect(pendingTabInsertionTrigger) {
                                                 if (pendingTabInsertionTrigger == block.id) {
-                                                    val currentText = tfValue.text
-                                                    val selStart = tfValue.selection.start
-                                                    val selEnd = tfValue.selection.end
-                                                    val before = currentText.substring(0, selStart)
-                                                    val after = currentText.substring(selEnd)
-                                                    val tabText = "    " // 4 spaces for 0.5 inches programming-like tab
-                                                    val newText = before + tabText + after
-                                                    val newSelection = TextRange(selStart + tabText.length)
-                                                    tfValue = tfValue.copy(
-                                                        text = newText,
-                                                        selection = newSelection
-                                                    )
-                                                    val textToSave = if (newText.startsWith("\u200B")) newText.substring(1) else newText
-                                                    if (index in blocks.indices) {
-                                                        val b = blocks[index]
-                                                        if (b is EditorBlock.Text) {
-                                                            blocks[index] = b.copy(content = textToSave)
+                                                    if (tfValue.selection.start <= 1 && (block.isBullet || block.isNumbered || block.indentLevel > 0)) {
+                                                        val nextIndent = (block.indentLevel + 1).coerceAtMost(4)
+                                                        if (index in blocks.indices) {
+                                                            val b = blocks[index]
+                                                            if (b is EditorBlock.Text) {
+                                                                blocks[index] = b.copy(indentLevel = nextIndent)
+                                                            }
                                                         }
+                                                        onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                                                        pendingTabInsertionTrigger = null
+                                                    } else {
+                                                        val currentText = tfValue.text
+                                                        val selStart = tfValue.selection.start
+                                                        val selEnd = tfValue.selection.end
+                                                        val before = currentText.substring(0, selStart)
+                                                        val after = currentText.substring(selEnd)
+                                                        val tabText = "    " // 4 spaces for tab
+                                                        val newText = before + tabText + after
+                                                        val newSelection = TextRange(selStart + tabText.length)
+                                                        tfValue = tfValue.copy(
+                                                            text = newText,
+                                                            selection = newSelection
+                                                        )
+                                                        val textToSave = if (newText.startsWith("\u200B")) newText.substring(1) else newText
+                                                        if (index in blocks.indices) {
+                                                            val b = blocks[index]
+                                                            if (b is EditorBlock.Text) {
+                                                                blocks[index] = b.copy(content = textToSave)
+                                                            }
+                                                        }
+                                                        onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                                                        pendingTabInsertionTrigger = null
                                                     }
-                                                    onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
-                                                    pendingTabInsertionTrigger = null
                                                 }
                                             }
 
@@ -5315,20 +5379,39 @@ fun NoteEditorWorkspace(
                                                 Row(
                                                      verticalAlignment = Alignment.Top,
                                                      horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                                     modifier = Modifier.fillMaxWidth()
+                                                     modifier = Modifier
+                                                         .fillMaxWidth()
+                                                         .padding(start = (block.indentLevel * 24).dp)
                                                  ) {
                                                      if (block.isBullet) {
-                                                         Box(
-                                                             modifier = Modifier
-                                                                 .padding(horizontal = 4.dp)
-                                                                 .padding(top = 8.dp)
-                                                                 .size(6.dp)
-                                                                 .background(GeminiBlue, CircleShape)
-                                                         )
+                                                         when (block.indentLevel) {
+                                                             0 -> Box(
+                                                                 modifier = Modifier
+                                                                     .padding(horizontal = 4.dp)
+                                                                     .padding(top = 8.dp)
+                                                                     .size(6.dp)
+                                                                     .background(GeminiBlue, CircleShape)
+                                                             )
+                                                             1 -> Box(
+                                                                 modifier = Modifier
+                                                                     .padding(horizontal = 4.dp)
+                                                                     .padding(top = 8.dp)
+                                                                     .size(6.dp)
+                                                                     .border(1.5.dp, GeminiBlue, CircleShape)
+                                                             )
+                                                             else -> Box(
+                                                                 modifier = Modifier
+                                                                     .padding(horizontal = 4.dp)
+                                                                     .padding(top = 9.dp)
+                                                                     .size(5.dp)
+                                                                     .background(GeminiBlue, RoundedCornerShape(1.dp))
+                                                             )
+                                                         }
                                                      }
                                                      if (block.isNumbered) {
+                                                         val numIdx = blocks.take(index).takeLastWhile { it is EditorBlock.Text && it.isNumbered }.size + 1
                                                          Text(
-                                                             text = "${index + 1}.",
+                                                             text = "$numIdx.",
                                                              color = GeminiBlue,
                                                              fontSize = block.fontSize.sp,
                                                              modifier = Modifier.padding(top = 2.dp)
@@ -8251,15 +8334,29 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
     val sortedCombined = combinedList.sortedByDescending { it.y }
     val blocks = mutableListOf<EditorBlock>()
     
+    // Determine the base left margin of the content
+    val validTexts = lines.filter { it.text.trim().isNotEmpty() }
+    val baseMarginX = validTexts.minOfOrNull { it.x } ?: 50f
+    
     val currentParagraph = java.lang.StringBuilder()
+    var currentParagraphIndent = 0
+    var currentParagraphFontSize = 14f
+    var currentParagraphIsBold = false
     var lastLineY: Float? = null
-    var lastLineFontSize: Float = 12f
+    var lastLineFontSize = 12f
 
     fun flushParagraph() {
         if (currentParagraph.isNotEmpty()) {
             val pText = currentParagraph.toString().trim()
             if (pText.isNotEmpty()) {
-                blocks.add(EditorBlock.Text(content = pText, fontSize = 15))
+                blocks.add(
+                    EditorBlock.Text(
+                        content = pText,
+                        fontSize = currentParagraphFontSize.toInt().coerceIn(12, 18),
+                        isBold = currentParagraphIsBold,
+                        indentLevel = currentParagraphIndent
+                    )
+                )
             }
             currentParagraph.setLength(0)
         }
@@ -8297,20 +8394,25 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
 
                 val fSize = element.fontSize
                 val bold = element.isBold
+                
+                // Calculate tab/indentation level based on X offset from page base margin
+                val deltaX = (element.x - baseMarginX).coerceAtLeast(0f)
+                val indentLevel = ((deltaX + 4f) / 18f).toInt().coerceIn(0, 5)
 
                 // 4. Menús desplegables / Secciones contraíbles (ej. "▼ Una nueva vida.")
-                val isDropdown = rawText.startsWith("▼") || rawText.startsWith("▶") || rawText.startsWith("▾")
+                val isDropdown = rawText.startsWith("▼") || rawText.startsWith("▶") || rawText.startsWith("▾") || rawText.startsWith("▸") || rawText.startsWith("►")
                 if (isDropdown) {
                     flushParagraph()
-                    val cleanDropdown = rawText.removePrefix("▼").removePrefix("▶").removePrefix("▾").trim()
+                    val cleanDropdown = rawText.removePrefix("▼").removePrefix("▶").removePrefix("▾").removePrefix("▸").removePrefix("►").trim()
                     blocks.add(
                         EditorBlock.Text(
                             content = cleanDropdown,
-                            fontSize = 20,
+                            fontSize = if (fSize >= 18f) 20 else 18,
                             isBold = true,
                             isHeader = true,
                             isCollapsedHeader = true,
-                            isCollapsed = false
+                            isCollapsed = false,
+                            indentLevel = indentLevel
                         )
                     )
                     lastLineY = element.y
@@ -8329,16 +8431,29 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                     continue
                 }
 
-                // 6. Sub-viñetas (ej. "◦ ¿Soy alguien malo?...")
-                val isSubBullet = rawText.startsWith("◦") || rawText.startsWith("  ◦") || rawText.startsWith("\t◦")
-                if (isSubBullet) {
+                // 6. Viñetas anidadas y sub-viñetas (◦ = nivel 1, ▪ = nivel 2+, •/-/* = según indentLevel)
+                val isSubBulletCircle = rawText.startsWith("◦") || rawText.startsWith("  ◦") || rawText.startsWith("\t◦")
+                val isSubBulletSquare = rawText.startsWith("▪") || rawText.startsWith("  ▪") || rawText.startsWith("\t▪")
+                val isStandardBullet = rawText.startsWith("•") || rawText.startsWith("–") || rawText.startsWith("- ") || rawText.startsWith("* ")
+                
+                if (isSubBulletCircle || isSubBulletSquare || isStandardBullet) {
                     flushParagraph()
-                    val cleanSub = rawText.removePrefix("◦").removePrefix("  ◦").removePrefix("\t◦").trim()
+                    val cleanBullet = when {
+                        isSubBulletCircle -> rawText.removePrefix("◦").removePrefix("  ◦").removePrefix("\t◦").trim()
+                        isSubBulletSquare -> rawText.removePrefix("▪").removePrefix("  ▪").removePrefix("\t▪").trim()
+                        else -> rawText.removePrefix("•").removePrefix("–").removePrefix("-").removePrefix("*").trim()
+                    }
+                    val itemIndent = when {
+                        isSubBulletSquare -> maxOf(2, indentLevel)
+                        isSubBulletCircle -> maxOf(1, indentLevel)
+                        else -> indentLevel
+                    }
                     blocks.add(
                         EditorBlock.Text(
-                            content = "  ◦ $cleanSub",
+                            content = cleanBullet,
                             fontSize = 14,
-                            isBullet = true
+                            isBullet = true,
+                            indentLevel = itemIndent
                         )
                     )
                     lastLineY = element.y
@@ -8346,7 +8461,43 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                     continue
                 }
 
-                // Heading hierarchy detection (preservar títulos, subtítulos, encabezados y secciones menores)
+                // 7. Listas numeradas (1., 2., a., etc.)
+                val numberedMatch = Regex("^\\d+[\\.\\-]\\s+(.*)").matchEntire(rawText)
+                if (numberedMatch != null) {
+                    flushParagraph()
+                    val cleanNumbered = numberedMatch.groupValues[1].trim()
+                    blocks.add(
+                        EditorBlock.Text(
+                            content = cleanNumbered,
+                            fontSize = 14,
+                            isNumbered = true,
+                            indentLevel = indentLevel
+                        )
+                    )
+                    lastLineY = element.y
+                    lastLineFontSize = fSize
+                    continue
+                }
+
+                // 8. Tareas / Checkboxes
+                val todoMatch = REGEX_TODO.matchEntire(rawText)
+                val isUnicodeCheckbox = rawText.startsWith("☐") || rawText.startsWith("☑")
+                if (todoMatch != null || isUnicodeCheckbox) {
+                    flushParagraph()
+                    val checked = todoMatch?.groupValues?.get(1)?.equals("x", ignoreCase = true) == true || rawText.startsWith("☑")
+                    val cleanTodo = if (todoMatch != null) todoMatch.groupValues[2].trim() else rawText.removePrefix("☐").removePrefix("☑").trim()
+                    blocks.add(
+                        EditorBlock.Todo(
+                            content = cleanTodo,
+                            isChecked = checked
+                        )
+                    )
+                    lastLineY = element.y
+                    lastLineFontSize = fSize
+                    continue
+                }
+
+                // 9. Heading hierarchy detection
                 val isTitle = fSize >= 19.5f || (bold && fSize >= 18f && rawText.length < 100) ||
                               rawText.startsWith("# ") || rawText.startsWith("Título:", ignoreCase = true)
                 val isSubtitle = !isTitle && (fSize in 16.5f..19.4f || (bold && fSize in 15.5f..17.9f && rawText.length < 100) ||
@@ -8362,14 +8513,6 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                                      rawText.startsWith("#### ") ||
                                      Regex("^\\d+\\.\\d+\\.\\d+\\s+").find(rawText) != null)
 
-                // Bullet or list item
-                val isBullet = rawText.startsWith("•") || rawText.startsWith("–") || rawText.startsWith("- ") || rawText.startsWith("* ")
-                val isNumbered = Regex("^\\d+[\\.\\-]\\s+(.*)").matchEntire(rawText) != null
-
-                // Checkbox item
-                val todoMatch = REGEX_TODO.matchEntire(rawText)
-                val isUnicodeCheckbox = rawText.startsWith("☐") || rawText.startsWith("☑")
-
                 if (isTitle || isSubtitle || isHeading || isMinorSection) {
                     flushParagraph()
                     val targetSize = when {
@@ -8384,69 +8527,53 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                             content = cleanText,
                             fontSize = targetSize,
                             isBold = true,
-                            isHeader = true
+                            isHeader = true,
+                            indentLevel = indentLevel
                         )
                     )
                     lastLineY = element.y
                     lastLineFontSize = fSize
-                } else if (isBullet) {
-                    flushParagraph()
-                    val cleanBullet = rawText.removePrefix("•").removePrefix("–").removePrefix("-").removePrefix("*").trim()
-                    blocks.add(
-                        EditorBlock.Text(
-                            content = cleanBullet,
-                            fontSize = 14,
-                            isBullet = true
-                        )
-                    )
-                    lastLineY = element.y
-                    lastLineFontSize = fSize
-                } else if (isNumbered) {
-                    flushParagraph()
-                    val match = Regex("^\\d+[\\.\\-]\\s+(.*)").matchEntire(rawText)
-                    val cleanNumbered = match?.groupValues?.get(1)?.trim() ?: rawText
-                    blocks.add(
-                        EditorBlock.Text(
-                            content = cleanNumbered,
-                            fontSize = 14,
-                            isNumbered = true
-                        )
-                    )
-                    lastLineY = element.y
-                    lastLineFontSize = fSize
-                } else if (todoMatch != null || isUnicodeCheckbox) {
-                    flushParagraph()
-                    val checked = todoMatch?.groupValues?.get(1)?.equals("x", ignoreCase = true) == true || rawText.startsWith("☑")
-                    val cleanTodo = if (todoMatch != null) todoMatch.groupValues[2].trim() else rawText.removePrefix("☐").removePrefix("☑").trim()
-                    blocks.add(
-                        EditorBlock.Todo(
-                            content = cleanTodo,
-                            isChecked = checked
-                        )
-                    )
-                    lastLineY = element.y
-                    lastLineFontSize = fSize
-                } else {
-                    val prevY = lastLineY
-                    val isLineDistanceBreak = prevY != null && Math.abs(prevY - element.y) > (lastLineFontSize * 1.30f)
-                    val startsWithDialogueOrPunct = rawText.startsWith("—") || rawText.startsWith("–") ||
-                                                    rawText.startsWith("¿") || rawText.startsWith("¡") ||
-                                                    rawText.startsWith("\"") || rawText.startsWith("“") ||
-                                                    rawText.startsWith("«")
-                    if (isLineDistanceBreak || (startsWithDialogueOrPunct && currentParagraph.isNotEmpty())) {
-                        flushParagraph()
-                    }
-                    if (currentParagraph.isNotEmpty()) {
-                        if (currentParagraph.endsWith("-")) {
-                            currentParagraph.setLength(currentParagraph.length - 1)
-                        } else {
-                            currentParagraph.append(" ")
-                        }
-                    }
-                    currentParagraph.append(rawText)
-                    lastLineY = element.y
-                    lastLineFontSize = fSize
+                    continue
                 }
+
+                // 10. Normal Paragraph Text Accumulation (DO NOT split paragraphs into 20 blocks!)
+                val prevY = lastLineY
+                val deltaY = if (prevY != null) Math.abs(prevY - element.y) else 0f
+                val prevEndsSentence = currentParagraph.isNotEmpty() && (
+                    currentParagraph.endsWith(".") || currentParagraph.endsWith("?") || 
+                    currentParagraph.endsWith("!") || currentParagraph.endsWith(":") ||
+                    currentParagraph.endsWith(".\"") || currentParagraph.endsWith("!\"") ||
+                    currentParagraph.endsWith("?\"") || currentParagraph.endsWith("»") ||
+                    currentParagraph.endsWith(";")
+                )
+
+                // Only break paragraph if indent changes, or there's a large empty gap, or sentence finished and there's paragraph spacing
+                val isIndentChange = currentParagraph.isNotEmpty() && (currentParagraphIndent != indentLevel)
+                val isLargeGapBreak = prevY != null && deltaY >= (lastLineFontSize * 2.5f)
+                val isSentenceGapBreak = prevY != null && prevEndsSentence && deltaY >= (lastLineFontSize * 1.85f)
+                val isFontSizeChange = currentParagraph.isNotEmpty() && Math.abs(currentParagraphFontSize - fSize) > 2.5f
+                val isDialogueBreak = currentParagraph.isNotEmpty() && prevEndsSentence && (rawText.startsWith("—") || rawText.startsWith("–"))
+
+                if (isIndentChange || isLargeGapBreak || isSentenceGapBreak || isFontSizeChange || isDialogueBreak) {
+                    flushParagraph()
+                }
+
+                if (currentParagraph.isEmpty()) {
+                    currentParagraphIndent = indentLevel
+                    currentParagraphFontSize = fSize
+                    currentParagraphIsBold = bold
+                }
+
+                if (currentParagraph.isNotEmpty()) {
+                    if (currentParagraph.endsWith("-") && currentParagraph.length >= 2 && currentParagraph[currentParagraph.length - 2].isLetter()) {
+                        currentParagraph.setLength(currentParagraph.length - 1)
+                    } else {
+                        currentParagraph.append(" ")
+                    }
+                }
+                currentParagraph.append(rawText)
+                lastLineY = element.y
+                lastLineFontSize = fSize
             }
             is ExtractedElement.Image -> {
                 flushParagraph()
@@ -8469,7 +8596,21 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
 
 private fun mergeChunksToLine(chunks: List<ExtractedElement.Text>): ExtractedElement.Text {
     val sortedChunks = chunks.sortedBy { it.x }
-    val lineText = sortedChunks.joinToString("") { it.text }
+    val sb = StringBuilder()
+    for (i in sortedChunks.indices) {
+        val chunk = sortedChunks[i]
+        if (i > 0) {
+            val prev = sortedChunks[i - 1]
+            if (!prev.text.endsWith(" ") && !chunk.text.startsWith(" ")) {
+                val prevEstimatedRight = prev.x + (prev.text.length * (prev.fontSize * 0.45f))
+                if (chunk.x > prevEstimatedRight + 1.5f) {
+                    sb.append(" ")
+                }
+            }
+        }
+        sb.append(chunk.text)
+    }
+    val lineText = sb.toString()
     val avgY = sortedChunks.map { it.y }.average().toFloat()
     val minX = sortedChunks.minOfOrNull { it.x } ?: 0f
     val maxFontSize = sortedChunks.maxOfOrNull { it.fontSize } ?: 12f
@@ -8600,6 +8741,53 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
         // Periodic flush if paragraph is getting too large to prevent massive single blocks
         if (currentParagraph.length > 3000) {
             flushParagraph()
+        }
+
+        // 0. Collapsible Sections (<details><summary> or ▼ / ▶ / ▾)
+        val isDetailsTag = line.startsWith("<details>", ignoreCase = true) || line.startsWith("<details><summary>", ignoreCase = true)
+        val isDropdownPrefix = line.startsWith("▼") || line.startsWith("▶") || line.startsWith("▾") || line.startsWith("▸")
+        if (isDetailsTag || isDropdownPrefix) {
+            flushParagraph()
+            if (isDetailsTag) {
+                val summaryRegex = Regex("""<summary>(.*?)</summary>""", RegexOption.IGNORE_CASE)
+                val sumMatch = summaryRegex.find(line)
+                val title = sumMatch?.groupValues?.get(1)?.trim() ?: line.removePrefix("<details>").removePrefix("<summary>").removeSuffix("</summary>").trim().ifEmpty { "Sección" }
+                val bodyLines = mutableListOf<String>()
+                i++
+                while (i < lines.size && !lines[i].trim().startsWith("</details>", ignoreCase = true)) {
+                    bodyLines.add(lines[i])
+                    i++
+                }
+                if (i < lines.size && lines[i].trim().startsWith("</details>", ignoreCase = true)) {
+                    i++
+                }
+                val fullContent = if (bodyLines.isNotEmpty()) "$title\n${bodyLines.joinToString("\n")}" else title
+                blocks.add(
+                    EditorBlock.Text(
+                        content = fullContent,
+                        fontSize = 20,
+                        isBold = true,
+                        isHeader = true,
+                        isCollapsedHeader = true,
+                        isCollapsed = false
+                    )
+                )
+                continue
+            } else {
+                val title = line.removePrefix("▼").removePrefix("▶").removePrefix("▾").removePrefix("▸").trim()
+                blocks.add(
+                    EditorBlock.Text(
+                        content = title,
+                        fontSize = 20,
+                        isBold = true,
+                        isHeader = true,
+                        isCollapsedHeader = true,
+                        isCollapsed = false
+                    )
+                )
+                i++
+                continue
+            }
         }
 
         // 1. Markdown Table
@@ -8763,23 +8951,41 @@ fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
             continue
         }
 
-        // 9. Bullet List item (*, -, +)
-        if (line.startsWith("* ") || line.startsWith("- ") || line.startsWith("+ ")) {
+        // 9. Bullet List item (*, -, +, ◦, ▪) with indentation
+        val rawLine = lines[i]
+        val leadingSpacesOrTabs = rawLine.takeWhile { it == ' ' || it == '\t' }
+        val indentFromPrefix = if (leadingSpacesOrTabs.contains("\t\t") || leadingSpacesOrTabs.length >= 8) 2
+                               else if (leadingSpacesOrTabs.contains("\t") || leadingSpacesOrTabs.length >= 4) 1
+                               else 0
+        val isSubBulletCircle = line.startsWith("◦") || line.startsWith("◦ ")
+        val isSubBulletSquare = line.startsWith("▪") || line.startsWith("▪ ")
+        val isStandardBullet = line.startsWith("* ") || line.startsWith("- ") || line.startsWith("+ ") || line.startsWith("• ")
+        
+        if (isSubBulletCircle || isSubBulletSquare || isStandardBullet) {
             flushParagraph()
-            val bulletText = line.substring(2).trim()
-            val parsedText = parseSingleTextBlock(bulletText)
-            blocks.add(parsedText.copy(isBullet = true, fontSize = 14))
+            val cleanBullet = when {
+                isSubBulletCircle -> line.removePrefix("◦").trim()
+                isSubBulletSquare -> line.removePrefix("▪").trim()
+                else -> line.removePrefix("* ").removePrefix("- ").removePrefix("+ ").removePrefix("• ").trim()
+            }
+            val indent = when {
+                isSubBulletSquare -> maxOf(2, indentFromPrefix)
+                isSubBulletCircle -> maxOf(1, indentFromPrefix)
+                else -> indentFromPrefix
+            }
+            val parsedText = parseSingleTextBlock(cleanBullet)
+            blocks.add(parsedText.copy(isBullet = true, fontSize = 14, indentLevel = indent))
             i++
             continue
         }
 
-        // 10. Numbered List item
+        // 10. Numbered List item with indentation
         val numberedMatch = REGEX_NUMBERED.matchEntire(line)
         if (numberedMatch != null) {
             flushParagraph()
             val numberedText = numberedMatch.groupValues[1].trim()
             val parsedText = parseSingleTextBlock(numberedText)
-            blocks.add(parsedText.copy(isNumbered = true, fontSize = 14))
+            blocks.add(parsedText.copy(isNumbered = true, fontSize = 14, indentLevel = indentFromPrefix))
             i++
             continue
         }
