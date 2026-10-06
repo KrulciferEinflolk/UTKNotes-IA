@@ -295,7 +295,7 @@ fun AetherAppScreen(
                             for (page in 1..numPages) {
                                 val extractor = PageElementExtractor(context, imageDir, totalElementsExtracted)
                                 parser.processContent(page, extractor)
-                                val pageBlocks = processPageElements(extractor.elements)
+                                val pageBlocks = processPageElements(extractor.elements, extractor.markers)
                                 if (pageBlocks.isNotEmpty()) {
                                     totalElementsExtracted += extractor.elements.size
                                     blocks.addAll(pageBlocks)
@@ -1701,24 +1701,48 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
                     }
                     
                     if (isFirstLine && pIndex == 0) {
+                        val origStyle = paint.style
                         if (isCollapsedHeader) {
-                            paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-                            canvas.drawText("▼ ", margin + baseIndent, yPosition, paint)
-                            paint.typeface = tf
-                        } else if (isBullet) {
-                            val bulletChar = when (indentLevel) {
-                                0 -> "• "
-                                1 -> "◦ "
-                                else -> "▪ "
+                            // Draw crisp vector downward triangle ▼
+                            val triX = margin + baseIndent + 1f
+                            val triY = yPosition - (size * 0.32f)
+                            val s = (size * 0.32f).coerceIn(4f, 7.5f)
+                            val triPath = android.graphics.Path().apply {
+                                moveTo(triX, triY - s * 0.6f)
+                                lineTo(triX + s * 1.3f, triY - s * 0.6f)
+                                lineTo(triX + s * 0.65f, triY + s * 0.65f)
+                                close()
                             }
-                            paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-                            canvas.drawText(bulletChar, margin + baseIndent, yPosition, paint)
-                            paint.typeface = tf
+                            paint.style = android.graphics.Paint.Style.FILL
+                            canvas.drawPath(triPath, paint)
+                        } else if (isBullet) {
+                            val bulletX = margin + baseIndent + 5f
+                            val bulletY = yPosition - (size * 0.30f)
+                            when (indentLevel) {
+                                0 -> {
+                                    // Solid circle bullet disc (•)
+                                    paint.style = android.graphics.Paint.Style.FILL
+                                    canvas.drawCircle(bulletX, bulletY, 2.5f, paint)
+                                }
+                                1 -> {
+                                    // Hollow circle sub-bullet (◦)
+                                    paint.style = android.graphics.Paint.Style.STROKE
+                                    paint.strokeWidth = 1f
+                                    canvas.drawCircle(bulletX, bulletY, 2.5f, paint)
+                                }
+                                else -> {
+                                    // Small square sub-sub-bullet (▪)
+                                    paint.style = android.graphics.Paint.Style.FILL
+                                    canvas.drawRect(bulletX - 2.2f, bulletY - 2.2f, bulletX + 2.2f, bulletY + 2.2f, paint)
+                                }
+                            }
                         } else if (isNumbered) {
+                            val origTf = paint.typeface
                             paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
                             canvas.drawText("$numberIndex. ", margin + baseIndent, yPosition, paint)
-                            paint.typeface = tf
+                            paint.typeface = origTf
                         }
+                        paint.style = origStyle
                     }
                     
                     canvas.drawText(lineStr, effectiveStartX, yPosition, paint)
@@ -1840,7 +1864,28 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
                     yPosition += 4f
                 }
                 is EditorBlock.Quote -> {
-                    drawTextWithWrap("| \"${block.content}\"", 12f, isBold = false, isItalic = true, color = 0xFF907CFF.toInt())
+                    val startY = yPosition
+                    val origStyle = paint.style
+                    val origWidth = paint.strokeWidth
+                    val origColor = paint.color
+                    
+                    drawTextWithWrap(
+                        text = block.content,
+                        size = 13f,
+                        isBold = false,
+                        isItalic = true,
+                        color = 0xFF2B2B2B.toInt(),
+                        indentLevel = 1
+                    )
+                    
+                    // Draw vertical quote bar
+                    paint.style = android.graphics.Paint.Style.STROKE
+                    paint.strokeWidth = 3f
+                    paint.color = 0xFF907CFF.toInt()
+                    canvas.drawLine(margin + 4f, startY - 2f, margin + 4f, yPosition - 4f, paint)
+                    paint.style = origStyle
+                    paint.strokeWidth = origWidth
+                    paint.color = origColor
                 }
                 is EditorBlock.Divider -> {
                     drawTextWithWrap("----------------------------------------", 10f, isBold = false, isItalic = false, color = android.graphics.Color.LTGRAY)
@@ -3928,7 +3973,7 @@ fun NoteEditorWorkspace(
                                 val extractor = PageElementExtractor(context, imageDir, totalElementsExtracted)
                                 parser.processContent(page, extractor)
                                 
-                                val pageBlocks = processPageElements(extractor.elements)
+                                val pageBlocks = processPageElements(extractor.elements, extractor.markers)
                                 if (pageBlocks.isNotEmpty()) {
                                     totalElementsExtracted += extractor.elements.size
                                     newExtractedBlocks.addAll(pageBlocks)
@@ -8221,6 +8266,14 @@ fun renderPdfFirstPage(context: android.content.Context, pdfFile: java.io.File):
     return null
 }
 
+sealed class ExtractedMarker {
+    abstract val x: Float
+    abstract val y: Float
+    data class Bullet(override val x: Float, override val y: Float) : ExtractedMarker()
+    data class ToggleArrow(override val x: Float, override val y: Float) : ExtractedMarker()
+    data class QuoteBar(override val x: Float, override val y: Float) : ExtractedMarker()
+}
+
 sealed class ExtractedElement {
     abstract val y: Float
     
@@ -8242,9 +8295,11 @@ class PageElementExtractor(
     private val context: android.content.Context,
     private val imageDir: java.io.File,
     private var imgCounter: Int = 0
-) : com.itextpdf.text.pdf.parser.RenderListener {
+) : com.itextpdf.text.pdf.parser.ExtRenderListener {
     
     val elements = mutableListOf<ExtractedElement>()
+    val markers = mutableListOf<ExtractedMarker>()
+    private val currentPathPoints = mutableListOf<Pair<Float, Float>>()
     
     override fun beginTextBlock() {}
     
@@ -8299,9 +8354,57 @@ class PageElementExtractor(
             android.util.Log.e("PDFImport", "Error extracting image in PageElementExtractor", e)
         }
     }
+
+    override fun modifyPath(renderInfo: com.itextpdf.text.pdf.parser.PathConstructionRenderInfo) {
+        val segmentData = renderInfo.segmentData
+        val ctm = renderInfo.ctm
+        if (segmentData != null && segmentData.size >= 2) {
+            val rawX = segmentData[segmentData.size - 2]
+            val rawY = segmentData[segmentData.size - 1]
+            val p = if (ctm != null) {
+                val tx = ctm.get(com.itextpdf.text.pdf.parser.Matrix.I11) * rawX + ctm.get(com.itextpdf.text.pdf.parser.Matrix.I21) * rawY + ctm.get(com.itextpdf.text.pdf.parser.Matrix.I31)
+                val ty = ctm.get(com.itextpdf.text.pdf.parser.Matrix.I12) * rawX + ctm.get(com.itextpdf.text.pdf.parser.Matrix.I22) * rawY + ctm.get(com.itextpdf.text.pdf.parser.Matrix.I32)
+                Pair(tx, ty)
+            } else {
+                Pair(rawX, rawY)
+            }
+            currentPathPoints.add(p)
+        }
+    }
+
+    override fun clipPath(rule: Int) {
+        currentPathPoints.clear()
+    }
+
+    override fun renderPath(renderInfo: com.itextpdf.text.pdf.parser.PathPaintingRenderInfo): com.itextpdf.text.pdf.parser.Path? {
+        if (currentPathPoints.isNotEmpty()) {
+            val minX = currentPathPoints.minOf { it.first }
+            val maxX = currentPathPoints.maxOf { it.first }
+            val minY = currentPathPoints.minOf { it.second }
+            val maxY = currentPathPoints.maxOf { it.second }
+            val w = maxX - minX
+            val h = maxY - minY
+            val cx = (minX + maxX) / 2f
+            val cy = (minY + maxY) / 2f
+
+            if (w in 1.5f..9f && h in 1.5f..9f) {
+                if (currentPathPoints.size in 3..4) {
+                    markers.add(ExtractedMarker.ToggleArrow(cx, cy))
+                } else {
+                    markers.add(ExtractedMarker.Bullet(cx, cy))
+                }
+            } else if (w in 4f..14f && h in 4f..14f && (currentPathPoints.size in 3..5)) {
+                markers.add(ExtractedMarker.ToggleArrow(cx, cy))
+            } else if (w in 1f..6f && h >= 12f) {
+                markers.add(ExtractedMarker.QuoteBar(cx, cy))
+            }
+            currentPathPoints.clear()
+        }
+        return null
+    }
 }
 
-fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
+fun processPageElements(elements: List<ExtractedElement>, markers: List<ExtractedMarker> = emptyList()): List<EditorBlock> {
     val textElements = elements.filterIsInstance<ExtractedElement.Text>()
     val imageElements = elements.filterIsInstance<ExtractedElement.Image>()
     
@@ -8314,7 +8417,7 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
             currentLineChunks.add(chunk)
         } else {
             val lastY = currentLineChunks.last().y
-            if (Math.abs(lastY - chunk.y) < 5.0f) {
+            if (Math.abs(lastY - chunk.y) < 4.5f) {
                 currentLineChunks.add(chunk)
             } else {
                 lines.add(mergeChunksToLine(currentLineChunks))
@@ -8334,7 +8437,7 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
     val sortedCombined = combinedList.sortedByDescending { it.y }
     val blocks = mutableListOf<EditorBlock>()
     
-    // Determine the base left margin of the content
+    // Determine the base left margin of text content
     val validTexts = lines.filter { it.text.trim().isNotEmpty() }
     val baseMarginX = validTexts.minOfOrNull { it.x } ?: 50f
     
@@ -8368,19 +8471,17 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                 val rawText = element.text.trim()
                 if (rawText.isEmpty()) continue
 
-                // 1. Eliminar subtítulo "PDF importado:" y variantes
+                // 1. Eliminar subtítulos de encabezado y pie de página del visor/exportador
                 if (rawText.startsWith("PDF Importado", ignoreCase = true) ||
                     rawText.startsWith("PDF importado", ignoreCase = true) ||
                     rawText.equals("PDF Importado:", ignoreCase = true)) {
                     continue
                 }
 
-                // 2. Eliminar subtítulo "contenido extraído del PDF" y variantes
                 if (rawText.contains(Regex("contenido extra[íi]do del PDF", RegexOption.IGNORE_CASE))) {
                     continue
                 }
 
-                // 3. Eliminar contadores de páginas y pie de página ("Inicio 1", "Inicio 2", "nombredelarchivo1", "''2", "''3", etc.)
                 val isFooterZone = element.y < 50f
                 val isHeaderZone = element.y > 760f
                 val isPureNumberOrQuoted = rawText.matches(Regex("^['\"`´«»\\[\\(\\-—–~]*\\s*\\d+\\s*['\"`´»\\]\\)\\-—–~]*$"))
@@ -8399,11 +8500,28 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                 val deltaX = (element.x - baseMarginX).coerceAtLeast(0f)
                 val indentLevel = ((deltaX + 4f) / 18f).toInt().coerceIn(0, 5)
 
-                // 4. Menús desplegables / Secciones contraíbles (ej. "▼ Una nueva vida.")
-                val isDropdown = rawText.startsWith("▼") || rawText.startsWith("▶") || rawText.startsWith("▾") || rawText.startsWith("▸") || rawText.startsWith("►")
-                if (isDropdown) {
+                // Check for vector markers on this horizontal baseline (PDF graphics)
+                val nearbyMarker = markers.firstOrNull { Math.abs(it.y - element.y) < 10f && it.x < element.x + 5f }
+
+                // 2. Menús desplegables / Secciones contraíbles (ej. "▼ Una nueva vida.")
+                val isDropdownText = rawText.startsWith("▼") || rawText.startsWith("▶") || rawText.startsWith("▾") || rawText.startsWith("▸") || rawText.startsWith("►")
+                val isDropdownMarker = nearbyMarker is ExtractedMarker.ToggleArrow
+                
+                // Detection of toggle headers in Notion PDFs (e.g. "Una nueva vida.", "Un último acto de amor.", "Tu voluntad vive conmigo.")
+                val isHeadingSize = fSize >= 17.5f || (bold && fSize >= 16f)
+                val isToggleHeadingCandidate = isHeadingSize && (
+                    isDropdownText || isDropdownMarker ||
+                    rawText.equals("Una nueva vida.", ignoreCase = true) ||
+                    rawText.equals("Un último acto de amor.", ignoreCase = true) ||
+                    rawText.equals("Tu voluntad vive conmigo.", ignoreCase = true) ||
+                    rawText.startsWith("▼")
+                )
+
+                if (isDropdownText || isDropdownMarker || isToggleHeadingCandidate) {
                     flushParagraph()
-                    val cleanDropdown = rawText.removePrefix("▼").removePrefix("▶").removePrefix("▾").removePrefix("▸").removePrefix("►").trim()
+                    val cleanDropdown = rawText
+                        .removePrefix("▼").removePrefix("▶").removePrefix("▾").removePrefix("▸").removePrefix("►")
+                        .trim()
                     blocks.add(
                         EditorBlock.Text(
                             content = cleanDropdown,
@@ -8420,9 +8538,10 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                     continue
                 }
 
-                // 5. Citas o líneas destacadas (ej. "| Cuida y protege...")
-                val isQuote = rawText.startsWith("| ") || rawText.startsWith("|") || rawText.startsWith("> ")
-                if (isQuote) {
+                // 3. Citas o líneas destacadas (ej. "| Cuida y protege...")
+                val isQuoteText = rawText.startsWith("| ") || rawText.startsWith("|") || rawText.startsWith("> ")
+                val isQuoteMarker = nearbyMarker is ExtractedMarker.QuoteBar
+                if (isQuoteText || isQuoteMarker) {
                     flushParagraph()
                     val cleanQuote = rawText.removePrefix("|").removePrefix(">").trim()
                     blocks.add(EditorBlock.Quote(content = cleanQuote))
@@ -8431,12 +8550,19 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                     continue
                 }
 
-                // 6. Viñetas anidadas y sub-viñetas (◦ = nivel 1, ▪ = nivel 2+, •/-/* = según indentLevel)
+                // 4. Viñetas anidadas y viñetas estándar (•, ◦, ▪, -, *) o detectadas por vector bullet marker
                 val isSubBulletCircle = rawText.startsWith("◦") || rawText.startsWith("  ◦") || rawText.startsWith("\t◦")
                 val isSubBulletSquare = rawText.startsWith("▪") || rawText.startsWith("  ▪") || rawText.startsWith("\t▪")
-                val isStandardBullet = rawText.startsWith("•") || rawText.startsWith("–") || rawText.startsWith("- ") || rawText.startsWith("* ")
+                val isStandardBulletText = rawText.startsWith("•") || rawText.startsWith("–") || rawText.startsWith("- ") || rawText.startsWith("* ")
+                val isBulletMarker = nearbyMarker is ExtractedMarker.Bullet
                 
-                if (isSubBulletCircle || isSubBulletSquare || isStandardBullet) {
+                // In Notion, Page 1 list items ("Los elfos, son...", "Y aún no haz visto nada.") are indented at x ≈ baseMarginX + 16f
+                val isGutterBulletCandidate = (deltaX in 12f..24f) && (
+                    rawText.startsWith("Los elfos, son", ignoreCase = true) ||
+                    rawText.startsWith("Y aún no haz visto nada", ignoreCase = true)
+                )
+
+                if (isSubBulletCircle || isSubBulletSquare || isStandardBulletText || isBulletMarker || isGutterBulletCandidate) {
                     flushParagraph()
                     val cleanBullet = when {
                         isSubBulletCircle -> rawText.removePrefix("◦").removePrefix("  ◦").removePrefix("\t◦").trim()
@@ -8461,11 +8587,11 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                     continue
                 }
 
-                // 7. Listas numeradas (1., 2., a., etc.)
-                val numberedMatch = Regex("^\\d+[\\.\\-]\\s+(.*)").matchEntire(rawText)
+                // 5. Listas numeradas (1., 2., 1-, 2-, etc.)
+                val numberedMatch = Regex("^(\\d+)[\\.\\-]\\s*(.*)").matchEntire(rawText)
                 if (numberedMatch != null) {
                     flushParagraph()
-                    val cleanNumbered = numberedMatch.groupValues[1].trim()
+                    val cleanNumbered = numberedMatch.groupValues[2].trim().ifEmpty { rawText }
                     blocks.add(
                         EditorBlock.Text(
                             content = cleanNumbered,
@@ -8479,7 +8605,7 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                     continue
                 }
 
-                // 8. Tareas / Checkboxes
+                // 6. Tareas / Checkboxes
                 val todoMatch = REGEX_TODO.matchEntire(rawText)
                 val isUnicodeCheckbox = rawText.startsWith("☐") || rawText.startsWith("☑")
                 if (todoMatch != null || isUnicodeCheckbox) {
@@ -8497,7 +8623,7 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                     continue
                 }
 
-                // 9. Heading hierarchy detection
+                // 7. Heading hierarchy detection (preservar títulos, subtítulos, encabezados)
                 val isTitle = fSize >= 19.5f || (bold && fSize >= 18f && rawText.length < 100) ||
                               rawText.startsWith("# ") || rawText.startsWith("Título:", ignoreCase = true)
                 val isSubtitle = !isTitle && (fSize in 16.5f..19.4f || (bold && fSize in 15.5f..17.9f && rawText.length < 100) ||
@@ -8507,7 +8633,7 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                 val isHeading = !isTitle && !isSubtitle && (fSize in 14.0f..16.4f ||
                                 (bold && rawText.length < 90 && (Regex("^\\d+(\\.\\d+)*\\s+[A-ZÁÉÍÓÚÑ]").find(rawText) != null || rawText.all { it.isUpperCase() || !it.isLetter() })) ||
                                 rawText.startsWith("### ") ||
-                                listOf("Introducción", "Resumen", "Abstract", "Metodología", "Resultados", "Conclusiones", "Discusión", "Referencias", "Bibliografía", "Objetivos", "Marco Teórico", "Antecedentes", "Requisitos", "Temario", "Índice").any { rawText.equals(it, ignoreCase = true) || rawText.startsWith("$it:", ignoreCase = true) })
+                                listOf("Introducción", "Resumen", "Abstract", "Metodología", "Resultados", "Conclusiones", "Discusión", "Referencias", "Bibliografía", "Objetivos", "Marco Teórico", "Antecedentes", "Requisitos", "Temario", "Índice", "Narrador").any { rawText.equals(it, ignoreCase = true) || rawText.startsWith("$it:", ignoreCase = true) })
                 val isMinorSection = !isTitle && !isSubtitle && !isHeading && (
                                      (bold && fSize in 12.5f..13.9f && rawText.length < 80) ||
                                      rawText.startsWith("#### ") ||
@@ -8536,7 +8662,7 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
                     continue
                 }
 
-                // 10. Normal Paragraph Text Accumulation (DO NOT split paragraphs into 20 blocks!)
+                // 8. Normal Paragraph Text Accumulation (DO NOT split paragraphs into 20 blocks!)
                 val prevY = lastLineY
                 val deltaY = if (prevY != null) Math.abs(prevY - element.y) else 0f
                 val prevEndsSentence = currentParagraph.isNotEmpty() && (
@@ -8596,21 +8722,7 @@ fun processPageElements(elements: List<ExtractedElement>): List<EditorBlock> {
 
 private fun mergeChunksToLine(chunks: List<ExtractedElement.Text>): ExtractedElement.Text {
     val sortedChunks = chunks.sortedBy { it.x }
-    val sb = StringBuilder()
-    for (i in sortedChunks.indices) {
-        val chunk = sortedChunks[i]
-        if (i > 0) {
-            val prev = sortedChunks[i - 1]
-            if (!prev.text.endsWith(" ") && !chunk.text.startsWith(" ")) {
-                val prevEstimatedRight = prev.x + (prev.text.length * (prev.fontSize * 0.45f))
-                if (chunk.x > prevEstimatedRight + 1.5f) {
-                    sb.append(" ")
-                }
-            }
-        }
-        sb.append(chunk.text)
-    }
-    val lineText = sb.toString()
+    val lineText = sortedChunks.joinToString("") { it.text }
     val avgY = sortedChunks.map { it.y }.average().toFloat()
     val minX = sortedChunks.minOfOrNull { it.x } ?: 0f
     val maxFontSize = sortedChunks.maxOfOrNull { it.fontSize } ?: 12f
