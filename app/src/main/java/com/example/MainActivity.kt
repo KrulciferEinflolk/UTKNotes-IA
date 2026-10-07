@@ -1534,7 +1534,8 @@ sealed class EditorBlock {
         var isCollapsedHeader: Boolean = false,
         var isCollapsed: Boolean = false,
         var isHeader: Boolean = false,
-        var indentLevel: Int = 0
+        var indentLevel: Int = 0,
+        var parentToggleId: String? = null
     ) : EditorBlock()
 
     data class Table(
@@ -1641,7 +1642,8 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
             isNumbered: Boolean = false,
             isCollapsedHeader: Boolean = false,
             indentLevel: Int = 0,
-            numberIndex: Int = 1
+            numberIndex: Int = 1,
+            customNumberPrefix: String = "$numberIndex."
         ) {
             paint.textSize = size
             val tf = when {
@@ -1739,7 +1741,7 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
                         } else if (isNumbered) {
                             val origTf = paint.typeface
                             paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-                            canvas.drawText("$numberIndex. ", margin + baseIndent, yPosition, paint)
+                            canvas.drawText("$customNumberPrefix ", margin + baseIndent, yPosition, paint)
                             paint.typeface = origTf
                         }
                         paint.style = origStyle
@@ -1805,7 +1807,31 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
             listOf(EditorBlock.Text(content = note.content))
         }
         
-        var currentNumberedIndex = 1
+        val numberedPrefixes = mutableMapOf<String, String>()
+        val activeNumbersByIndent = mutableMapOf<Int, Int>()
+        var inNumberedSequence = false
+        for (block in blocks) {
+            if (block is EditorBlock.Text && block.isNumbered) {
+                inNumberedSequence = true
+                val indent = block.indentLevel
+                val currentCount = (activeNumbersByIndent[indent] ?: 0) + 1
+                activeNumbersByIndent[indent] = currentCount
+                activeNumbersByIndent.keys.filter { it > indent }.forEach { activeNumbersByIndent.remove(it) }
+                val prefix = if (indent == 0) {
+                    "$currentCount."
+                } else {
+                    val parentCount = activeNumbersByIndent[indent - 1] ?: 1
+                    "$parentCount.$currentCount."
+                }
+                numberedPrefixes[block.id] = prefix
+            } else {
+                if (inNumberedSequence) {
+                    activeNumbersByIndent.clear()
+                    inNumberedSequence = false
+                }
+            }
+        }
+
         for (block in blocks) {
             when (block) {
                 is EditorBlock.Text -> {
@@ -1820,7 +1846,7 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
                             try { android.graphics.Color.parseColor(block.fontColor) } catch (e: Exception) { android.graphics.Color.BLACK }
                         } else android.graphics.Color.BLACK
                     }
-                    val numIdx = if (block.isNumbered) currentNumberedIndex++ else { currentNumberedIndex = 1; 1 }
+                    val numPrefix = numberedPrefixes[block.id] ?: "1."
                     drawTextWithWrap(
                         text = block.content,
                         size = fontSize,
@@ -1831,7 +1857,8 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
                         isNumbered = block.isNumbered,
                         isCollapsedHeader = block.isCollapsedHeader,
                         indentLevel = block.indentLevel,
-                        numberIndex = numIdx
+                        numberIndex = 1,
+                        customNumberPrefix = numPrefix
                     )
                 }
                 is EditorBlock.Table -> {
@@ -1960,7 +1987,8 @@ fun parseBlocks(content: String): List<EditorBlock> {
                             isCollapsedHeader = obj.optBoolean("isCollapsedHeader", false),
                             isCollapsed = obj.optBoolean("isCollapsed", false),
                             isHeader = obj.optBoolean("isHeader", false),
-                            indentLevel = obj.optInt("indentLevel", 0)
+                            indentLevel = obj.optInt("indentLevel", 0),
+                            parentToggleId = if (obj.has("parentToggleId")) obj.getString("parentToggleId").takeIf { it.isNotEmpty() } else null
                         )
                     )
                 }
@@ -2131,6 +2159,9 @@ fun serializeBlocks(blocks: List<EditorBlock>): String {
                     obj.put("isCollapsed", block.isCollapsed)
                     obj.put("isHeader", block.isHeader)
                     obj.put("indentLevel", block.indentLevel)
+                    if (block.parentToggleId != null) {
+                        obj.put("parentToggleId", block.parentToggleId)
+                    }
                 }
                 is EditorBlock.Table -> {
                     obj.put("type", "table")
@@ -3797,6 +3828,7 @@ fun NoteEditorWorkspace(
     val scope = rememberCoroutineScope()
     var pendingCursorOffset by remember { mutableStateOf<Pair<String, Int>?>(null) }
     var pendingTabInsertionTrigger by remember { mutableStateOf<String?>(null) }
+    var pendingShiftTabTrigger by remember { mutableStateOf<String?>(null) }
     var activeTextBlockState by remember { mutableStateOf<Triple<Int, TextFieldValue, (TextFieldValue) -> Unit>?>(null) }
 
     val listState = rememberLazyListState()
@@ -3852,63 +3884,281 @@ fun NoteEditorWorkspace(
         onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
     }
 
+    // Helper to determine which toggle dropdown (if any) a block belongs to
+    fun getEffectiveToggleId(index: Int, blocksList: List<EditorBlock> = blocks): String? {
+        if (index !in blocksList.indices) return null
+        val b = blocksList[index]
+        if (b is EditorBlock.Text) {
+            if (b.isCollapsedHeader) return null // Header itself is not inside another toggle
+            if (b.parentToggleId != null) return b.parentToggleId
+            // Fallback for legacy / indented items right below a collapsible header
+            if (b.indentLevel > 0) {
+                for (i in (index - 1) downTo 0) {
+                    val prev = blocksList[i]
+                    if (prev is EditorBlock.Text && prev.isCollapsedHeader) return prev.id
+                    if (prev is EditorBlock.Text && prev.isHeader) break
+                }
+            }
+        }
+        return null
+    }
+
+    fun isLastInToggle(index: Int, blocksList: List<EditorBlock> = blocks): Boolean {
+        val currentToggle = getEffectiveToggleId(index, blocksList) ?: return false
+        if (index == blocksList.size - 1) return true
+        val nextToggle = getEffectiveToggleId(index + 1, blocksList)
+        return currentToggle != nextToggle
+    }
+
+    fun isFirstInToggle(index: Int, blocksList: List<EditorBlock> = blocks): Boolean {
+        val currentToggle = getEffectiveToggleId(index, blocksList) ?: return false
+        if (index == 0) return true
+        val prevToggle = getEffectiveToggleId(index - 1, blocksList)
+        val prevBlock = blocksList[index - 1]
+        if (prevBlock is EditorBlock.Text && prevBlock.id == currentToggle) return true
+        return currentToggle != prevToggle
+    }
+
+    fun addParagraphInsideToggle(toggleId: String, fromIndex: Int) {
+        pushHistory()
+        val mutableBlocks = blocks.toMutableList()
+        // If the header is collapsed, expand it so the new paragraph is immediately visible
+        for (i in mutableBlocks.indices) {
+            val b = mutableBlocks[i]
+            if (b is EditorBlock.Text && b.id == toggleId && b.isCollapsed) {
+                mutableBlocks[i] = b.copy(isCollapsed = false)
+                break
+            }
+        }
+        var insertIdx = fromIndex + 1
+        if (fromIndex in mutableBlocks.indices && mutableBlocks[fromIndex] is EditorBlock.Text && (mutableBlocks[fromIndex] as EditorBlock.Text).isCollapsedHeader) {
+            insertIdx = fromIndex + 1
+        } else {
+            for (i in (fromIndex + 1) until mutableBlocks.size) {
+                if (getEffectiveToggleId(i, mutableBlocks) == toggleId) {
+                    insertIdx = i + 1
+                } else {
+                    break
+                }
+            }
+        }
+        val newChild = EditorBlock.Text(
+            content = "",
+            parentToggleId = toggleId,
+            indentLevel = 1
+        )
+        mutableBlocks.add(insertIdx, newChild)
+        updateBlocksAndSave(mutableBlocks)
+        selectedBlockIndex = insertIdx
+        scope.launch {
+            delay(50)
+            try {
+                focusRequesters[newChild.id]?.requestFocus()
+            } catch (e: Exception) {}
+        }
+        Toast.makeText(context, "Párrafo creado dentro del desplegable", Toast.LENGTH_SHORT).show()
+    }
+
     fun moveBlockUp(fromIndex: Int) {
-        if (fromIndex > 0 && fromIndex in blocks.indices && blocks[fromIndex] is EditorBlock.Text) {
-            pushHistory()
-            val mutableBlocks = blocks.toMutableList()
-            val currentBlock = mutableBlocks[fromIndex]
-            mutableBlocks.removeAt(fromIndex)
-            val newIndex = fromIndex - 1
-            mutableBlocks.add(newIndex, currentBlock)
-            selectedBlockIndex = newIndex
-            updateBlocksAndSave(mutableBlocks)
-            scope.launch {
-                delay(50)
-                try {
-                    focusRequesters[currentBlock.id]?.requestFocus()
-                } catch (e: Exception) {
-                    // Ignore
+        if (fromIndex in blocks.indices && blocks[fromIndex] is EditorBlock.Text) {
+            val currentBlock = blocks[fromIndex] as EditorBlock.Text
+            val currentToggle = getEffectiveToggleId(fromIndex)
+            val isInsideToggle = currentToggle != null
+            val isFirstIn = isInsideToggle && isFirstInToggle(fromIndex)
+
+            // Case 1: Inside toggle and is first in toggle -> Move OUT of dropdown to ABOVE the dropdown!
+            if (isInsideToggle && isFirstIn) {
+                pushHistory()
+                val mutableBlocks = blocks.toMutableList()
+                val updatedBlock = currentBlock.copy(parentToggleId = null, indentLevel = 0)
+                var headerIndex = fromIndex - 1
+                while (headerIndex >= 0) {
+                    val b = mutableBlocks[headerIndex]
+                    if (b is EditorBlock.Text && b.id == currentToggle) break
+                    headerIndex--
+                }
+                val targetIndex = if (headerIndex >= 0) headerIndex else 0
+                mutableBlocks.removeAt(fromIndex)
+                mutableBlocks.add(targetIndex, updatedBlock)
+                selectedBlockIndex = targetIndex
+                updateBlocksAndSave(mutableBlocks)
+                Toast.makeText(context, "Párrafo fuera del desplegable", Toast.LENGTH_SHORT).show()
+                scope.launch {
+                    delay(50)
+                    try {
+                        focusRequesters[updatedBlock.id]?.requestFocus()
+                    } catch (e: Exception) {}
+                }
+                return
+            }
+
+            // Case 2: Outside toggle, but block immediately above is inside a toggle or IS a toggle header -> ENTER DROPDOWN!
+            if (!isInsideToggle && fromIndex > 0) {
+                val prevBlock = blocks[fromIndex - 1]
+                val prevToggleId = getEffectiveToggleId(fromIndex - 1)
+                val targetToggleId = when {
+                    prevBlock is EditorBlock.Text && prevBlock.isCollapsedHeader -> prevBlock.id
+                    prevToggleId != null -> prevToggleId
+                    else -> null
+                }
+                if (targetToggleId != null) {
+                    pushHistory()
+                    val mutableBlocks = blocks.toMutableList()
+                    val updatedBlock = currentBlock.copy(parentToggleId = targetToggleId, indentLevel = 1)
+                    mutableBlocks.removeAt(fromIndex)
+                    mutableBlocks.add(fromIndex - 1, updatedBlock)
+                    selectedBlockIndex = fromIndex - 1
+                    updateBlocksAndSave(mutableBlocks)
+                    Toast.makeText(context, "Párrafo dentro del desplegable", Toast.LENGTH_SHORT).show()
+                    scope.launch {
+                        delay(50)
+                        try {
+                            focusRequesters[updatedBlock.id]?.requestFocus()
+                        } catch (e: Exception) {}
+                    }
+                    return
+                }
+            }
+
+            // Normal move up (swap with previous)
+            if (fromIndex > 0) {
+                pushHistory()
+                val mutableBlocks = blocks.toMutableList()
+                val b = mutableBlocks.removeAt(fromIndex)
+                val newIndex = fromIndex - 1
+                mutableBlocks.add(newIndex, b)
+                selectedBlockIndex = newIndex
+                updateBlocksAndSave(mutableBlocks)
+                scope.launch {
+                    delay(50)
+                    try {
+                        focusRequesters[b.id]?.requestFocus()
+                    } catch (e: Exception) {}
                 }
             }
         }
     }
 
     fun moveBlockDown(fromIndex: Int) {
-        if (fromIndex >= 0 && fromIndex < blocks.size - 1 && blocks[fromIndex] is EditorBlock.Text) {
-            pushHistory()
-            val mutableBlocks = blocks.toMutableList()
-            val currentBlock = mutableBlocks[fromIndex]
-            mutableBlocks.removeAt(fromIndex)
-            val newIndex = fromIndex + 1
-            mutableBlocks.add(newIndex, currentBlock)
-            selectedBlockIndex = newIndex
-            updateBlocksAndSave(mutableBlocks)
-            scope.launch {
-                delay(50)
-                try {
-                    focusRequesters[currentBlock.id]?.requestFocus()
-                } catch (e: Exception) {
-                    // Ignore
+        if (fromIndex >= 0 && fromIndex < blocks.size && blocks[fromIndex] is EditorBlock.Text) {
+            val currentBlock = blocks[fromIndex] as EditorBlock.Text
+            val currentToggle = getEffectiveToggleId(fromIndex)
+            val isInsideToggle = currentToggle != null
+            val isEmpty = currentBlock.content.trim().isEmpty()
+            val isLastIn = isInsideToggle && isLastInToggle(fromIndex)
+
+            // If the paragraph is inside a toggle and has no content OR is the last in the toggle: EXIT THE DROPDOWN!
+            if (isInsideToggle && (isEmpty || isLastIn)) {
+                pushHistory()
+                val mutableBlocks = blocks.toMutableList()
+                val updatedBlock = currentBlock.copy(parentToggleId = null, indentLevel = 0)
+                mutableBlocks[fromIndex] = updatedBlock
+
+                // Ensure it is positioned after the entire toggle if needed
+                var lastToggleChildIndex = fromIndex
+                for (i in (fromIndex + 1) until mutableBlocks.size) {
+                    if (getEffectiveToggleId(i, mutableBlocks) == currentToggle) {
+                        lastToggleChildIndex = i
+                    } else {
+                        break
+                    }
+                }
+                if (lastToggleChildIndex > fromIndex) {
+                    mutableBlocks.removeAt(fromIndex)
+                    mutableBlocks.add(lastToggleChildIndex, updatedBlock)
+                    selectedBlockIndex = lastToggleChildIndex
+                } else {
+                    selectedBlockIndex = fromIndex
+                }
+
+                updateBlocksAndSave(mutableBlocks)
+                Toast.makeText(context, "Párrafo fuera del desplegable", Toast.LENGTH_SHORT).show()
+                scope.launch {
+                    delay(50)
+                    try {
+                        focusRequesters[updatedBlock.id]?.requestFocus()
+                    } catch (e: Exception) {
+                        // Ignore
+                    }
+                }
+                return
+            }
+
+            // Case 2: Outside toggle, but block immediately below is a toggle header -> ENTER DROPDOWN as first child!
+            if (!isInsideToggle && fromIndex < blocks.size - 1) {
+                val nextBlock = blocks[fromIndex + 1]
+                if (nextBlock is EditorBlock.Text && nextBlock.isCollapsedHeader) {
+                    pushHistory()
+                    val mutableBlocks = blocks.toMutableList()
+                    val updatedBlock = currentBlock.copy(parentToggleId = nextBlock.id, indentLevel = 1)
+                    mutableBlocks.removeAt(fromIndex)
+                    val targetIndex = fromIndex + 1
+                    mutableBlocks.add(targetIndex, updatedBlock)
+                    selectedBlockIndex = targetIndex
+                    updateBlocksAndSave(mutableBlocks)
+                    Toast.makeText(context, "Párrafo dentro del desplegable", Toast.LENGTH_SHORT).show()
+                    scope.launch {
+                        delay(50)
+                        try {
+                            focusRequesters[updatedBlock.id]?.requestFocus()
+                        } catch (e: Exception) {}
+                    }
+                    return
+                }
+            }
+
+            // Normal swap with next block
+            if (fromIndex < blocks.size - 1) {
+                pushHistory()
+                val mutableBlocks = blocks.toMutableList()
+                val b = mutableBlocks.removeAt(fromIndex)
+                val newIndex = fromIndex + 1
+                mutableBlocks.add(newIndex, b)
+                selectedBlockIndex = newIndex
+                updateBlocksAndSave(mutableBlocks)
+                scope.launch {
+                    delay(50)
+                    try {
+                        focusRequesters[b.id]?.requestFocus()
+                    } catch (e: Exception) {
+                        // Ignore
+                    }
                 }
             }
         }
     }
 
-    // Precomputed list of visible (index, block) items - O(N) but optimized with derivedStateOf
+    // Precomputed list of visible (index, block) items - ONLY hides items that are INSIDE the collapsed dropdown
     val displayItems by remember(blocks) {
         derivedStateOf {
             val list = mutableListOf<Pair<Int, EditorBlock>>()
-            var isHiding = false
+            val collapsedHeaderMap = mutableMapOf<String, Boolean>()
+            var currentToggleId: String? = null
+            var currentToggleCollapsed = false
+
             for (i in blocks.indices) {
                 val b = blocks[i]
                 if (b is EditorBlock.Text && b.isCollapsedHeader) {
+                    collapsedHeaderMap[b.id] = b.isCollapsed
+                    currentToggleId = b.id
+                    currentToggleCollapsed = b.isCollapsed
                     list.add(Pair(i, b))
-                    isHiding = b.isCollapsed
-                } else if (b is EditorBlock.Text && b.isHeader) {
-                    list.add(Pair(i, b))
-                    isHiding = false
                 } else {
-                    if (!isHiding) {
+                    val toggleId = when {
+                        b is EditorBlock.Text && b.parentToggleId != null -> b.parentToggleId
+                        b is EditorBlock.Text && b.indentLevel > 0 -> currentToggleId
+                        else -> null
+                    }
+
+                    if (toggleId != null) {
+                        val isParentCollapsed = collapsedHeaderMap[toggleId] ?: currentToggleCollapsed
+                        if (!isParentCollapsed) {
+                            list.add(Pair(i, b))
+                        }
+                    } else {
+                        // This block is OUTSIDE any dropdown! Reset current toggle scope so it remains fully visible.
+                        currentToggleId = null
+                        currentToggleCollapsed = false
                         list.add(Pair(i, b))
                     }
                 }
@@ -4496,6 +4746,42 @@ fun NoteEditorWorkspace(
                                         Icon(Icons.Default.UnfoldLess, "Párrafo Contraíble", tint = if (activeBlock.isCollapsedHeader) GeminiCyanAccent else TextPrimary)
                                     }
                                 }
+                                // Dentro / Fuera del desplegable toggle chip
+                                item {
+                                    val isInside = activeBlock.parentToggleId != null
+                                    AssistChip(
+                                        onClick = {
+                                            pushHistory()
+                                            if (selectedBlockIndex in blocks.indices) {
+                                                val b = blocks[selectedBlockIndex]
+                                                if (b is EditorBlock.Text) {
+                                                    if (isInside) {
+                                                        blocks[selectedBlockIndex] = b.copy(parentToggleId = null, indentLevel = 0)
+                                                        Toast.makeText(context, "Párrafo fuera del desplegable", Toast.LENGTH_SHORT).show()
+                                                    } else {
+                                                        val prevHeader = blocks.take(selectedBlockIndex).lastOrNull { it is EditorBlock.Text && it.isCollapsedHeader }
+                                                        if (prevHeader != null) {
+                                                            blocks[selectedBlockIndex] = b.copy(parentToggleId = prevHeader.id, indentLevel = 1)
+                                                            Toast.makeText(context, "Párrafo dentro del desplegable", Toast.LENGTH_SHORT).show()
+                                                        } else {
+                                                            Toast.makeText(context, "No hay título desplegable previo", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    }
+                                                    updateBlocksAndSave(null)
+                                                }
+                                            }
+                                        },
+                                        label = { Text(if (isInside) "En desplegable" else "Fuera desplegable", fontSize = 11.sp, color = TextPrimary) },
+                                        leadingIcon = {
+                                            Icon(
+                                                if (isInside) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(14.dp),
+                                                tint = if (isInside) GeminiCyanAccent else TextSecondary
+                                            )
+                                        }
+                                    )
+                                }
                                 item { VerticalDivider(color = CosmicBorder, modifier = Modifier.height(20.dp)) }
                                 // Font Size Down
                                 item {
@@ -4664,16 +4950,23 @@ fun NoteEditorWorkspace(
                                     onClick = {
                                         pushHistory()
                                         val newList = blocks.toMutableList()
-                                        newList.add(
-                                            EditorBlock.Text(
-                                                content = "Título contraíble\nEscribe aquí el contenido que se puede plegar o desplegar...",
-                                                isCollapsedHeader = true,
-                                                isCollapsed = false,
-                                                isHeader = true,
-                                                fontSize = 18,
-                                                isBold = true
-                                            )
+                                        val headerId = UUID.randomUUID().toString()
+                                        val headerBlock = EditorBlock.Text(
+                                            id = headerId,
+                                            content = "Título contraíble",
+                                            isCollapsedHeader = true,
+                                            isCollapsed = false,
+                                            isHeader = true,
+                                            fontSize = 18,
+                                            isBold = true
                                         )
+                                        val bodyBlock = EditorBlock.Text(
+                                            content = "Escribe aquí el contenido dentro del desplegable...",
+                                            parentToggleId = headerId,
+                                            indentLevel = 1
+                                        )
+                                        newList.add(headerBlock)
+                                        newList.add(bodyBlock)
                                         updateBlocksAndSave(newList)
                                         Toast.makeText(context, "Sección contraíble añadida", Toast.LENGTH_SHORT).show()
                                     },
@@ -4885,7 +5178,29 @@ fun NoteEditorWorkspace(
                                 VerticalDivider(color = CosmicBorder, modifier = Modifier.height(20.dp))
                             }
 
-                            // Tab / Spacing block ("dar espaciado")
+                            // Quitar tabulador / disminuir sangría (Shift+Tab)
+                            item {
+                                val isActiveBlockText = selectedBlockIndex in blocks.indices && blocks[selectedBlockIndex] is EditorBlock.Text
+                                val currentBlock = if (isActiveBlockText) blocks[selectedBlockIndex] as? EditorBlock.Text else null
+                                val canOutdent = isActiveBlockText && currentBlock != null && (currentBlock.indentLevel > 0 || currentBlock.isBullet || currentBlock.isNumbered)
+                                IconButton(
+                                    onClick = {
+                                        if (selectedBlockIndex in blocks.indices) {
+                                            val activeId = blocks[selectedBlockIndex].id
+                                            pendingShiftTabTrigger = activeId
+                                        }
+                                    },
+                                    enabled = canOutdent
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.FormatIndentDecrease,
+                                        contentDescription = "Quitar tabulador / Subir nivel de lista",
+                                        tint = if (canOutdent) TextPrimary else TextTertiary
+                                    )
+                                }
+                            }
+
+                            // Tab / Aumentar sangría / Sub-lista ("dar espaciado")
                             item {
                                 val isActiveBlockText = selectedBlockIndex in blocks.indices && blocks[selectedBlockIndex] is EditorBlock.Text
                                 IconButton(
@@ -4899,7 +5214,7 @@ fun NoteEditorWorkspace(
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.KeyboardTab,
-                                        contentDescription = "Dar espaciado",
+                                        contentDescription = "Dar espaciado / Bajar nivel a sub-lista",
                                         tint = if (isActiveBlockText) TextPrimary else TextTertiary
                                     )
                                 }
@@ -4946,10 +5261,11 @@ fun NoteEditorWorkspace(
                                 }
                             }
 
-                            // Move Up block ("subir")
+                            // Move Up block ("subir" / "entrar o salir del desplegable")
                             item {
                                 val isSelectedText = selectedBlockIndex in blocks.indices && blocks[selectedBlockIndex] is EditorBlock.Text
-                                val canMoveUp = isSelectedText && selectedBlockIndex > 0
+                                val isInsideToggle = isSelectedText && getEffectiveToggleId(selectedBlockIndex) != null
+                                val canMoveUp = isSelectedText && (selectedBlockIndex > 0 || isInsideToggle)
                                 IconButton(
                                     onClick = {
                                         moveBlockUp(selectedBlockIndex)
@@ -4958,16 +5274,17 @@ fun NoteEditorWorkspace(
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.ArrowUpward,
-                                        contentDescription = "Subir párrafo",
+                                        contentDescription = if (isInsideToggle) "Subir o salir del desplegable" else "Subir párrafo",
                                         tint = if (canMoveUp) TextPrimary else TextTertiary
                                     )
                                 }
                             }
 
-                            // Move Down block ("bajar")
+                            // Move Down block ("bajar" / "salir del desplegable")
                             item {
                                 val isSelectedText = selectedBlockIndex in blocks.indices && blocks[selectedBlockIndex] is EditorBlock.Text
-                                val canMoveDown = isSelectedText && selectedBlockIndex < blocks.size - 1
+                                val isInsideToggle = isSelectedText && getEffectiveToggleId(selectedBlockIndex) != null
+                                val canMoveDown = isSelectedText && (selectedBlockIndex < blocks.size - 1 || isInsideToggle)
                                 IconButton(
                                     onClick = {
                                         moveBlockDown(selectedBlockIndex)
@@ -4976,7 +5293,7 @@ fun NoteEditorWorkspace(
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.ArrowDownward,
-                                        contentDescription = "Bajar párrafo",
+                                        contentDescription = if (isInsideToggle) "Mover o salir del desplegable" else "Bajar párrafo",
                                         tint = if (canMoveDown) TextPrimary else TextTertiary
                                     )
                                 }
@@ -5073,7 +5390,11 @@ fun NoteEditorWorkspace(
                             .background(CosmicSurface, CircleShape)
                             .clickable {
                                 pushHistory()
-                                val newBlock = EditorBlock.Text(content = "")
+                                val newBlock = EditorBlock.Text(
+                                    content = "",
+                                    parentToggleId = null,
+                                    indentLevel = 0
+                                )
                                 val newList = blocks.toMutableList()
                                 newList.add(newBlock)
                                 updateBlocksAndSave(newList)
@@ -5378,7 +5699,8 @@ fun NoteEditorWorkspace(
 
                                             LaunchedEffect(pendingTabInsertionTrigger) {
                                                 if (pendingTabInsertionTrigger == block.id) {
-                                                    if (tfValue.selection.start <= 1 && (block.isBullet || block.isNumbered || block.indentLevel > 0)) {
+                                                    if (block.isBullet || block.isNumbered || block.indentLevel > 0 || tfValue.selection.start <= 1) {
+                                                        pushHistory()
                                                         val nextIndent = (block.indentLevel + 1).coerceAtMost(4)
                                                         if (index in blocks.indices) {
                                                             val b = blocks[index]
@@ -5411,6 +5733,33 @@ fun NoteEditorWorkspace(
                                                         onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
                                                         pendingTabInsertionTrigger = null
                                                     }
+                                                }
+                                            }
+
+                                            LaunchedEffect(pendingShiftTabTrigger) {
+                                                if (pendingShiftTabTrigger == block.id) {
+                                                    pushHistory()
+                                                    if (block.indentLevel > 0) {
+                                                        // Subir de nivel de lista / disminuir sangría
+                                                        val prevIndent = (block.indentLevel - 1).coerceAtLeast(0)
+                                                        if (index in blocks.indices) {
+                                                            val b = blocks[index]
+                                                            if (b is EditorBlock.Text) {
+                                                                blocks[index] = b.copy(indentLevel = prevIndent)
+                                                            }
+                                                        }
+                                                        onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                                                    } else if (block.isBullet || block.isNumbered) {
+                                                        // Si ya está en nivel 0 y se le quita el tabulador, regresar a texto normal
+                                                        if (index in blocks.indices) {
+                                                            val b = blocks[index]
+                                                            if (b is EditorBlock.Text) {
+                                                                blocks[index] = b.copy(isBullet = false, isNumbered = false, indentLevel = 0)
+                                                            }
+                                                        }
+                                                        onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                                                    }
+                                                    pendingShiftTabTrigger = null
                                                 }
                                             }
 
@@ -5454,40 +5803,55 @@ fun NoteEditorWorkspace(
                                                          }
                                                      }
                                                      if (block.isNumbered) {
-                                                         val numIdx = blocks.take(index).takeLastWhile { it is EditorBlock.Text && it.isNumbered }.size + 1
+                                                         // Calculate hierarchical numbering based on indentLevel
+                                                         val numText = if (block.indentLevel == 0) {
+                                                             val numIdx = blocks.take(index).takeLastWhile { it is EditorBlock.Text && it.isNumbered }.count { (it as EditorBlock.Text).indentLevel == 0 } + 1
+                                                             "$numIdx."
+                                                         } else {
+                                                             // Find nearest preceding parent item with lower indent level
+                                                             val preceding = blocks.take(index).takeLastWhile { it is EditorBlock.Text && it.isNumbered }
+                                                             val parentItem = preceding.lastOrNull { (it as EditorBlock.Text).indentLevel < block.indentLevel } as? EditorBlock.Text
+                                                             val parentIdx = if (parentItem != null) {
+                                                                 val parentPos = blocks.indexOf(parentItem)
+                                                                 val parentPreceding = blocks.take(parentPos).takeLastWhile { it is EditorBlock.Text && it.isNumbered }
+                                                                 parentPreceding.count { (it as EditorBlock.Text).indentLevel == parentItem.indentLevel } + 1
+                                                             } else 1
+                                                             val siblingIdx = preceding.filter { (it as EditorBlock.Text).indentLevel == block.indentLevel && (parentItem == null || blocks.indexOf(it) > blocks.indexOf(parentItem)) }.size + 1
+                                                             "$parentIdx.$siblingIdx."
+                                                         }
                                                          Text(
-                                                             text = "$numIdx.",
+                                                             text = numText,
                                                              color = GeminiBlue,
                                                              fontSize = block.fontSize.sp,
                                                              modifier = Modifier.padding(top = 2.dp)
                                                          )
                                                      }
                                                      if (block.isCollapsedHeader) {
-                                                         IconButton(
-                                                             onClick = {
-                                                                 pushHistory()
-                                                                 if (index in blocks.indices) {
-                                                                     val b = blocks[index]
-                                                                     if (b is EditorBlock.Text) {
-                                                                         blocks[index] = b.copy(isCollapsed = !b.isCollapsed)
-                                                                     }
-                                                                     updateBlocksAndSave(null)
-                                                                 }
-                                                             },
-                                                             modifier = Modifier
-                                                                 .size(24.dp)
-                                                                 .padding(top = 2.dp)
-                                                         ) {
-                                                             Icon(
-                                                                 imageVector = if (block.isCollapsed) Icons.Default.ChevronRight else Icons.Default.ExpandMore,
-                                                                 contentDescription = null,
-                                                                 tint = GeminiBlue,
-                                                                 modifier = Modifier.size(16.dp)
-                                                             )
-                                                         }
-                                                     }
+                                                      IconButton(
+                                                          onClick = {
+                                                              pushHistory()
+                                                              if (index in blocks.indices) {
+                                                                  val b = blocks[index]
+                                                                  if (b is EditorBlock.Text) {
+                                                                      blocks[index] = b.copy(isCollapsed = !b.isCollapsed)
+                                                                  }
+                                                                  updateBlocksAndSave(null)
+                                                              }
+                                                          },
+                                                          modifier = Modifier
+                                                              .size(24.dp)
+                                                              .padding(top = 2.dp)
+                                                      ) {
+                                                          Icon(
+                                                              imageVector = if (block.isCollapsed) Icons.Default.ChevronRight else Icons.Default.ExpandMore,
+                                                              contentDescription = if (block.isCollapsed) "Desplegar sección" else "Plegar sección",
+                                                              tint = GeminiBlue,
+                                                              modifier = Modifier.size(16.dp)
+                                                          )
+                                                      }
+                                                  }
 
-                                                     BasicTextField(
+                                                  BasicTextField(
                                                         value = tfValue,
                                                         onValueChange = { newVal ->
                                                              if (index in blocks.indices && blocks[index].id == block.id) {
@@ -5550,6 +5914,40 @@ fun NoteEditorWorkspace(
                                                                      if (newText.length > oldText.length && newVal.selection.start > 1) {
                                                                          val insertIdx = newVal.selection.start - 1
                                                                          if (insertIdx in newText.indices && newText[insertIdx] == '\n') {
+                                                                              if (block.isCollapsedHeader) {
+                                                                                  // Pressing Enter on collapsible header creates child inside the dropdown!
+                                                                                  val textBefore = cleanText.substring(0, insertIdx.coerceAtMost(cleanText.length)).trim()
+                                                                                  val textAfter = if (insertIdx < cleanText.length) cleanText.substring(insertIdx).trim() else ""
+                                                                                  pushHistory()
+                                                                                  val mutableBlocks = blocks.toMutableList()
+                                                                                  mutableBlocks[index] = block.copy(content = textBefore)
+                                                                                  val newChild = EditorBlock.Text(
+                                                                                      content = textAfter,
+                                                                                      parentToggleId = block.id,
+                                                                                      indentLevel = 1
+                                                                                  )
+                                                                                  mutableBlocks.add(index + 1, newChild)
+                                                                                  updateBlocksAndSave(mutableBlocks)
+                                                                                  selectedBlockIndex = index + 1
+                                                                                  scope.launch {
+                                                                                      delay(50)
+                                                                                      try {
+                                                                                          focusRequesters[newChild.id]?.requestFocus()
+                                                                                      } catch (e: Exception) {}
+                                                                                  }
+                                                                                  return@BasicTextField
+                                                                              }
+                                                                              if (block.parentToggleId != null && cleanText.trim().isEmpty()) {
+                                                                                  // Empty line inside dropdown -> Exit the dropdown!
+                                                                                  pushHistory()
+                                                                                  val mutableBlocks = blocks.toMutableList()
+                                                                                  val updated = block.copy(parentToggleId = null, indentLevel = 0)
+                                                                                  mutableBlocks[index] = updated
+                                                                                  updateBlocksAndSave(mutableBlocks)
+                                                                                  selectedBlockIndex = index
+                                                                                  Toast.makeText(context, "Párrafo fuera del desplegable", Toast.LENGTH_SHORT).show()
+                                                                                  return@BasicTextField
+                                                                              }
                                                                              // A newline was just inserted! Let's find the line before this newline
                                                                              val textBeforeNewline = newText.substring(0, insertIdx)
                                                                              val lastLine = textBeforeNewline.split("\n").lastOrNull() ?: ""
@@ -5630,7 +6028,11 @@ fun NoteEditorWorkspace(
 
                                                             .onKeyEvent { keyEvent ->
                                                                  if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Tab) {
-                                                                     pendingTabInsertionTrigger = block.id
+                                                                     if (keyEvent.isShiftPressed) {
+                                                                         pendingShiftTabTrigger = block.id
+                                                                     } else {
+                                                                         pendingTabInsertionTrigger = block.id
+                                                                     }
                                                                      true
                                                                  } else {
                                                                      false
@@ -5791,7 +6193,12 @@ fun NoteEditorWorkspace(
 
                                 if (shouldCreateNewBlock) {
                                     pushHistory()
-                                    val newBlock = EditorBlock.Text(content = "")
+                                    // Always create new block OUTSIDE of any toggle dropdown
+                                    val newBlock = EditorBlock.Text(
+                                        content = "",
+                                        parentToggleId = null,
+                                        indentLevel = 0
+                                    )
                                     val newList = blocks + newBlock
                                     updateBlocksAndSave(newList)
                                     selectedBlockIndex = newList.size - 1
@@ -5804,8 +6211,16 @@ fun NoteEditorWorkspace(
                                         }
                                     }
                                 } else if (blocks.isNotEmpty()) {
-                                    val lastBlockNonNull = blocks.last()
-                                    selectedBlockIndex = blocks.size - 1
+                                    val lastIdx = blocks.size - 1
+                                    val lastBlockNonNull = blocks[lastIdx]
+                                    // If last block is inside a toggle, ensure it exits so typing occurs outside the toggle
+                                    if (lastBlockNonNull is EditorBlock.Text && (lastBlockNonNull.parentToggleId != null || lastBlockNonNull.indentLevel > 0)) {
+                                        val mutable = blocks.toMutableList()
+                                        val updated = lastBlockNonNull.copy(parentToggleId = null, indentLevel = 0)
+                                        mutable[lastIdx] = updated
+                                        updateBlocksAndSave(mutable)
+                                    }
+                                    selectedBlockIndex = lastIdx
                                     scope.launch {
                                         delay(50)
                                         try {
@@ -8437,6 +8852,9 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
     val sortedCombined = combinedList.sortedByDescending { it.y }
     val blocks = mutableListOf<EditorBlock>()
     
+    var activeImportToggleId: String? = null
+    var activeImportToggleIndent: Int = 0
+    
     // Determine the base left margin of text content
     val validTexts = lines.filter { it.text.trim().isNotEmpty() }
     val baseMarginX = validTexts.minOfOrNull { it.x } ?: 50f
@@ -8452,12 +8870,19 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
         if (currentParagraph.isNotEmpty()) {
             val pText = currentParagraph.toString().trim()
             if (pText.isNotEmpty()) {
+                val toggleParent = if (activeImportToggleId != null && currentParagraphIndent > activeImportToggleIndent) {
+                    activeImportToggleId
+                } else {
+                    activeImportToggleId = null
+                    null
+                }
                 blocks.add(
                     EditorBlock.Text(
                         content = pText,
                         fontSize = currentParagraphFontSize.toInt().coerceIn(12, 18),
                         isBold = currentParagraphIsBold,
-                        indentLevel = currentParagraphIndent
+                        indentLevel = currentParagraphIndent,
+                        parentToggleId = toggleParent
                     )
                 )
             }
@@ -8522,8 +8947,10 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                     val cleanDropdown = rawText
                         .removePrefix("▼").removePrefix("▶").removePrefix("▾").removePrefix("▸").removePrefix("►")
                         .trim()
+                    val toggleHeaderId = UUID.randomUUID().toString()
                     blocks.add(
                         EditorBlock.Text(
+                            id = toggleHeaderId,
                             content = cleanDropdown,
                             fontSize = if (fSize >= 18f) 20 else 18,
                             isBold = true,
@@ -8533,6 +8960,8 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                             indentLevel = indentLevel
                         )
                     )
+                    activeImportToggleId = toggleHeaderId
+                    activeImportToggleIndent = indentLevel
                     lastLineY = element.y
                     lastLineFontSize = fSize
                     continue
@@ -8587,17 +9016,24 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                     continue
                 }
 
-                // 5. Listas numeradas (1., 2., 1-, 2-, etc.)
-                val numberedMatch = Regex("^(\\d+)[\\.\\-]\\s*(.*)").matchEntire(rawText)
+                // 5. Listas numeradas (1., 2., 1-, 2-, 1), (1), etc.)
+                // Intercambiar el número del PDF con el de nuestra app (isNumbered = true) y limpiar el texto para no duplicar números
+                val numberedMatch = Regex("^(?:\\d+[\\.\\-\\)]|\\([0-9]+\\))\\s*(.*)").matchEntire(rawText)
                 if (numberedMatch != null) {
                     flushParagraph()
-                    val cleanNumbered = numberedMatch.groupValues[2].trim().ifEmpty { rawText }
+                    val cleanNumbered = numberedMatch.groupValues[1].trim().ifEmpty { rawText }
+                    // Strip any additional duplicate numbering prefixes that may have been baked in
+                    val fullyCleaned = Regex("^(?:\\d+[\\.\\-\\)]|\\([0-9]+\\))\\s*").replace(cleanNumbered, "").trim().ifEmpty { cleanNumbered }
+                    val toggleParent = if (activeImportToggleId != null && indentLevel > activeImportToggleIndent) {
+                        activeImportToggleId
+                    } else null
                     blocks.add(
                         EditorBlock.Text(
-                            content = cleanNumbered,
+                            content = fullyCleaned,
                             fontSize = 14,
                             isNumbered = true,
-                            indentLevel = indentLevel
+                            indentLevel = indentLevel,
+                            parentToggleId = toggleParent
                         )
                     )
                     lastLineY = element.y
@@ -8640,6 +9076,7 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                                      Regex("^\\d+\\.\\d+\\.\\d+\\s+").find(rawText) != null)
 
                 if (isTitle || isSubtitle || isHeading || isMinorSection) {
+                    activeImportToggleId = null
                     flushParagraph()
                     val targetSize = when {
                         isTitle -> 24
