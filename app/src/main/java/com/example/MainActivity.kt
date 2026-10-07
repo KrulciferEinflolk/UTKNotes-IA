@@ -1658,7 +1658,7 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
             val baseIndent = (indentLevel * 20f).coerceIn(0f, 160f)
             val prefixWidth = when {
                 isBullet -> 16f
-                isNumbered -> 22f
+                isNumbered -> (customNumberPrefix.length * 8.5f + 8f).coerceIn(24f, 60f)
                 isCollapsedHeader -> 18f
                 else -> 0f
             }
@@ -1817,13 +1817,8 @@ fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
                 val currentCount = (activeNumbersByIndent[indent] ?: 0) + 1
                 activeNumbersByIndent[indent] = currentCount
                 activeNumbersByIndent.keys.filter { it > indent }.forEach { activeNumbersByIndent.remove(it) }
-                val prefix = if (indent == 0) {
-                    "$currentCount."
-                } else {
-                    val parentCount = activeNumbersByIndent[indent - 1] ?: 1
-                    "$parentCount.$currentCount."
-                }
-                numberedPrefixes[block.id] = prefix
+                val parts = (0..indent).map { lvl -> activeNumbersByIndent[lvl] ?: 1 }
+                numberedPrefixes[block.id] = parts.joinToString(".") + "."
             } else {
                 if (inNumberedSequence) {
                     activeNumbersByIndent.clear()
@@ -5803,30 +5798,28 @@ fun NoteEditorWorkspace(
                                                          }
                                                      }
                                                      if (block.isNumbered) {
-                                                         // Calculate hierarchical numbering based on indentLevel
-                                                         val numText = if (block.indentLevel == 0) {
-                                                             val numIdx = blocks.take(index).takeLastWhile { it is EditorBlock.Text && it.isNumbered }.count { (it as EditorBlock.Text).indentLevel == 0 } + 1
-                                                             "$numIdx."
-                                                         } else {
-                                                             // Find nearest preceding parent item with lower indent level
-                                                             val preceding = blocks.take(index).takeLastWhile { it is EditorBlock.Text && it.isNumbered }
-                                                             val parentItem = preceding.lastOrNull { (it as EditorBlock.Text).indentLevel < block.indentLevel } as? EditorBlock.Text
-                                                             val parentIdx = if (parentItem != null) {
-                                                                 val parentPos = blocks.indexOf(parentItem)
-                                                                 val parentPreceding = blocks.take(parentPos).takeLastWhile { it is EditorBlock.Text && it.isNumbered }
-                                                                 parentPreceding.count { (it as EditorBlock.Text).indentLevel == parentItem.indentLevel } + 1
-                                                             } else 1
-                                                             val siblingIdx = preceding.filter { (it as EditorBlock.Text).indentLevel == block.indentLevel && (parentItem == null || blocks.indexOf(it) > blocks.indexOf(parentItem)) }.size + 1
-                                                             "$parentIdx.$siblingIdx."
-                                                         }
-                                                         Text(
-                                                             text = numText,
-                                                             color = GeminiBlue,
-                                                             fontSize = block.fontSize.sp,
-                                                             modifier = Modifier.padding(top = 2.dp)
-                                                         )
-                                                     }
-                                                     if (block.isCollapsedHeader) {
+                                                        // Calculate hierarchical numbering based on indentLevel (supporting x.x.x.x)
+                                                        val precedingBlocks = blocks.take(index + 1)
+                                                        val activeNumbers = mutableMapOf<Int, Int>()
+                                                        for (b in precedingBlocks) {
+                                                            if (b is EditorBlock.Text && b.isNumbered) {
+                                                                val ind = b.indentLevel
+                                                                activeNumbers[ind] = (activeNumbers[ind] ?: 0) + 1
+                                                                activeNumbers.keys.filter { it > ind }.forEach { activeNumbers.remove(it) }
+                                                            } else {
+                                                                activeNumbers.clear()
+                                                            }
+                                                        }
+                                                        val parts = (0..block.indentLevel).map { lvl -> activeNumbers[lvl] ?: 1 }
+                                                        val numText = parts.joinToString(".") + "."
+                                                        Text(
+                                                            text = numText,
+                                                            color = GeminiBlue,
+                                                            fontSize = block.fontSize.sp,
+                                                            modifier = Modifier.padding(top = 2.dp)
+                                                        )
+                                                    }
+                                                    if (block.isCollapsedHeader) {
                                                       IconButton(
                                                           onClick = {
                                                               pushHistory()
@@ -9016,15 +9009,26 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                     continue
                 }
 
-                // 5. Listas numeradas (1., 2., 1-, 2-, 1), (1), etc.)
+                // 5. Listas numeradas (1., 1.1., 1.1.1., 1.1.1.1., 1-, 2-, 1), (1), etc.)
                 // Intercambiar el número del PDF con el de nuestra app (isNumbered = true) y limpiar el texto para no duplicar números
-                val numberedMatch = Regex("^(?:\\d+[\\.\\-\\)]|\\([0-9]+\\))\\s*(.*)").matchEntire(rawText)
+                val numberedMatch = Regex("^(?:(?:\\d+\\.){1,4}\\d*|(?:\\d+\\.)*\\d+[\\.\\-\\)]|\\([0-9]+\\))\\s*(.*)").matchEntire(rawText)
                 if (numberedMatch != null) {
                     flushParagraph()
                     val cleanNumbered = numberedMatch.groupValues[1].trim().ifEmpty { rawText }
                     // Strip any additional duplicate numbering prefixes that may have been baked in
-                    val fullyCleaned = Regex("^(?:\\d+[\\.\\-\\)]|\\([0-9]+\\))\\s*").replace(cleanNumbered, "").trim().ifEmpty { cleanNumbered }
-                    val toggleParent = if (activeImportToggleId != null && indentLevel > activeImportToggleIndent) {
+                    val fullyCleaned = Regex("^(?:(?:\\d+\\.){1,4}\\d*|(?:\\d+\\.)*\\d+[\\.\\-\\)]|\\([0-9]+\\))\\s*").replace(cleanNumbered, "").trim().ifEmpty { cleanNumbered }
+                    
+                    // Determine indent level from hierarchy in prefix if present (e.g. 1.1 -> level 1, 1.1.1 -> level 2, 1.1.1.1 -> level 3)
+                    val rawPrefixMatch = Regex("^(?:(?:\\d+\\.){1,4}\\d*|(?:\\d+\\.)*\\d+[\\.\\-\\)]|\\([0-9]+\\))").find(rawText)
+                    val rawPrefix = rawPrefixMatch?.value?.trim() ?: ""
+                    val dotCountLevel = if (rawPrefix.contains(".")) {
+                        val trimmedPrefix = rawPrefix.trimEnd('.', '-', ')', ' ')
+                        val segments = trimmedPrefix.split(".")
+                        if (segments.size > 1) segments.size - 1 else 0
+                    } else 0
+                    val finalIndentLevel = maxOf(indentLevel, dotCountLevel).coerceIn(0, 4)
+
+                    val toggleParent = if (activeImportToggleId != null && finalIndentLevel > activeImportToggleIndent) {
                         activeImportToggleId
                     } else null
                     blocks.add(
@@ -9032,7 +9036,7 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                             content = fullyCleaned,
                             fontSize = 14,
                             isNumbered = true,
-                            indentLevel = indentLevel,
+                            indentLevel = finalIndentLevel,
                             parentToggleId = toggleParent
                         )
                     )

@@ -871,7 +871,75 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         sb.append("ESTADO ACTUAL:\n")
         sb.append("• Libro seleccionado: ${currentBook?.title ?: "Ninguno"}\n")
         sb.append("• Página seleccionada: ${currentPage?.title ?: "Ninguna"}\n")
-        sb.append("• Nota seleccionada: ${currentNote?.let { "\"${it.title}\" (ID: ${it.id})" } ?: "Ninguna"}\n\n")
+        sb.append("• Nota seleccionada: ${currentNote?.let { "\"${it.title}\" (ID: ${it.id})" } ?: "Ninguna"}\n")
+        if (currentNote != null) {
+            sb.append("\n=======================================================\n")
+            sb.append("ACCESO TOTAL Y PERMISOS DE LECTURA DE AURA A LA NOTA ACTUAL:\n")
+            sb.append("Tienes PERMISOS TOTALES para leer, analizar, consultar y reflexionar sobre la nota \"${currentNote.title}\" y TODO su contenido íntegro (párrafos, textos, elementos gráficos, imágenes, tablas, audios, archivos, listas y tareas):\n")
+            sb.append("--- INICIO DEL CONTENIDO DE LA NOTA ---\n")
+            val blocks = try {
+                com.example.parseBlocks(currentNote.content)
+            } catch (e: Exception) {
+                emptyList<com.example.EditorBlock>()
+            }
+            if (blocks.isNotEmpty()) {
+                blocks.forEachIndexed { idx, b ->
+                    when (b) {
+                        is com.example.EditorBlock.Text -> {
+                            val prefix = when {
+                                b.isCollapsedHeader -> "[Título Desplegable] "
+                                b.isHeader -> "[Encabezado H${if (b.fontSize >= 24) 1 else if (b.fontSize >= 20) 2 else 3}] "
+                                b.isBullet -> "[Viñeta - Nivel ${b.indentLevel}] • "
+                                b.isNumbered -> "[Lista Numerada - Nivel ${b.indentLevel}] "
+                                else -> "[Párrafo] "
+                            }
+                            sb.append("$prefix${b.content}\n")
+                        }
+                        is com.example.EditorBlock.Image -> {
+                            sb.append("[Elemento Gráfico / Imagen: ${b.caption.ifBlank { "Imagen adjunta" }} | Archivo: ${b.urlOrPath}]\n")
+                        }
+                        is com.example.EditorBlock.Table -> {
+                            sb.append("[Elemento Gráfico / Tabla ${b.rows}x${b.cols}]:\n")
+                            b.data.forEach { row ->
+                                sb.append("| ${row.joinToString(" | ")} |\n")
+                            }
+                        }
+                        is com.example.EditorBlock.Todo -> {
+                            val checkStr = if (b.isChecked) "[x]" else "[ ]"
+                            sb.append("[Tarea / Checkbox $checkStr]: ${b.content}\n")
+                        }
+                        is com.example.EditorBlock.Quote -> {
+                            sb.append("[Cita]: > ${b.content}\n")
+                        }
+                        is com.example.EditorBlock.Callout -> {
+                            sb.append("[Callout / Destacado ${b.emoji}]: ${b.content}\n")
+                        }
+                        is com.example.EditorBlock.Code -> {
+                            sb.append("[Bloque de Código (${b.language})]:\n${b.code}\n")
+                        }
+                        is com.example.EditorBlock.Divider -> {
+                            sb.append("[Separador / Línea divisoria]\n")
+                        }
+                        is com.example.EditorBlock.Audio -> {
+                            sb.append("[Audio adjunto: ${b.name}]\n")
+                        }
+                        is com.example.EditorBlock.Video -> {
+                            sb.append("[Video adjunto: ${b.title}]\n")
+                        }
+                        is com.example.EditorBlock.File -> {
+                            sb.append("[Archivo adjunto: ${b.name}]\n")
+                        }
+                    }
+                }
+            } else {
+                sb.append(currentNote.content.ifBlank { "(Nota vacía)" })
+                sb.append("\n")
+            }
+            sb.append("--- FIN DEL CONTENIDO DE LA NOTA ---\n")
+            sb.append("=======================================================\n\n")
+        } else {
+            sb.append("\n")
+        }
 
         sb.append("DIRECTRICES DE RESPUESTA:\n")
         sb.append("1. CONVERSACIÓN GENERAL, PREGUNTAS Y ANÁLISIS DE ARCHIVOS/IMÁGENES:\n")
