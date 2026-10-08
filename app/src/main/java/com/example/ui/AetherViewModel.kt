@@ -331,16 +331,16 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             // Append screen note context
             if (pNote != null) {
                 val mdContent = com.example.convertBlocksToMarkdown(pNote.content)
-                finalMsgForApi += "\n\n[Contexto - Nota de pantalla (ID: \"${pNote.id}\"): \"${pNote.title}\"\nContenido en Markdown:\n$mdContent]"
+                finalMsgForApi += "\n\n[CONTENIDO ÍNTEGRO DE LA NOTA SELECCIONADA \"${pNote.title}\" (ID: \"${pNote.id}\"):\n$mdContent\n--- FIN DE LA NOTA ---]"
             } else if (_selectedNote.value != null) {
                 val current = _selectedNote.value!!
                 val mdContent = com.example.convertBlocksToMarkdown(current.content)
-                finalMsgForApi += "\n\n[Contexto - Nota de pantalla actual (ID: \"${current.id}\"): \"${current.title}\"\nContenido en Markdown:\n$mdContent]"
+                finalMsgForApi += "\n\n[CONTENIDO ÍNTEGRO DE LA NOTA SELECCIONADA \"${current.title}\" (ID: \"${current.id}\"):\n$mdContent\n--- FIN DE LA NOTA ---]"
             }
 
             // Append paragraph citation context
             if (pText != null) {
-                finalMsgForApi += "\n\n[Contexto - Párrafo citado de la nota:\n\"$pText\"]"
+                finalMsgForApi += "\n\n[PÁRRAFO SELECCIONADO / CITADO DE LA NOTA:\n\"$pText\"]"
             }
 
             // Append attached file context
@@ -789,6 +789,47 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun applyAiModificationToParagraph(
+        note: NoteEntity,
+        paragraphIndex: Int,
+        originalText: String,
+        instruction: String,
+        onSuccess: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            _aiLoading.value = true
+            _aiMessage.value = "Aura mejorando párrafo..."
+            if (modelVerifier.checkCurrentStatus() !is ModelDownloadStatus.Ready) {
+                _aiMessage.value = "Descarga primero el modelo local Aura en Ajustes de IA."
+                _aiLoading.value = false
+                return@launch
+            }
+            localLlm.ensureModelLoaded(modelVerifier.modelFile)
+            val prompt = """
+                Párrafo original:
+                $originalText
+
+                Instrucción del usuario:
+                $instruction
+            """.trimIndent()
+            val sysPrompt = """
+                Eres Aura, asistente experta de escritura. Tu tarea es reescribir o mejorar ÚNICAMENTE el párrafo o texto proporcionado siguiendo la instrucción.
+                REGLAS CRÍTICAS:
+                1. Devuelve ÚNICAMENTE el texto final generado, sin introducciones, sin saludos, sin explicaciones ni comillas envolventes.
+                2. Si la instrucción pide corregir, devuelve el párrafo corregido. Si pide expandir, devuelve el párrafo expandido. Si pide resumir, devuelve la síntesis en un párrafo o lista concisa.
+            """.trimIndent()
+            val response = localLlm.generateResponse(prompt, sysPrompt)
+            val clean = response.trim().removeSurrounding("\"").removeSurrounding("```").trim()
+            if (clean.isNotBlank()) {
+                onSuccess(clean)
+                _aiMessage.value = "Párrafo actualizado con Aura"
+            } else {
+                _aiMessage.value = "No se pudieron aplicar cambios al párrafo."
+            }
+            _aiLoading.value = false
+        }
+    }
+
     fun applyAiModificationToNote(note: NoteEntity, instruction: String) {
         viewModelScope.launch {
             _aiLoading.value = true
@@ -942,7 +983,8 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         sb.append("DIRECTRICES DE RESPUESTA:\n")
-        sb.append("1. CONVERSACIÓN GENERAL, PREGUNTAS Y ANÁLISIS DE ARCHIVOS/IMÁGENES:\n")
+        sb.append("1. CONVERSACIÓN GENERAL, PREGUNTAS Y ANÁLISIS DE ARCHIVOS/IMÁGENES/NOTAS:\n")
+        sb.append("   - Tienes ACCESO Y LECTURA TOTAL a la nota del usuario y a todos sus párrafos y elementos textuales. Si el usuario te pregunta sobre qué dice la nota, pide leer o recitar sus párrafos, explicar su contenido textual, extraer fragmentos, o hacer preguntas sobre cualquier sección, responde con total precisión citando o explicando el contenido real de la nota provisto arriba.\n")
         sb.append("   - Si el usuario te hace una pregunta, consulta tus conocimientos, o te pide analizar un archivo de texto, documento o imagen adjunta, responde de forma directa, inteligente, clara, agradable y bien estructurada en español.\n")
         sb.append("   - Utiliza formato Markdown enriquecido para estructurar tus respuestas: títulos principales con '# ', subtítulos con '## ' o '### ', negritas con '**palabra clave**', listas con viñetas ('- ' o '• ') y listas ordenadas con '1. ', '2. '.\n")
         sb.append("   - REGLA FUNDAMENTAL PARA RESÚMENES DE DOCUMENTOS Y PDFs:\n")
@@ -1389,7 +1431,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         // Safely limit user prompt message length to avoid overflowing context for local model
-        val maxLen = if (isDocumentSummary) 3200 else 5500
+        val maxLen = if (isDocumentSummary) 4000 else 9000
         val safeMessage = if (message.length > maxLen) message.take(maxLen) + "\n...[Contenido recortado para análisis global]" else message
 
         val rawResponse = localLlm.generateResponse(

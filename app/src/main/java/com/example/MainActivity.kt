@@ -164,6 +164,9 @@ class MainActivity : ComponentActivity() {
                                 onAiModify = { instruction ->
                                     viewModel.applyAiModificationToNote(selectedNote!!, instruction)
                                 },
+                                onAiModifyParagraph = { pIndex, origText, instruction, onSuccess ->
+                                    viewModel.applyAiModificationToParagraph(selectedNote!!, pIndex, origText, instruction, onSuccess)
+                                },
                                 onOpenChatbot = { citation ->
                                     viewModel.openChatbot(selectedNote, citation)
                                 },
@@ -3794,6 +3797,7 @@ fun NoteEditorWorkspace(
     onDismiss: () -> Unit,
     onSave: (NoteEntity) -> Unit,
     onAiModify: (String) -> Unit,
+    onAiModifyParagraph: ((paragraphIndex: Int, originalText: String, instruction: String, onSuccess: (String) -> Unit) -> Unit)? = null,
     onOpenChatbot: (String?) -> Unit,
     syncManager: com.example.data.remote.DriveSyncManager
 ) {
@@ -4901,6 +4905,58 @@ fun NoteEditorWorkspace(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            // Mini Menú de IA para el párrafo seleccionado
+                            val activeParagraph = if (selectedBlockIndex in blocks.indices) blocks[selectedBlockIndex] as? EditorBlock.Text else null
+                            if (activeParagraph != null && activeParagraph.content.isNotBlank()) {
+                                item {
+                                    AssistChip(
+                                        onClick = {
+                                            onOpenChatbot(activeParagraph.content)
+                                        },
+                                        label = { Text("Consultar a Aura", fontSize = 11.sp, color = GeminiCyanAccent, fontWeight = FontWeight.Bold) },
+                                        leadingIcon = { Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(14.dp), tint = GeminiCyanAccent) },
+                                        colors = AssistChipDefaults.assistChipColors(
+                                            containerColor = GeminiCyanAccent.copy(alpha = 0.15f),
+                                            labelColor = GeminiCyanAccent
+                                        )
+                                    )
+                                }
+                                val paragraphAiPrompts = listOf(
+                                    "✨ Mejorar" to "Reescribe y mejora la redacción y claridad de este párrafo.",
+                                    "✍️ Expandir" to "Amplía este párrafo agregando más detalles y explicaciones útiles.",
+                                    "🎯 Resumir" to "Sintetiza este párrafo de forma concisa y directa.",
+                                    "🔧 Corregir" to "Corrige la ortografía y gramática de este párrafo sin cambiar su mensaje."
+                                )
+                                items(paragraphAiPrompts) { (label, prompt) ->
+                                    AssistChip(
+                                        onClick = {
+                                            if (onAiModifyParagraph != null) {
+                                                onAiModifyParagraph(selectedBlockIndex, activeParagraph.content, prompt) { newText ->
+                                                    pushHistory()
+                                                    if (selectedBlockIndex in blocks.indices) {
+                                                        val b = blocks[selectedBlockIndex]
+                                                        if (b is EditorBlock.Text) {
+                                                            blocks[selectedBlockIndex] = b.copy(content = newText)
+                                                            updateBlocksAndSave(null)
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                onOpenChatbot("Sobre este párrafo: \"${activeParagraph.content}\"\n$prompt")
+                                            }
+                                        },
+                                        label = { Text(label, fontSize = 11.sp, color = TextPrimary) },
+                                        colors = AssistChipDefaults.assistChipColors(
+                                            containerColor = CosmicSurface,
+                                            labelColor = TextPrimary
+                                        )
+                                    )
+                                }
+                                item {
+                                    VerticalDivider(color = CosmicBorder, modifier = Modifier.height(20.dp))
+                                }
+                            }
+
                             item {
                                 AssistChip(
                                     onClick = {
