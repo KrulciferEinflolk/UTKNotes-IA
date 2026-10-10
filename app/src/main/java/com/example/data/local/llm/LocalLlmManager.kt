@@ -37,7 +37,7 @@ class LocalLlmManager(
 
     companion object {
         private const val TAG = "LocalLlmManager"
-        // Contexto seguro para dispositivos móviles (evita agotar la RAM con el KV cache)
+        // Contexto altamente optimizado y balanceado para velocidad y respuesta en dispositivos Android (4096 tokens)
         const val DEFAULT_CONTEXT_SIZE = 4096
     }
 
@@ -276,14 +276,14 @@ class LocalLlmManager(
          systemPrompt: String? = null,
          history: List<Pair<String, String>> = emptyList(),
          imageUri: String? = null,
-         onStatusUpdate: ((String) -> Unit)? = null
+         onStatusUpdate: ((String) -> Unit)? = null,
+         onTokenUpdate: ((String) -> Unit)? = null
      ): String = inferenceMutex.withLock {
          withContext(Dispatchers.Default) {
              val helper = llamaHelper
              if (helper == null || _modelState.value !is LlmModelState.Ready) {
                  return@withContext "El modelo local Qwen no está cargado en memoria nativa. Abre Ajustes para verificar el estado de la IA local."
              }
-
              // Si había una generación previa aún activa, detenerla limpiamente y esperar drenaje
              if (isGenerating) {
                  try {
@@ -314,8 +314,9 @@ class LocalLlmManager(
                              hasStarted = true
                              isGenerating = true
                              accumulatedText.append(event.word)
-                             if (accumulatedText.length in 1..30) {
-                                 onStatusUpdate?.invoke("Aura está redactando respuesta...")
+                             onTokenUpdate?.invoke(accumulatedText.toString())
+                             if (accumulatedText.length in 1..40) {
+                                 onStatusUpdate?.invoke("Aura está escribiendo...")
                              }
                          }
                          is LlamaHelper.LLMEvent.Done -> {
@@ -332,19 +333,35 @@ class LocalLlmManager(
                  }
              }
 
+             // Proteger el tamaño del prompt formateado para no saturar la CPU del dispositivo móvil
+             val maxPromptChars = 8000
+             val safePrompt = if (formattedPrompt.length > maxPromptChars) {
+                 val sysStart = formattedPrompt.indexOf("<|im_start|>system")
+                 val sysEnd = if (sysStart != -1) formattedPrompt.indexOf("<|im_end|>", sysStart) else -1
+                 val sysBlock = if (sysEnd != -1) formattedPrompt.substring(0, sysEnd + "<|im_end|>\n".length) else ""
+                 val remainder = formattedPrompt.substring(sysBlock.length)
+                 val trimmedRemainder = remainder.takeLast(maxPromptChars - sysBlock.length)
+                 sysBlock + trimmedRemainder
+             } else {
+                 formattedPrompt
+             }
+
              try {
                  isGenerating = true
-                 helper.predict(formattedPrompt, imageUri, true)
-                 val result = kotlinx.coroutines.withTimeoutOrNull(120_000L) {
+                 helper.predict(safePrompt, imageUri, true)
+                 // Margen amplio de 240 segundos para permitir reflexiones profundas en dispositivos móviles
+                 val result = kotlinx.coroutines.withTimeoutOrNull(240_000L) {
                      doneSignal.await()
-                 } ?: accumulatedText.toString().ifEmpty { "Tiempo de inferencia de Qwen agotado." }
+                 } ?: accumulatedText.toString().trim().ifEmpty {
+                     "Aura tardó más de lo esperado debido a la carga del procesador. Puedes intentar con una pregunta más concisa."
+                 }
                  val cleanResult = result.replace("<|im_end|>", "").replace("<|endoftext|>", "").trim()
                  if (cleanResult.isBlank()) {
                      val fallbackText = accumulatedText.toString().trim()
                      if (fallbackText.isNotBlank()) {
                          fallbackText
                      } else {
-                         "Aura no pudo generar texto de respuesta para esta solicitud. Por favor intenta de nuevo con una pregunta o instrucción más específica."
+                         "Aura no pudo completar la generación para esta solicitud. Es posible que el contenido analizado haya superado la capacidad de procesamiento de tu dispositivo. Intenta con una pregunta más directa."
                      }
                  } else {
                      cleanResult

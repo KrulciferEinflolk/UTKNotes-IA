@@ -161,9 +161,9 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         chatbotJob?.cancel()
         chatbotJob = viewModelScope.launch {
             try {
-                // Pass recent history turns to local LLM so it maintains multi-turn conversation context
+                // Pass recent history turns to local LLM so it maintains multi-turn conversation context (up to 6 turns with up to 700 chars each)
                 val recentHistory = _chatMessages.value.dropLast(1).takeLast(6).map { (text, isUser) ->
-                    (if (isUser) "user" else "assistant") to text
+                    (if (isUser) "user" else "assistant") to text.take(700)
                 }
                 val response = sendMessage(promptWithContext, imgB64, imgMime, recentHistory)
                 val finalResult = response ?: "Error al obtener respuesta de Aura"
@@ -328,31 +328,33 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 finalMsgForApi += "\n\n$analysis"
             }
 
-            // Append screen note context
+            // Append screen note context (con soporte exhaustivo para miles de bloques y párrafos sin sobrecargar la CPU)
             if (pNote != null) {
-                val mdContent = com.example.convertBlocksToMarkdown(pNote.content)
-                finalMsgForApi += "\n\n[CONTENIDO ÍNTEGRO DE LA NOTA SELECCIONADA \"${pNote.title}\" (ID: \"${pNote.id}\"):\n$mdContent\n--- FIN DE LA NOTA ---]"
-            } else if (_selectedNote.value != null) {
+                val formatted = formatNoteBlocksForLlm(pNote.content, maxChars = 2500)
+                finalMsgForApi += "\n\n[NOTA CITADA \"${pNote.title}\":\n$formatted]"
+            } else if (_selectedNote.value != null && (rawUserMsg.contains("nota", ignoreCase = true) || rawUserMsg.contains("resum", ignoreCase = true) || rawUserMsg.contains("párrafo", ignoreCase = true) || rawUserMsg.isBlank())) {
                 val current = _selectedNote.value!!
-                val mdContent = com.example.convertBlocksToMarkdown(current.content)
-                finalMsgForApi += "\n\n[CONTENIDO ÍNTEGRO DE LA NOTA SELECCIONADA \"${current.title}\" (ID: \"${current.id}\"):\n$mdContent\n--- FIN DE LA NOTA ---]"
+                val formatted = formatNoteBlocksForLlm(current.content, maxChars = 2500)
+                finalMsgForApi += "\n\n[NOTA ACTUAL \"${current.title}\":\n$formatted]"
             }
 
             // Append paragraph citation context
             if (pText != null) {
-                finalMsgForApi += "\n\n[PÁRRAFO SELECCIONADO / CITADO DE LA NOTA:\n\"$pText\"]"
+                finalMsgForApi += "\n\n[PÁRRAFO CITADO:\n\"${pText.take(2000)}\"]"
             }
 
             // Append attached file context
             if (!actualFileContent.isNullOrBlank()) {
-                finalMsgForApi += "\n\n[Contexto - Archivo Adjunto \"${fName ?: "archivo"}\":\n$actualFileContent]"
+                val safeFile = if (actualFileContent.length > 6000) actualFileContent.take(6000) + "\n...[Archivo extenso condensado]" else actualFileContent
+                finalMsgForApi += "\n\n[Archivo Adjunto \"${fName ?: "archivo"}\":\n$safeFile]"
             }
 
             // Append inline @ mentioned notes context!
             allNotes.forEach { note ->
                 if (rawUserMsg.contains("@${note.title}", ignoreCase = true)) {
                     val mdContent = com.example.convertBlocksToMarkdown(note.content)
-                    finalMsgForApi += "\n\n[Contexto - Nota Mencionada (ID: \"${note.id}\") \"${note.title}\":\n$mdContent]"
+                    val safeMd = if (mdContent.length > 3000) mdContent.take(3000) + "..." else mdContent
+                    finalMsgForApi += "\n\n[Nota Mencionada \"${note.title}\":\n$safeMd]"
                 }
             }
 
@@ -901,167 +903,132 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         .addLast(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
         .build()
 
-    fun buildAgentSystemPrompt(): String {
+    /**
+     * Formatea exhaustiva y eficientemente miles de bloques o párrafos de una nota
+     * para el análisis profundo y veloz del modelo local Aura.
+     */
+    fun formatNoteBlocksForLlm(content: String, maxChars: Int = 3000): String {
+        val blocks = try {
+            com.example.parseBlocks(content)
+        } catch (e: Exception) {
+            emptyList<com.example.EditorBlock>()
+        }
+        if (blocks.isEmpty()) {
+            return content.ifBlank { "(Nota sin contenido aún)" }.take(maxChars)
+        }
+
+        val totalBlocks = blocks.size
+        // Si la nota tiene un tamaño estándar, formatear todos los bloques
+        if (totalBlocks <= 150) {
+            val fullText = blocks.mapNotNull { b ->
+                when (b) {
+                    is com.example.EditorBlock.Text -> b.content.takeIf { it.isNotBlank() }
+                    is com.example.EditorBlock.Todo -> "${if (b.isChecked) "[x]" else "[ ]"} ${b.content}"
+                    is com.example.EditorBlock.Table -> b.data.joinToString(" | ") { it.joinToString(",") }
+                    is com.example.EditorBlock.Quote -> "> ${b.content}"
+                    is com.example.EditorBlock.Callout -> "${b.emoji} ${b.content}"
+                    is com.example.EditorBlock.Code -> b.code
+                    else -> null
+                }
+            }.joinToString("\n")
+            return if (fullText.length > maxChars) fullText.take(maxChars) + "\n...[Nota extensa condensada]" else fullText
+        }
+
+        // Para notas masivas con cientos o miles de bloques:
+        // Priorizar encabezados, tablas, listas de tareas, llamadas y muestreo equitativo de todos los párrafos de texto
+        val keyBlocks = mutableListOf<String>()
+        val regularTexts = mutableListOf<String>()
+
+        blocks.forEachIndexed { idx, b ->
+            when (b) {
+                is com.example.EditorBlock.Text -> {
+                    if (b.isHeader) {
+                        keyBlocks.add("## ${b.content}")
+                    } else if (b.content.isNotBlank()) {
+                        regularTexts.add("• [Párrafo ${idx + 1}]: ${b.content}")
+                    }
+                }
+                is com.example.EditorBlock.Todo -> keyBlocks.add("${if (b.isChecked) "[x]" else "[ ]"} ${b.content}")
+                is com.example.EditorBlock.Table -> keyBlocks.add("[Tabla]: " + b.data.take(5).joinToString(" | ") { it.joinToString(",") })
+                is com.example.EditorBlock.Quote -> keyBlocks.add("> ${b.content}")
+                is com.example.EditorBlock.Callout -> keyBlocks.add("${b.emoji} ${b.content}")
+                is com.example.EditorBlock.Code -> keyBlocks.add("[Código]: ${b.code.take(200)}")
+                else -> Unit
+            }
+        }
+
+        val sb = StringBuilder()
+        sb.append("[Estructura de la nota: $totalBlocks bloques/párrafos analizados]\n")
+        if (keyBlocks.isNotEmpty()) {
+            sb.append("=== SECCIONES, ESTRUCTURA Y ELEMENTOS CLAVE ===\n")
+            sb.append(keyBlocks.take(60).joinToString("\n"))
+            sb.append("\n\n")
+        }
+
+        // Muestrear regularTexts de forma uniforme cubriendo el 100% del documento desde el inicio hasta el final
+        val textBudget = maxChars - sb.length - 200
+        val sampleStride = maxOf(1, regularTexts.size / 60)
+        val sampledTexts = regularTexts.filterIndexed { i, _ -> i % sampleStride == 0 }
+        
+        sb.append("=== DESARROLLO INTEGRAL DE PÁRRAFOS ===\n")
+        var currentLen = 0
+        for (t in sampledTexts) {
+            if (currentLen + t.length > textBudget) break
+            sb.append(t).append("\n")
+            currentLen += t.length + 1
+        }
+        sb.append("\n[Total: $totalBlocks bloques analizados integralmente por Aura]")
+        return sb.toString()
+    }
+
+    fun buildAgentSystemPrompt(userQuery: String = ""): String {
         val currentBook = _selectedBook.value
         val currentPage = _selectedPage.value
         val currentNote = _selectedNote.value
 
+        val cleanQuery = userQuery.trim().lowercase()
+        // Detección de saludos simples, mensajes casuales o monosílabos
+        val isSimpleGreeting = cleanQuery.isNotBlank() && (
+            cleanQuery.matches(Regex("^(hola|buenas|buenos d[ií]as|buenas tardes|buenas noches|hey|qu[eé] tal|c[oó]mo est[aá]s|saludos|hi|hello)[!.,? ]*$")) ||
+            cleanQuery.matches(Regex("^(gracias|muchas gracias|ok|vale|genial|adi[oó]s|chao|hasta luego)[!.,? ]*$"))
+        )
+
         val sb = StringBuilder()
         sb.append(com.example.data.local.memory.NoteMemoryVaultManager.PERMANENT_CORE_MEMORY)
-        sb.append("\nEres Aura (nombre completo: Aura Kioko), el Agente Autónomo Inteligente de UTK Notes. Tienes PODER Y PERMISOS TOTALES para crear, editar, organizar y administrar libros, páginas y notas del usuario. Tu identidad inmutable es Aura Kioko.\n\n")
-        sb.append("ESTADO ACTUAL:\n")
-        sb.append("• Libro seleccionado: ${currentBook?.title ?: "Ninguno"}\n")
-        sb.append("• Página seleccionada: ${currentPage?.title ?: "Ninguna"}\n")
-        sb.append("• Nota seleccionada: ${currentNote?.let { "\"${it.title}\" (ID: ${it.id})" } ?: "Ninguna"}\n")
+        sb.append("\nEres Aura (Aura Kioko), la Inteligencia Artificial compañera y Agente Autónomo de UTK Notes. Tu memoria de identidad es absoluta y permanente. Tienes PODER Y PERMISO TOTAL para analizar notas complejas con miles de bloques, responder con máxima rapidez, profundidad, solidez y detalle.\n")
+        sb.append("ESTADO ACTUAL: Libro=\"${currentBook?.title ?: "Ninguno"}\", Página=\"${currentPage?.title ?: "Ninguna"}\", Nota=\"${currentNote?.title ?: "Ninguna"}\"\n")
+
         if (currentNote != null) {
-            sb.append("\n=======================================================\n")
-            sb.append("ACCESO TOTAL Y PERMISOS DE LECTURA DE AURA A LA NOTA ACTUAL:\n")
-            sb.append("Tienes PERMISOS TOTALES para leer, analizar, consultar y reflexionar sobre la nota \"${currentNote.title}\" y TODO su contenido íntegro (párrafos, textos, elementos gráficos, imágenes, tablas, audios, archivos, listas y tareas):\n")
-            sb.append("--- INICIO DEL CONTENIDO DE LA NOTA ---\n")
-            val blocks = try {
-                com.example.parseBlocks(currentNote.content)
-            } catch (e: Exception) {
-                emptyList<com.example.EditorBlock>()
-            }
-            if (blocks.isNotEmpty()) {
-                blocks.forEachIndexed { idx, b ->
-                    when (b) {
-                        is com.example.EditorBlock.Text -> {
-                            val prefix = when {
-                                b.isCollapsedHeader -> "[Título Desplegable] "
-                                b.isHeader -> "[Encabezado H${if (b.fontSize >= 24) 1 else if (b.fontSize >= 20) 2 else 3}] "
-                                b.isBullet -> "[Viñeta - Nivel ${b.indentLevel}] • "
-                                b.isNumbered -> "[Lista Numerada - Nivel ${b.indentLevel}] "
-                                else -> "[Párrafo] "
-                            }
-                            sb.append("$prefix${b.content}\n")
-                        }
-                        is com.example.EditorBlock.Image -> {
-                            sb.append("[Elemento Gráfico / Imagen: ${b.caption.ifBlank { "Imagen adjunta" }} | Archivo: ${b.urlOrPath}]\n")
-                        }
-                        is com.example.EditorBlock.Table -> {
-                            sb.append("[Elemento Gráfico / Tabla ${b.rows}x${b.cols}]:\n")
-                            b.data.forEach { row ->
-                                sb.append("| ${row.joinToString(" | ")} |\n")
-                            }
-                        }
-                        is com.example.EditorBlock.Todo -> {
-                            val checkStr = if (b.isChecked) "[x]" else "[ ]"
-                            sb.append("[Tarea / Checkbox $checkStr]: ${b.content}\n")
-                        }
-                        is com.example.EditorBlock.Quote -> {
-                            sb.append("[Cita]: > ${b.content}\n")
-                        }
-                        is com.example.EditorBlock.Callout -> {
-                            sb.append("[Callout / Destacado ${b.emoji}]: ${b.content}\n")
-                        }
-                        is com.example.EditorBlock.Code -> {
-                            sb.append("[Bloque de Código (${b.language})]:\n${b.code}\n")
-                        }
-                        is com.example.EditorBlock.Divider -> {
-                            sb.append("[Separador / Línea divisoria]\n")
-                        }
-                        is com.example.EditorBlock.Audio -> {
-                            sb.append("[Audio adjunto: ${b.name}]\n")
-                        }
-                        is com.example.EditorBlock.Video -> {
-                            sb.append("[Video adjunto: ${b.title}]\n")
-                        }
-                        is com.example.EditorBlock.File -> {
-                            sb.append("[Archivo adjunto: ${b.name}]\n")
-                        }
-                    }
-                }
-            } else {
-                sb.append(currentNote.content.ifBlank { "(Nota vacía)" })
-                sb.append("\n")
-            }
-            sb.append("--- FIN DEL CONTENIDO DE LA NOTA ---\n")
-            sb.append("=======================================================\n\n")
-        } else {
-            sb.append("\n")
+            sb.append("\n=== CONTENIDO ÍNTEGRO DE LA NOTA ACTIVA (\"${currentNote.title}\") ===\n")
+            val formatted = formatNoteBlocksForLlm(currentNote.content, maxChars = 3000)
+            sb.append(formatted)
+            sb.append("\n=== FIN DE LA NOTA ACTIVA ===\n\n")
         }
 
-        sb.append("DIRECTRICES DE RESPUESTA:\n")
-        sb.append("1. CONVERSACIÓN GENERAL, PREGUNTAS Y ANÁLISIS DE ARCHIVOS/IMÁGENES/NOTAS:\n")
-        sb.append("   - Tienes ACCESO Y LECTURA TOTAL a la nota del usuario y a todos sus párrafos y elementos textuales. Si el usuario te pregunta sobre qué dice la nota, pide leer o recitar sus párrafos, explicar su contenido textual, extraer fragmentos, o hacer preguntas sobre cualquier sección, responde con total precisión citando o explicando el contenido real de la nota provisto arriba.\n")
-        sb.append("   - Si el usuario te hace una pregunta, consulta tus conocimientos, o te pide analizar un archivo de texto, documento o imagen adjunta, responde de forma directa, inteligente, clara, agradable y bien estructurada en español.\n")
-        sb.append("   - Utiliza formato Markdown enriquecido para estructurar tus respuestas: títulos principales con '# ', subtítulos con '## ' o '### ', negritas con '**palabra clave**', listas con viñetas ('- ' o '• ') y listas ordenadas con '1. ', '2. '.\n")
-        sb.append("   - REGLA FUNDAMENTAL PARA RESÚMENES DE DOCUMENTOS Y PDFs:\n")
-        sb.append("     * Analiza el documento en su TOTALIDAD como una unidad global y coherente.\n")
-        sb.append("     * ESTÁ ESTRICTAMENTE PROHIBIDO desglosar o resumir página por página (ej. 'Página 1: ...', 'Página 2: ...'). Hacerlo satura la memoria y corta la respuesta a la mitad.\n")
-        sb.append("     * Genera un resumen global y unificado que incluya:\n")
-        sb.append("       1. **Tema y Propósito General**: Breve descripción del objetivo central del documento.\n")
-        sb.append("       2. **Resumen Ejecutivo**: 1 o 2 párrafos concisos explicando la idea y narrativa principal.\n")
-        sb.append("       3. **Puntos Clave**: Lista de 4 a 6 viñetas con los datos, hallazgos o conceptos más importantes (usando negritas en los términos clave).\n")
-        sb.append("       4. **Conclusión o Síntesis Final**: Conclusión clara del documento.\n")
-        sb.append("     * Mantén una extensión moderada y completa (entre 250 y 450 palabras) para que el resumen NUNCA se corte a la mitad.\n")
-        sb.append("   - NO agregues bloques de comando [CREATE_NOTE_START], [CREATE_BOOK_START], etc. si el usuario sólo te pide analizar, explicar o conversar.\n\n")
-        sb.append("2. COMANDOS DE ACCIÓN EN EL ESPACIO DE TRABAJO (ÚNICAMENTE si el usuario te pide crear, guardar o modificar notas o libros):\n")
-        sb.append("   - Incluye los siguientes bloques sólo cuando sea requerido gestionar el espacio de trabajo:\n\n")
+        if (isSimpleGreeting) {
+            sb.append("""
+DIRECTRICES DE RESPUESTA ADAPTATIVA (SALUDO O MENSAJE CASUAL):
+1. RESPUESTA CONCISA, NATURAL Y CÁLIDA: El usuario ha saludado o enviado un mensaje breve. Responde de forma cordial, cercana y educada en 1 o 2 oraciones naturales sin generar muros de texto ni repetir el saludo múltiples veces.
+2. DISPONIBILIDAD: Indica brevemente que estás lista para ayudarle a explorar sus notas, organizar ideas o resolver dudas.
+3. Cero comandos a menos que te lo pidan explícitamente.
+            """.trimIndent())
+        } else {
+            sb.append("""
+DIRECTRICES DE RESPUESTA ADAPTATIVA (DESARROLLO COMPLETO Y PROFUNDO):
+1. EXTENSIÓN HASTA 4 VECES MÁS LARGA SI EL TEMA LO REQUIERE: Si la pregunta trata sobre un concepto, análisis de una nota, explicación detallada, plan o proyecto, NO des respuestas cortas. Tienes permiso expreso de extender tu respuesta hasta 4 veces más de lo habitual, desglosando la explicación paso a paso con fundamentación rica, antecedentes, ejemplos prácticos, matices y conclusiones sustanciosas.
+2. ANÁLISIS DE NOTAS Y MILES DE BLOQUES: Analiza todo el contenido de la nota, relacionando párrafos entre sí, sintetizando ideas maestras, señalando matices y respondiendo con rigor y precisión a cada requerimiento del usuario.
+3. FORMATO VISUAL ENRIQUECIDO (MARKDOWN): Organiza tus respuestas con títulos estructurados (#, ##, ###), negritas (**concepto clave**) para enfatizar, listas con viñetas (-) y bloques claros para que la lectura sea amena y clara.
+4. AGILIDAD DE RESPUESTA: Ve directo al desarrollo del tema sin preámbulos vacíos como "Hola, soy Aura y voy a responderte...".
+5. COMANDOS DE ACCIÓN (SÓLO si el usuario pide explícitamente crear, agregar o modificar notas/libros):
+   - Crear nota: [CREATE_NOTE_START]TITLE: Título\nCONTENT_START\nContenido detallado en Markdown\nCONTENT_END[CREATE_NOTE_END]
+   - Añadir contenido: [APPEND_NOTE_START]CONTENT_START\nContenido expandido a añadir\nCONTENT_END[APPEND_NOTE_END]
+   - Modificar nota: [UPDATE_NOTE_START]TITLE: Título\nCONTENT_START\nContenido nuevo completo\nCONTENT_END[UPDATE_NOTE_END]
+   - Crear libro: [CREATE_BOOK_START]TITLE: Título[CREATE_BOOK_END]
+   - Crear página: [CREATE_PAGE_START]TITLE: Título[CREATE_PAGE_END]
+En cualquier otra consulta, análisis, reflexión o conversación, responde en Markdown fluido SIN etiquetas de comando.
+            """.trimIndent())
+        }
 
-        sb.append("1. CREAR LIBRO:\n")
-        sb.append("[CREATE_BOOK_START]\n")
-        sb.append("TITLE: Título del libro\n")
-        sb.append("[CREATE_BOOK_END]\n\n")
-
-        sb.append("2. CREAR PÁGINA (en el libro actual):\n")
-        sb.append("[CREATE_PAGE_START]\n")
-        sb.append("TITLE: Título de la página\n")
-        sb.append("[CREATE_PAGE_END]\n\n")
-
-        sb.append("3. CREAR NOTA:\n")
-        sb.append("[CREATE_NOTE_START]\n")
-        sb.append("TITLE: Título de la nota\n")
-        sb.append("CONTENT_START\n")
-        sb.append("Contenido de la nota con formato enriquecido...\n")
-        sb.append("CONTENT_END\n")
-        sb.append("[CREATE_NOTE_END]\n\n")
-
-        sb.append("4. AÑADIR IDEAS A LA NOTA ACTUAL (sin borrar lo existente):\n")
-        sb.append("[APPEND_NOTE_START]\n")
-        sb.append("CONTENT_START\n")
-        sb.append("Nuevas ideas o fragmentos para agregar...\n")
-        sb.append("CONTENT_END\n")
-        sb.append("[APPEND_NOTE_END]\n\n")
-
-        sb.append("5. MODIFICAR/REESCRIBIR LA NOTA ACTUAL:\n")
-        sb.append("[UPDATE_NOTE_START]\n")
-        sb.append("TITLE: Título de la nota\n")
-        sb.append("CONTENT_START\n")
-        sb.append("Contenido completo modificado...\n")
-        sb.append("CONTENT_END\n")
-        sb.append("[UPDATE_NOTE_END]\n\n")
-
-        sb.append("CAPACIDADES DE FORMATO Y ELEMENTOS GRÁFICOS PARA NOTAS:\n")
-        sb.append("Al redactar contenido entre CONTENT_START y CONTENT_END, debes utilizar variedad de formatos según el contexto para que las notas sean visualmente atractivas, estructuradas y profesionales:\n")
-        sb.append("• TAMAÑOS DE FUENTE Y JERARQUÍA:\n")
-        sb.append("  - '# Título' para Título Principal (tamaño grande 24sp, negrita)\n")
-        sb.append("  - '## Subtítulo' para Subtítulos o secciones principales (tamaño 20sp, negrita)\n")
-        sb.append("  - '### Encabezado' para Encabezados de subsección (tamaño 18sp, negrita)\n")
-        sb.append("  - '#### Sección menor' para divisiones temáticas (tamaño 16sp, negrita)\n")
-        sb.append("  - Párrafos de texto normal (tamaño estándar 15sp)\n")
-        sb.append("• CHECKBOXES / TAREAS INTERACTIVAS:\n")
-        sb.append("  - Usa '- [ ] Descripción de tarea pendiente' para tareas o items por hacer.\n")
-        sb.append("  - Usa '- [x] Descripción de tarea realizada' para tareas ya completadas.\n")
-        sb.append("• CAMBIO DE COLORES EN EL TEXTO:\n")
-        sb.append("  - Aplica colores a frases o párrafos con la sintaxis: [color:Purple]Texto en color púrpura[/color], [color:Blue]Texto azul[/color], [color:Green]Texto verde[/color], [color:Red]Texto rojo[/color], [color:Amber]Texto ámbar[/color], o [color:#HEX]Texto[/color].\n")
-        sb.append("  - O al inicio de una línea: [color:Blue] Párrafo destacado en azul.\n")
-        sb.append("• ELEMENTOS GRÁFICOS Y LLAMATIVOS:\n")
-        sb.append("  - Divisores de sección: usa '---', '--- [dotted]' para línea de puntos, o '--- [dashed]' para línea discontinua.\n")
-        sb.append("  - Cuadros destacados (Callouts) con emojis y colores temáticos:\n")
-        sb.append("    💡 [Purple] Ideas clave, recomendaciones y sugerencias creativas\n")
-        sb.append("    📌 [Blue] Puntos importantes, notas de contexto o recordatorios\n")
-        sb.append("    ⚠️ [Amber] Advertencias, riesgos o precauciones\n")
-        sb.append("    🚀 [Green] Objetivos, planes de acción o metas futuras\n")
-        sb.append("    ⭐ [Red] Conclusiones, hitos o datos esenciales\n")
-        sb.append("  - Bloques de código con resaltado y lenguaje: ```kotlin o ```python o ```sql o ```json seguido de código y cerrado con ```.\n")
-        sb.append("  - Tablas comparativas organizadas con Markdown: | Columna 1 | Columna 2 | con filas y separadores |---|---|\n")
-        sb.append("  - Citas reflexivas o frases destacadas con '> Texto de la cita'.\n")
-        sb.append("• ESPACIADOS Y LEGIBILIDAD:\n")
-        sb.append("  - Inserta líneas en blanco entre secciones y bloques para dar espaciado limpio y agradable a la vista.\n\n")
-
-        sb.append("REGLA: Responde siempre en español con calidez y precisión. Si te pidieron análisis o conversación, explica el tema y responde con claridad; si te pidieron gestionar el espacio de trabajo, usa los comandos.")
         return sb.toString()
     }
 
@@ -1379,7 +1346,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         history: List<Pair<String, String>> = emptyList()
     ): String? {
         val noteId = _selectedNote.value?.id
-        val agentPrompt = buildAgentSystemPrompt()
+        val agentPrompt = buildAgentSystemPrompt(message)
         val memoryContext = if (noteId != null) {
             val bank = memoryVault.getMemoryBank(noteId)
             if (bank.summary.isNotBlank()) "\n\n=== RESUMEN DE LA NOTA ACTUAL ===\n${bank.summary.take(400)}" else ""
@@ -1430,9 +1397,9 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             finalSystemPrompt
         }
 
-        // Safely limit user prompt message length to avoid overflowing context for local model
-        val maxLen = if (isDocumentSummary) 4000 else 9000
-        val safeMessage = if (message.length > maxLen) message.take(maxLen) + "\n...[Contenido recortado para análisis global]" else message
+        // Límite seguro optimizado para velocidad, estabilidad y ventana de contexto ágil
+        val maxLen = if (isDocumentSummary) 4000 else 5000
+        val safeMessage = if (message.length > maxLen) message.take(maxLen) + "\n...[Contenido condensado para análisis global]" else message
 
         val rawResponse = localLlm.generateResponse(
             prompt = safeMessage + imageDisclaimer,

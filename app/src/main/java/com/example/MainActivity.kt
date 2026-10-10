@@ -9214,7 +9214,16 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
     }
     
     flushParagraph()
-    return blocks
+    // Quitar los dos tabuladores iniciales (2 niveles de indentación) en cada párrafo importado
+    // preservando cualquier nivel de sangría posterior (por ejemplo sublistas o sangrías mayores)
+    val normalizedBlocks = blocks.map { b ->
+        if (b is EditorBlock.Text) {
+            b.copy(indentLevel = (b.indentLevel - 2).coerceAtLeast(0))
+        } else {
+            b
+        }
+    }
+    return normalizedBlocks
 }
 
 private fun mergeChunksToLine(chunks: List<ExtractedElement.Text>): ExtractedElement.Text {
