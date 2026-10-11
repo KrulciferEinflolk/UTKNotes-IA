@@ -9159,45 +9159,23 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                     continue
                 }
 
-                // 8. Normal Paragraph Text Accumulation (Unir líneas continuas y sangrías de primera línea)
-                val prevY = lastLineY
-                val deltaY = if (prevY != null) Math.abs(prevY - element.y) else 0f
-                val prevEndsSentence = currentParagraph.isNotEmpty() && (
-                    currentParagraph.endsWith(".") || currentParagraph.endsWith("?") || 
-                    currentParagraph.endsWith("!") || currentParagraph.endsWith(":") ||
-                    currentParagraph.endsWith(".\"") || currentParagraph.endsWith("!\"") ||
-                    currentParagraph.endsWith("?\"") || currentParagraph.endsWith("»") ||
-                    currentParagraph.endsWith(";")
-                )
-
-                // Solo separar si el espacio vertical supera el doble del interlineado (~2.2x font size),
-                // o si inicia un turno de diálogo explícito con guion tras terminar una oración,
-                // o si hay un cambio drástico de tamaño de fuente (> 4.0pt).
-                // No separar por variaciones de sangría entre la primera línea y el cuerpo del párrafo.
-                val isLargeGapBreak = prevY != null && deltaY >= (lastLineFontSize * 2.2f)
-                val isFontSizeChange = currentParagraph.isNotEmpty() && Math.abs(currentParagraphFontSize - fSize) > 4.0f
-                val isDialogueBreak = currentParagraph.isNotEmpty() && prevEndsSentence && (rawText.startsWith("—") || rawText.startsWith("–"))
-
-                if (isLargeGapBreak || isFontSizeChange || isDialogueBreak) {
-                    flushParagraph()
-                }
-
-                if (currentParagraph.isEmpty()) {
-                    currentParagraphIndent = indentLevel
-                    currentParagraphFontSize = fSize
-                    currentParagraphIsBold = bold
+                // 8. Normal Paragraph Text (Cada salto de línea del original se traduce en un párrafo o bloque nuevo)
+                flushParagraph()
+                val toggleParent = if (activeImportToggleId != null && indentLevel > activeImportToggleIndent) {
+                    activeImportToggleId
                 } else {
-                    currentParagraphIndent = minOf(currentParagraphIndent, indentLevel)
+                    activeImportToggleId = null
+                    null
                 }
-
-                if (currentParagraph.isNotEmpty()) {
-                    if (currentParagraph.endsWith("-") && currentParagraph.length >= 2 && currentParagraph[currentParagraph.length - 2].isLetter()) {
-                        currentParagraph.setLength(currentParagraph.length - 1)
-                    } else {
-                        currentParagraph.append(" ")
-                    }
-                }
-                currentParagraph.append(rawText)
+                blocks.add(
+                    EditorBlock.Text(
+                        content = rawText,
+                        fontSize = fSize.toInt().coerceIn(12, 18),
+                        isBold = bold,
+                        indentLevel = indentLevel,
+                        parentToggleId = toggleParent
+                    )
+                )
                 lastLineY = element.y
                 lastLineFontSize = fSize
             }
