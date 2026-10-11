@@ -1,6 +1,6 @@
 {
-  "summary":  "Plan de implementación para traducir cada salto de línea del PDF original directamente como un párrafo o bloque independiente en el editor, eliminando la tolerancia excesiva que creaba bloques gigantes y preservando la estructura fiel al documento original.",
-  "updatedAt":  "2026-10-11T04:59:06.739358235Z",
+  "summary":  "Plan de implementación para agrupar líneas continuas en un solo párrafo estilo Notion, detectando saltos de párrafo reales mediante espacio extra vertical, sangría o elementos estructurales, evitando fragmentar el texto en renglones diminutos.",
+  "updatedAt":  "2026-10-11T16:07:27.611525811Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

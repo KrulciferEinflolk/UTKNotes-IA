@@ -301,7 +301,30 @@ fun AetherAppScreen(
                                 val pageBlocks = processPageElements(extractor.elements, extractor.markers)
                                 if (pageBlocks.isNotEmpty()) {
                                     totalElementsExtracted += extractor.elements.size
-                                    blocks.addAll(pageBlocks)
+                                    val lastBlock = blocks.lastOrNull()
+                                    val firstBlock = pageBlocks.firstOrNull()
+                                    if (lastBlock is EditorBlock.Text && firstBlock is EditorBlock.Text &&
+                                        !lastBlock.isHeader && !firstBlock.isHeader &&
+                                        !lastBlock.isBullet && !firstBlock.isBullet &&
+                                        !lastBlock.isNumbered && !firstBlock.isNumbered &&
+                                        lastBlock.parentToggleId == firstBlock.parentToggleId &&
+                                        !lastBlock.content.trimEnd().endsWith(".") &&
+                                        !lastBlock.content.trimEnd().endsWith("?") &&
+                                        !lastBlock.content.trimEnd().endsWith("!") &&
+                                        !lastBlock.content.trimEnd().endsWith(":") &&
+                                        !lastBlock.content.trimEnd().endsWith("”") &&
+                                        !firstBlock.content.startsWith("—")
+                                    ) {
+                                        val mergedText = if (lastBlock.content.endsWith("-")) {
+                                            lastBlock.content.dropLast(1) + firstBlock.content
+                                        } else {
+                                            lastBlock.content + " " + firstBlock.content
+                                        }
+                                        blocks[blocks.size - 1] = lastBlock.copy(content = mergedText)
+                                        blocks.addAll(pageBlocks.drop(1))
+                                    } else {
+                                        blocks.addAll(pageBlocks)
+                                    }
                                 }
                             }
                             reader.close()
@@ -4225,7 +4248,30 @@ fun NoteEditorWorkspace(
                                 val pageBlocks = processPageElements(extractor.elements, extractor.markers)
                                 if (pageBlocks.isNotEmpty()) {
                                     totalElementsExtracted += extractor.elements.size
-                                    newExtractedBlocks.addAll(pageBlocks)
+                                    val lastBlock = newExtractedBlocks.lastOrNull()
+                                    val firstBlock = pageBlocks.firstOrNull()
+                                    if (lastBlock is EditorBlock.Text && firstBlock is EditorBlock.Text &&
+                                        !lastBlock.isHeader && !firstBlock.isHeader &&
+                                        !lastBlock.isBullet && !firstBlock.isBullet &&
+                                        !lastBlock.isNumbered && !firstBlock.isNumbered &&
+                                        lastBlock.parentToggleId == firstBlock.parentToggleId &&
+                                        !lastBlock.content.trimEnd().endsWith(".") &&
+                                        !lastBlock.content.trimEnd().endsWith("?") &&
+                                        !lastBlock.content.trimEnd().endsWith("!") &&
+                                        !lastBlock.content.trimEnd().endsWith(":") &&
+                                        !lastBlock.content.trimEnd().endsWith("”") &&
+                                        !firstBlock.content.startsWith("—")
+                                    ) {
+                                        val mergedText = if (lastBlock.content.endsWith("-")) {
+                                            lastBlock.content.dropLast(1) + firstBlock.content
+                                        } else {
+                                            lastBlock.content + " " + firstBlock.content
+                                        }
+                                        newExtractedBlocks[newExtractedBlocks.size - 1] = lastBlock.copy(content = mergedText)
+                                        newExtractedBlocks.addAll(pageBlocks.drop(1))
+                                    } else {
+                                        newExtractedBlocks.addAll(pageBlocks)
+                                    }
                                 }
                             }
                             reader.close()
@@ -8908,18 +8954,42 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
     val validTexts = lines.filter { it.text.trim().isNotEmpty() }
     val baseMarginX = validTexts.minOfOrNull { it.x } ?: 50f
     
+    // Compute page typographic metrics
+    val bodyFontSize = if (validTexts.isNotEmpty()) {
+        val sortedSizes = validTexts.map { it.fontSize }.sorted()
+        sortedSizes[sortedSizes.size / 2]
+    } else 14f
+
+    val lineSpacings = mutableListOf<Float>()
+    for (i in 0 until lines.size - 1) {
+        val dy = lines[i].y - lines[i + 1].y
+        if (dy in 6f..45f) {
+            lineSpacings.add(dy)
+        }
+    }
+    val typicalLineSpacing = if (lineSpacings.isNotEmpty()) {
+        val sortedSpacings = lineSpacings.sorted()
+        sortedSpacings[sortedSpacings.size / 2]
+    } else (bodyFontSize * 1.4f).coerceAtLeast(16f)
+
+    val typicalLineLen = if (validTexts.isNotEmpty()) {
+        val sortedLens = validTexts.map { it.text.trim().length }.sorted()
+        sortedLens[sortedLens.size / 2]
+    } else 50
+    
     val currentParagraph = java.lang.StringBuilder()
     var currentParagraphIndent = 0
     var currentParagraphFontSize = 14f
     var currentParagraphIsBold = false
     var lastLineY: Float? = null
     var lastLineFontSize = 12f
+    var prevLastLineLen = 0
 
     fun flushParagraph() {
         if (currentParagraph.isNotEmpty()) {
             val pText = currentParagraph.toString().trim()
             if (pText.isNotEmpty()) {
-                val toggleParent = if (activeImportToggleId != null && currentParagraphIndent > activeImportToggleIndent) {
+                val toggleParent = if (activeImportToggleId != null && currentParagraphIndent >= activeImportToggleIndent) {
                     activeImportToggleId
                 } else {
                     activeImportToggleId = null
@@ -8936,6 +9006,7 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                 )
             }
             currentParagraph.setLength(0)
+            prevLastLineLen = 0
         }
     }
 
@@ -9120,20 +9191,17 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                 }
 
                 // 7. Heading hierarchy detection (preservar títulos, subtítulos, encabezados)
-                val isTitle = fSize >= 19.5f || (bold && fSize >= 18f && rawText.length < 100) ||
-                              rawText.startsWith("# ") || rawText.startsWith("Título:", ignoreCase = true)
-                val isSubtitle = !isTitle && (fSize in 16.5f..19.4f || (bold && fSize in 15.5f..17.9f && rawText.length < 100) ||
-                                 rawText.startsWith("## ") || rawText.startsWith("Subtítulo:", ignoreCase = true) ||
-                                 rawText.endsWith("**") ||
-                                 Regex("^(Capítulo|Capitulo|Chapter)\\s+[\\dA-Za-z]+", RegexOption.IGNORE_CASE).find(rawText) != null)
-                val isHeading = !isTitle && !isSubtitle && (fSize in 14.0f..16.4f ||
-                                (bold && rawText.length < 90 && (Regex("^\\d+(\\.\\d+)*\\s+[A-ZÁÉÍÓÚÑ]").find(rawText) != null || rawText.all { it.isUpperCase() || !it.isLetter() })) ||
-                                rawText.startsWith("### ") ||
-                                listOf("Introducción", "Resumen", "Abstract", "Metodología", "Resultados", "Conclusiones", "Discusión", "Referencias", "Bibliografía", "Objetivos", "Marco Teórico", "Antecedentes", "Requisitos", "Temario", "Índice", "Narrador").any { rawText.equals(it, ignoreCase = true) || rawText.startsWith("$it:", ignoreCase = true) })
+                val isTitle = rawText.startsWith("# ") || rawText.startsWith("Título:", ignoreCase = true) ||
+                              (rawText.length < 100 && (fSize >= maxOf(22f, bodyFontSize + 6f) || (bold && fSize >= maxOf(19f, bodyFontSize + 4.5f))))
+                val isSubtitle = !isTitle && (rawText.startsWith("## ") || rawText.startsWith("Subtítulo:", ignoreCase = true) ||
+                                 Regex("^(Capítulo|Capitulo|Chapter)\\s+[\\dA-Za-z]+", RegexOption.IGNORE_CASE).find(rawText) != null ||
+                                 (bold && rawText.length < 90 && fSize >= maxOf(17f, bodyFontSize + 2.5f)))
+                val isHeading = !isTitle && !isSubtitle && (rawText.startsWith("### ") ||
+                                (listOf("Introducción", "Resumen", "Abstract", "Metodología", "Resultados", "Conclusiones", "Discusión", "Referencias", "Bibliografía", "Objetivos", "Marco Teórico", "Antecedentes", "Requisitos", "Temario", "Índice", "Narrador").any { (rawText.equals(it, ignoreCase = true) || rawText.startsWith("$it:", ignoreCase = true)) && rawText.length < 50 }) ||
+                                (bold && rawText.length < 75 && (fSize >= maxOf(15f, bodyFontSize + 1.5f) || Regex("^\\d+(\\.\\d+)*\\s+[A-ZÁÉÍÓÚÑ]").find(rawText) != null || (rawText.length in 4..60 && rawText.all { it.isUpperCase() || !it.isLetter() }))))
                 val isMinorSection = !isTitle && !isSubtitle && !isHeading && (
-                                     (bold && fSize in 12.5f..13.9f && rawText.length < 80) ||
                                      rawText.startsWith("#### ") ||
-                                     Regex("^\\d+\\.\\d+\\.\\d+\\s+").find(rawText) != null)
+                                     (bold && rawText.length < 60 && Regex("^\\d+\\.\\d+\\.\\d+\\s+").find(rawText) != null))
 
                 if (isTitle || isSubtitle || isHeading || isMinorSection) {
                     activeImportToggleId = null
@@ -9159,25 +9227,48 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                     continue
                 }
 
-                // 8. Normal Paragraph Text (Cada salto de línea del original se traduce en un párrafo o bloque nuevo)
-                flushParagraph()
-                val toggleParent = if (activeImportToggleId != null && indentLevel > activeImportToggleIndent) {
-                    activeImportToggleId
-                } else {
-                    activeImportToggleId = null
-                    null
+                // 8. Normal Paragraph Text (Agrupación continua estilo Notion)
+                val cleanLine = rawText.replace(Regex("\\s+"), " ")
+                val prevY = lastLineY
+                val deltaY = if (prevY != null) Math.abs(prevY - element.y) else 0f
+                
+                // Un nuevo turno de diálogo (—, –, o - seguido de letra) siempre inicia un párrafo nuevo
+                val isNewDialogueTurn = rawText.startsWith("—") || rawText.startsWith("–") ||
+                        (rawText.startsWith("-") && rawText.length > 2 && rawText[1] == ' ' && rawText[2].isLetter())
+                
+                // Espacio vertical extra perceptible entre bloques / párrafos (espacio mayor a 1.65x el interlineado normal)
+                val isExtraVerticalSpace = prevY != null && (deltaY > typicalLineSpacing * 1.65f || deltaY > 30f)
+                
+                // Punto y aparte: el renglón anterior cerró una oración (. ? ! : ”) Y hay una separación visible o fue un renglón corto antes del salto
+                val prevText = currentParagraph.toString().trimEnd()
+                val prevEndsSentence = prevText.endsWith(".") || prevText.endsWith("?") || prevText.endsWith("!") ||
+                        prevText.endsWith(":") || prevText.endsWith(".\"") || prevText.endsWith(".”")
+                val isShortTerminalLine = prevLastLineLen in 1..((typicalLineLen * 0.65f).toInt()) && prevLastLineLen < 45
+                val isPuntoYAparte = prevEndsSentence && prevY != null && (deltaY > typicalLineSpacing * 1.4f || isShortTerminalLine)
+                
+                // Salto brusco de tipografía (ej. notas al pie o cambio radical de tamaño)
+                val isFontSizeJump = currentParagraph.isNotEmpty() && Math.abs(fSize - currentParagraphFontSize) > 3.5f
+
+                if (isNewDialogueTurn || isExtraVerticalSpace || isPuntoYAparte || isFontSizeJump) {
+                    flushParagraph()
                 }
-                blocks.add(
-                    EditorBlock.Text(
-                        content = rawText,
-                        fontSize = fSize.toInt().coerceIn(12, 18),
-                        isBold = bold,
-                        indentLevel = indentLevel,
-                        parentToggleId = toggleParent
-                    )
-                )
+
+                if (currentParagraph.isEmpty()) {
+                    currentParagraph.append(cleanLine)
+                    currentParagraphIndent = indentLevel
+                    currentParagraphFontSize = fSize
+                    currentParagraphIsBold = bold
+                } else {
+                    if (currentParagraph.endsWith("-") && currentParagraph.length >= 2 && currentParagraph[currentParagraph.length - 2].isLetter()) {
+                        currentParagraph.deleteCharAt(currentParagraph.length - 1)
+                        currentParagraph.append(cleanLine)
+                    } else {
+                        currentParagraph.append(" ").append(cleanLine)
+                    }
+                }
                 lastLineY = element.y
                 lastLineFontSize = fSize
+                prevLastLineLen = cleanLine.length
             }
             is ExtractedElement.Image -> {
                 flushParagraph()

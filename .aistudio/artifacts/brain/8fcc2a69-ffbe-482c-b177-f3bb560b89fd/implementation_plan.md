@@ -1,40 +1,36 @@
-# Plan de Implementación: Conversión Directa de Saltos de Línea a Párrafos en PDF
+# Plan de Implementación: Agrupación de Párrafos Estilo Notion en Importación de PDF
 
-El objetivo es ajustar el importador de documentos PDF para que **cada salto de línea del documento original se traduzca directamente en un párrafo o bloque nuevo e independiente** (ya sea una línea corta o larga), evitando la coalescencia excesiva previa que creaba bloques gigantes de texto.
+## Diagnóstico y Contexto
+En la importación de PDF anterior, cada línea física del PDF se convirtió de forma estricta en un bloque independiente de texto (`EditorBlock.Text`). Dado que los documentos PDF representan los párrafos dividiendo el texto en renglones individuales con saltos de línea físicos, esto provocó que los párrafos aparecieran fragmentados en renglones diminutos e inconexos (como se observa en la primera captura). En contraste, Notion (segunda captura) concatena las líneas continuas de un mismo párrafo fluido y únicamente crea un nuevo bloque cuando existe un salto de párrafo real (espacio vertical extra entre párrafos, cambio de sangría o cambio de tipo de bloque).
 
----
+## Cambios Propuestos
 
-## 1. Diagnóstico del Problema Actual
-- En la versión previa, el extractor utilizaba un umbral vertical amplio (`deltaY >= lastLineFontSize * 2.2f`) y un acumulador de texto continuo para evitar que los párrafos se cortaran.
-- Esto provocó el efecto adverso de agrupar líneas consecutivas en párrafos artificialmente gigantescos, ignorando los saltos de línea físicos del documento original.
-- El usuario ha confirmado la preferencia explícita: **cada salto de línea original debe generar su propio bloque de párrafo en el editor**.
+### 1. Acumulación y Unión de Líneas Continuas en `processPageElements`
+- Restaurar y perfeccionar el acumulador `currentParagraph` con `StringBuilder`.
+- Al recibir una línea de texto normal:
+  - Calcular la distancia vertical relativa `deltaY = Math.abs(prevY - element.y)` respecto a la línea anterior.
+  - Comprobar si existe un salto de párrafo genuino:
+    1. **Espacio vertical extra (interlínea mayor / línea en blanco):** Si `deltaY > lastLineFontSize * 1.6f` (o mayor a 22 puntos en escala estándar), se considera un salto de párrafo (`flushParagraph()`).
+    2. **Cambio de sangría (`indentLevel`):** Si la línea entrante tiene diferente nivel de sangría que el párrafo actual, se vacía el párrafo anterior para iniciar uno nuevo con su respectiva sangría.
+    3. **Punto y aparte:** Si la línea anterior termina en puntuación de cierre (`.`, `?`, `!`, `:`) **Y** existe una separación vertical perceptible (`deltaY > lastLineFontSize * 1.35f`), se vacía el párrafo anterior. Si el espaciado vertical es el regular de lectura continua, se unen con un espacio, permitiendo que oraciones como *"mis sospechas iniciales. ¿Son tan inteligentes...?"* fluyan en el mismo bloque tal como se ve en la captura de Notion.
+    4. **Unión de texto:** Si no se cumple ninguna condición de corte de párrafo, concatenar la línea al párrafo actual:
+       - Si la línea anterior termina con guion de corte de palabra (`-`), unir eliminando el guion.
+       - De lo contrario, unir agregando un espacio en blanco entre palabras.
 
----
+### 2. Detección y Respeto de Bloques Especiales
+- Asegurar que los elementos estructurales siempre ejecuten `flushParagraph()` antes de crearse:
+  - Encabezados (H1, H2, H3).
+  - Listas de viñetas (`•`, `-`, `*`).
+  - Listas numeradas (`1.`, `2.`).
+  - Citas / Admonitions (`>`).
+  - Checkboxes (`[ ]`, `[x]`).
+  - Bloques desplegables / Toggles (`▼`, `▶`).
+  - Imágenes.
 
-## 2. Cambios a Implementar
+### 3. Preservación de Formatos e Indentación
+- Mantener la normalización de sangría (`(b.indentLevel - 2).coerceAtLeast(0)`) para eliminar los dos tabuladores iniciales de base y respetar las sangrías personalizadas subsiguientes.
+- Asegurar que `isBold`, `fontSize` y `parentToggleId` se hereden correctamente en los bloques de párrafo unificados.
 
-### A. Segmentación 1:1 por Salto de Línea en `processPageElements` (`MainActivity.kt`)
-- En el paso 8 de `processPageElements` (acumulación de texto normal), eliminar la unión de líneas continuas (`currentParagraph.append(" ").append(rawText)`).
-- Cada línea de texto extraída (`ExtractedElement.Text` resultante de `mergeChunksToLine`) se registrará directamente como su propio bloque `EditorBlock.Text`.
-- Manejar la limpieza de guiones de corte de palabra al final de línea (`-` cuando una palabra se corta al cambiar de renglón si aplica, o mantener el texto original intacto según sea adecuado).
-
-### B. Preservación de Formato y Estructuras Especiales
-- Mantener intactas las detecciones prioritarias previas:
-  - Títulos y encabezados desplegables (`▼`, flechas vectoriales).
-  - Listas de viñetas (bullets circulares, cuadrados y jerárquicos).
-  - Listas numeradas y tareas pendientes (`[ ]`, checkboxes).
-  - Citas destacadas (`|`, barra de cita).
-  - Bloques de código.
-  - Supresión de números de página y encabezados/pies repetitivos.
-- Mantener la normalización de sangría: descuento de los dos niveles de tabulación iniciales (`(indentLevel - 2).coerceAtLeast(0)`) tal como solicitó el usuario en pasos anteriores.
-
----
-
-## 3. Plan de Verificación
-
-### Pruebas de Compilación y Comportamiento
-1. **Verificación de compilación:** Ejecutar `compile_applet` para asegurar cero errores de sintaxis y tipos en `MainActivity.kt`.
-2. **Validación de importación de líneas:** Comprobar que:
-   - Cada renglón de texto extraído se convierte en un bloque independiente.
-   - No se agrupan párrafos en bloques gigantes.
-   - Los elementos con sangría, listas y desplegables conservan sus propiedades.
+## Plan de Verificación
+- Ejecutar `compile_applet` para confirmar que el compilador no encuentre ningún error de sintaxis ni tipos.
+- Comprobar que el flujo de procesamiento de texto no cause bucles ni cortes abruptos de palabras.
