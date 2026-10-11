@@ -1,27 +1,47 @@
-# Plan de Implementación: Respuestas Adaptativas Inteligentes para Aura
+# Plan de Implementación: Unificación de Líneas y Párrafos Continuos en PDF
 
-## Objetivo
-Permitir que Aura adapte la longitud y profundidad de sus respuestas de forma inteligente según la complejidad de la consulta del usuario:
-- Saludos simples ("hola", "¿cómo estás?", etc.): Respuestas breves, cálidas, naturales y sin rodeos innecesarios.
-- Preguntas complejas, análisis de notas, explicaciones conceptuales o solicitudes de desarrollo: Respuestas sustanciosas, enriquecidas y hasta 4 veces más extensas con fundamentación paso a paso, ejemplos y formato Markdown.
+El objetivo es evitar que los párrafos se corten erróneamente en múltiples fragmentos durante la importación de documentos PDF, garantizando que el texto de un mismo párrafo se mantenga continuo sin importar sangrías de primera línea ni variaciones leves de espaciado.
 
 ---
 
-## Cambios Clave
+## 1. Causa Raíz Identificada
 
-### 1. Detección Inteligente de Complejidad de la Consulta (`AetherViewModel.kt`)
-- Analizar el mensaje del usuario antes de ensamblar el prompt:
-  - **Mensajes simples / Saludos**: Identificar saludos breves, despedidas o preguntas de una sola palabra/frase cotidiana.
-  - **Consultas complejas o analíticas**: Identificar preguntas temáticas, solicitudes de análisis, resúmenes, explicaciones, resolución de problemas o notas citadas con múltiples bloques.
-- Inyectar directrices de longitud calibradas de forma contextual en el System Prompt:
-  - Para saludos: *"El usuario ha saludado o hecho una pregunta casual. Responde de forma cordial, cercana y concisa en 1-2 oraciones naturales sin generar muros de texto innecesarios."*
-  - Para temas complejos: *"Esta consulta requiere un desarrollo profundo y exhaustivo. Tienes permiso de extender tu respuesta hasta 4 veces más de lo habitual: divide la explicación con títulos (#, ##, ###), profundiza en cada concepto, proporciona ejemplos prácticos, antecedentes, consideraciones y conclusiones sólidas."*
+1. **Ruptura por sangría de primera línea (*First-line indent*):**
+   - El algoritmo detectaba un cambio de sangría entre la primera línea (que tiene sangría inicial en base a su coordenada X) y las líneas siguientes (que regresan al margen base). Al evaluar `currentParagraphIndent != indentLevel`, ejecutaba un corte automático (`flushParagraph()`).
+2. **Corte por puntuación con interlineado habitual:**
+   - La condición `isSentenceGapBreak` dividía el párrafo si una línea terminaba en punto y la siguiente línea tenía un salto vertical moderado (`deltaY >= 1.85f * fontSize`), cortando oraciones intermedias en textos con interlineado de 1.5x o justificado amplio.
+3. **Variaciones sutiles de tamaño de fuente:**
+   - Variaciones pequeñas de estilo dentro de una misma oración podían provocar cortes inesperados si se superaba el umbral de detección.
 
-### 2. Calibración en `buildAgentSystemPrompt` y Parámetros de Generación
-- Instruir claramente a la arquitectura de Aura sobre la regla de adaptación elástica:
-  - Nunca inflar un saludo simple con texto innecesario.
-  - Desarrollar con amplitud cuando se trate de análisis de temas, proyectos, materias de estudio o notas con múltiples párrafos.
-- Asegurar que el buffer de salida de tokens y límites de generación admitan respuestas largas sin cortes.
+---
 
-### 3. Verificación de Compilación y Estabilidad
-- Validar mediante `compile_applet` que los cambios en Kotlin no generen regresiones en el flujo de chat o en la persistencia local de la sesión.
+## 2. Cambios Propuestos
+
+### Archivo afectado: `app/src/main/java/com/example/MainActivity.kt`
+
+#### A. Adaptación de la regla de sangría para soportar sangría de primera línea
+- No cortar el párrafo si la línea actual es la continuación del mismo bloque y la diferencia de sangría corresponde a una sangría de primera línea (*first-line indent* o indentación de retorno al margen izquierdo).
+- Solo considerar un corte real por sangría si se inicia una nueva estructura explícita (como viñetas, listas numeradas, citas en bloque o encabezados).
+
+#### B. Separación vertical basada exclusivamente en doble interlineado
+- Modificar el criterio de separación entre líneas ordinarias para que **solo se separe el párrafo si el espacio vertical supera el doble del interlineado normal** (`deltaY >= lastLineFontSize * 2.2f` a `2.5f`), sin que un punto seguido intermedio fuerce la ruptura si la distancia vertical es la de una línea normal de texto.
+
+#### C. Preservación del post-procesamiento de tabuladores
+- Mantener la normalización previamente implementada que descuenta los 2 niveles de indentación base agregados por el documento, asegurando una presentación limpia en el editor de notas.
+
+---
+
+## 3. Plan de Verificación
+
+### Pruebas de Compilación y Sintaxis
+- Ejecutar `compile_applet` para garantizar que no existan errores de compilación ni regresiones de tipos.
+
+### Verificación Lógica y de Casos de Uso
+1. **Párrafo con sangría inicial:**
+   - Verificar que una primera línea con sangría de párrafo seguida de líneas alineadas al margen se unan en un único `EditorBlock.Text`.
+2. **Párrafo con punto y seguido:**
+   - Verificar que oraciones que terminan en punto dentro del mismo flujo vertical continuo no se fragmenten en dos bloques.
+3. **Puntos y aparte reales:**
+   - Confirmar que los saltos de párrafo reales (donde el espacio vertical supera holgadamente el interlineado normal) se sigan reconociendo como párrafos separados.
+4. **Encabezados y elementos especiales:**
+   - Confirmar que títulos, viñetas, citas y desplegables mantengan su separación y formato respectivo.

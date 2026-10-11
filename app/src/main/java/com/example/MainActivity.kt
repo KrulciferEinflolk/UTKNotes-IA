@@ -9159,7 +9159,7 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                     continue
                 }
 
-                // 8. Normal Paragraph Text Accumulation (DO NOT split paragraphs into 20 blocks!)
+                // 8. Normal Paragraph Text Accumulation (Unir líneas continuas y sangrías de primera línea)
                 val prevY = lastLineY
                 val deltaY = if (prevY != null) Math.abs(prevY - element.y) else 0f
                 val prevEndsSentence = currentParagraph.isNotEmpty() && (
@@ -9170,14 +9170,15 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                     currentParagraph.endsWith(";")
                 )
 
-                // Only break paragraph if indent changes, or there's a large empty gap, or sentence finished and there's paragraph spacing
-                val isIndentChange = currentParagraph.isNotEmpty() && (currentParagraphIndent != indentLevel)
-                val isLargeGapBreak = prevY != null && deltaY >= (lastLineFontSize * 2.5f)
-                val isSentenceGapBreak = prevY != null && prevEndsSentence && deltaY >= (lastLineFontSize * 1.85f)
-                val isFontSizeChange = currentParagraph.isNotEmpty() && Math.abs(currentParagraphFontSize - fSize) > 2.5f
+                // Solo separar si el espacio vertical supera el doble del interlineado (~2.2x font size),
+                // o si inicia un turno de diálogo explícito con guion tras terminar una oración,
+                // o si hay un cambio drástico de tamaño de fuente (> 4.0pt).
+                // No separar por variaciones de sangría entre la primera línea y el cuerpo del párrafo.
+                val isLargeGapBreak = prevY != null && deltaY >= (lastLineFontSize * 2.2f)
+                val isFontSizeChange = currentParagraph.isNotEmpty() && Math.abs(currentParagraphFontSize - fSize) > 4.0f
                 val isDialogueBreak = currentParagraph.isNotEmpty() && prevEndsSentence && (rawText.startsWith("—") || rawText.startsWith("–"))
 
-                if (isIndentChange || isLargeGapBreak || isSentenceGapBreak || isFontSizeChange || isDialogueBreak) {
+                if (isLargeGapBreak || isFontSizeChange || isDialogueBreak) {
                     flushParagraph()
                 }
 
@@ -9185,6 +9186,8 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                     currentParagraphIndent = indentLevel
                     currentParagraphFontSize = fSize
                     currentParagraphIsBold = bold
+                } else {
+                    currentParagraphIndent = minOf(currentParagraphIndent, indentLevel)
                 }
 
                 if (currentParagraph.isNotEmpty()) {
