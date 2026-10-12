@@ -9170,6 +9170,9 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
     var lastLineY: Float? = null
     var lastLineFontSize = 12f
     var prevLastLineLen = 0
+    var inDigitalBullet = false
+    var inDigitalNumbered = false
+    var digitalListIndent = 0
 
     fun flushParagraph() {
         if (currentParagraph.isNotEmpty()) {
@@ -9310,14 +9313,21 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                         isSubBulletCircle -> maxOf(1, indentLevel)
                         else -> indentLevel
                     }
+                    val toggleParent = if (activeImportToggleId != null && itemIndent >= activeImportToggleIndent) {
+                        activeImportToggleId
+                    } else null
                     blocks.add(
                         EditorBlock.Text(
                             content = cleanBullet,
                             fontSize = 14,
                             isBullet = true,
-                            indentLevel = itemIndent
+                            indentLevel = itemIndent,
+                            parentToggleId = toggleParent
                         )
                     )
+                    inDigitalBullet = true
+                    inDigitalNumbered = false
+                    digitalListIndent = itemIndent
                     lastLineY = element.y
                     lastLineFontSize = fSize
                     continue
@@ -9354,6 +9364,9 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                             parentToggleId = toggleParent
                         )
                     )
+                    inDigitalNumbered = true
+                    inDigitalBullet = false
+                    digitalListIndent = finalIndentLevel
                     lastLineY = element.y
                     lastLineFontSize = fSize
                     continue
@@ -9363,6 +9376,8 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                 val todoMatch = REGEX_TODO.matchEntire(rawText)
                 val isUnicodeCheckbox = rawText.startsWith("☐") || rawText.startsWith("☑")
                 if (todoMatch != null || isUnicodeCheckbox) {
+                    inDigitalBullet = false
+                    inDigitalNumbered = false
                     flushParagraph()
                     val checked = todoMatch?.groupValues?.get(1)?.equals("x", ignoreCase = true) == true || rawText.startsWith("☑")
                     val cleanTodo = if (todoMatch != null) todoMatch.groupValues[2].trim() else rawText.removePrefix("☐").removePrefix("☑").trim()
@@ -9391,6 +9406,8 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                                      (bold && rawText.length < 60 && Regex("^\\d+\\.\\d+\\.\\d+\\s+").find(rawText) != null))
 
                 if (isTitle || isSubtitle || isHeading || isMinorSection) {
+                    inDigitalBullet = false
+                    inDigitalNumbered = false
                     activeImportToggleId = null
                     flushParagraph()
                     val targetSize = when {
@@ -9419,20 +9436,51 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                 val prevY = lastLineY
                 val deltaY = if (prevY != null) Math.abs(prevY - element.y) else 0f
                 
+                // Si venimos de una lista y esta línea continúa o es un elemento de la lista,
+                // convertir cada línea en un ítem de lista independiente para abarcar todo el contenido.
+                if (inDigitalBullet || inDigitalNumbered) {
+                    flushParagraph()
+                    val toggleParent = if (activeImportToggleId != null && digitalListIndent >= activeImportToggleIndent) {
+                        activeImportToggleId
+                    } else null
+                    val isTerminatingListItem = cleanLine.endsWith(".")
+                    blocks.add(
+                        EditorBlock.Text(
+                            content = cleanLine,
+                            fontSize = 14,
+                            isBullet = inDigitalBullet,
+                            isNumbered = inDigitalNumbered,
+                            indentLevel = digitalListIndent,
+                            parentToggleId = toggleParent
+                        )
+                    )
+                    if (isTerminatingListItem) {
+                        inDigitalBullet = false
+                        inDigitalNumbered = false
+                    }
+                    lastLineY = element.y
+                    lastLineFontSize = fSize
+                    prevLastLineLen = cleanLine.length
+                    continue
+                }
+
                 // Un nuevo turno de diálogo (—, –, o guion seguido de letra) siempre inicia un párrafo nuevo
                 val isNewDialogueTurn = rawText.startsWith("—") || rawText.startsWith("–") ||
                         (rawText.startsWith("-") && rawText.length > 2 && rawText[1] == ' ' && rawText[2].isLetter())
                 
                 // Punto y aparte real: el renglón anterior terminó con signo de puntuación de cierre
+                // (punto, puntos suspensivos, punto y coma, dos puntos, signos de interrogación/exclamación)
                 val prevText = currentParagraph.toString().trimEnd()
-                val prevEndsSentence = prevText.endsWith(".") || prevText.endsWith(".\"") || prevText.endsWith(".”") ||
-                        prevText.endsWith("!") || prevText.endsWith("?") || prevText.endsWith(":") ||
+                val prevEndsSentence = prevText.endsWith(".") || prevText.endsWith("...") || prevText.endsWith("…") ||
+                        prevText.endsWith(";") || prevText.endsWith(":") ||
+                        prevText.endsWith(".\"") || prevText.endsWith(".”") ||
+                        prevText.endsWith("!") || prevText.endsWith("?") ||
                         prevText.endsWith("»") || prevText.endsWith(")")
                 
-                // Separación vertical entre párrafos: requiere cierre de oración previo o sangría distinta
-                val isPuntoYAparte = prevEndsSentence && prevY != null && (deltaY > (typicalLineSpacing * 1.4f).coerceAtLeast(18f) || indentLevel != currentParagraphIndent)
+                // Separación vertical entre párrafos: requiere cierre de oración previo con salto de línea o sangría distinta
+                val isPuntoYAparte = prevEndsSentence && prevY != null && (deltaY > 6f || indentLevel != currentParagraphIndent)
                 // Salto enorme de sección independiente de puntuación
-                val isMassiveSectionJump = prevY != null && deltaY > (typicalLineSpacing * 2.8f).coerceAtLeast(42f)
+                val isMassiveSectionJump = prevY != null && deltaY > (typicalLineSpacing * 2.5f).coerceAtLeast(36f)
                 
                 // Salto brusco de tipografía (ej. notas o encabezados)
                 val isFontSizeJump = currentParagraph.isNotEmpty() && Math.abs(fSize - currentParagraphFontSize) > 4f

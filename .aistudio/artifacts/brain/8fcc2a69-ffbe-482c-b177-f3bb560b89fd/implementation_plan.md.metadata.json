@@ -1,6 +1,6 @@
 {
-  "summary":  "Plan de implementación para la integración optimizada de Google ML Kit: procesamiento de documentos extensos de cualquier número de páginas en segundo plano con barra de progreso, y reconstrucción precisa de cada párrafo real del original en un bloque de UTK Notes sin cortes de línea indebidos.",
-  "updatedAt":  "2026-10-12T05:07:51.930821036Z",
-  "requestFeedback":  true,
-  "userFacing":  true
+  "summary": "Plan de optimización para la importación y segmentación de documentos en UTK Notes con Google ML Kit e iText: división fiel de párrafos en signos de puntuación (puntos, puntos suspensivos, punto y coma) y preservación completa de cada línea de listas como ítems independientes.",
+  "updatedAt": "2026-10-12T15:24:32.812657719Z",
+  "requestFeedback": true,
+  "userFacing": true
 }

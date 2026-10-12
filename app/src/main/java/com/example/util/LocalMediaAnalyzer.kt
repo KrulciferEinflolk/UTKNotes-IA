@@ -81,11 +81,32 @@ object LocalMediaAnalyzer {
                 continue
             }
 
-            // 2. Procesamiento de líneas unificando párrafos reales
+            // 2. Procesamiento de líneas respetando signos de puntuación e ítems de listas independientes
             val currentParagraph = StringBuilder()
-            var currentIsBullet = false
-            var currentIsNumbered = false
+            var inBulletList = false
+            var inNumberedList = false
             var currentIndentLevel = 0
+
+            fun endsWithTerminalOrBreakPunctuation(text: String): Boolean {
+                val t = text.trimEnd()
+                if (t.isEmpty()) return false
+                val lower = t.lowercase()
+                val abbrevs = listOf("sr.", "sra.", "dr.", "dra.", "prof.", "ej.", "pág.", "pag.", "art.")
+                if (abbrevs.any { lower.endsWith(it) }) return false
+                return t.endsWith(".") ||
+                       t.endsWith("...") ||
+                       t.endsWith("…") ||
+                       t.endsWith(";") ||
+                       t.endsWith(":") ||
+                       t.endsWith("!") ||
+                       t.endsWith("?") ||
+                       t.endsWith(".\"") ||
+                       t.endsWith(".”") ||
+                       t.endsWith("!\"") ||
+                       t.endsWith("?”") ||
+                       t.endsWith(")") ||
+                       t.endsWith("»")
+            }
 
             fun flushCurrentParagraph() {
                 val pText = currentParagraph.toString().trim()
@@ -94,14 +115,14 @@ object LocalMediaAnalyzer {
                         EditorBlock.Text(
                             content = pText,
                             fontSize = 15,
-                            isBullet = currentIsBullet,
-                            isNumbered = currentIsNumbered,
+                            isBullet = inBulletList,
+                            isNumbered = inNumberedList,
                             indentLevel = currentIndentLevel
                         )
                     )
                     currentParagraph.setLength(0)
-                    currentIsBullet = false
-                    currentIsNumbered = false
+                    inBulletList = false
+                    inNumberedList = false
                     currentIndentLevel = 0
                 }
             }
@@ -119,29 +140,49 @@ object LocalMediaAnalyzer {
                     val checked = todoMatch?.groupValues?.get(1)?.equals("x", ignoreCase = true) == true || rawLine.startsWith("☑")
                     val cleanTodo = if (todoMatch != null) todoMatch.groupValues[2].trim() else rawLine.removePrefix("☐").removePrefix("☑").trim()
                     blocks.add(EditorBlock.Todo(content = cleanTodo, isChecked = checked))
+                    inBulletList = false
+                    inNumberedList = false
                     continue
                 }
 
-                // Viñetas
+                // Viñetas explícitas
                 val isBullet = rawLine.startsWith("•") || rawLine.startsWith("– ") || rawLine.startsWith("- ") ||
-                               rawLine.startsWith("* ") || rawLine.startsWith("◦") || rawLine.startsWith("▪")
+                               rawLine.startsWith("* ") || rawLine.startsWith("◦") || rawLine.startsWith("▪") ||
+                               rawLine.startsWith("✓ ") || rawLine.startsWith("✔ ")
                 if (isBullet) {
                     flushCurrentParagraph()
                     val cleanBullet = rawLine
                         .removePrefix("•").removePrefix("– ").removePrefix("- ").removePrefix("* ")
-                        .removePrefix("◦").removePrefix("▪").trim()
-                    currentIsBullet = true
-                    currentParagraph.append(cleanBullet)
+                        .removePrefix("◦").removePrefix("▪").removePrefix("✓ ").removePrefix("✔ ").trim()
+                    // Convertir cada línea en un ítem de lista independiente
+                    blocks.add(
+                        EditorBlock.Text(
+                            content = cleanBullet,
+                            fontSize = 15,
+                            isBullet = true,
+                            indentLevel = currentIndentLevel
+                        )
+                    )
+                    inBulletList = true
+                    inNumberedList = false
                     continue
                 }
 
-                // Listas numeradas
+                // Listas numeradas explícitas
                 val isNumbered = Regex("^(?:\\d+[\\.\\)]|\\(\\d+\\))\\s+(.*)").matchEntire(rawLine)
                 if (isNumbered != null) {
                     flushCurrentParagraph()
                     val cleanNumbered = isNumbered.groupValues[1].trim()
-                    currentIsNumbered = true
-                    currentParagraph.append(cleanNumbered)
+                    blocks.add(
+                        EditorBlock.Text(
+                            content = cleanNumbered,
+                            fontSize = 15,
+                            isNumbered = true,
+                            indentLevel = currentIndentLevel
+                        )
+                    )
+                    inNumberedList = true
+                    inBulletList = false
                     continue
                 }
 
@@ -149,11 +190,47 @@ object LocalMediaAnalyzer {
                 val isDialogue = rawLine.startsWith("—") || rawLine.startsWith("–")
                 if (isDialogue) {
                     flushCurrentParagraph()
-                    currentParagraph.append(rawLine)
+                    blocks.add(
+                        EditorBlock.Text(
+                            content = rawLine,
+                            fontSize = 15
+                        )
+                    )
+                    inBulletList = false
+                    inNumberedList = false
+                    continue
+                }
+
+                // Si estamos dentro del contexto de una lista y la línea forma parte de la lista,
+                // convertir cada línea en un ítem de lista independiente para abarcar todo el contenido.
+                if (inBulletList || inNumberedList) {
+                    flushCurrentParagraph()
+                    val isTerminatingItem = rawLine.endsWith(".")
+                    blocks.add(
+                        EditorBlock.Text(
+                            content = rawLine,
+                            fontSize = 15,
+                            isBullet = inBulletList,
+                            isNumbered = inNumberedList,
+                            indentLevel = currentIndentLevel
+                        )
+                    )
+                    if (isTerminatingItem) {
+                        inBulletList = false
+                        inNumberedList = false
+                    }
                     continue
                 }
 
                 // Línea normal de texto de párrafo
+                if (currentParagraph.isNotEmpty()) {
+                    // Si el párrafo anterior terminó con signos de puntuación (puntos, comas, tres puntos, punto y coma, etc.)
+                    // separar en un nuevo bloque de párrafo independiente
+                    if (endsWithTerminalOrBreakPunctuation(currentParagraph.toString())) {
+                        flushCurrentParagraph()
+                    }
+                }
+
                 if (currentParagraph.isEmpty()) {
                     currentParagraph.append(rawLine)
                 } else {
