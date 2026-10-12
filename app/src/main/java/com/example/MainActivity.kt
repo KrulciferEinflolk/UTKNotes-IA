@@ -296,6 +296,7 @@ fun AetherAppScreen(
                             val numPages = reader.numberOfPages
                             val parser = com.itextpdf.text.pdf.parser.PdfReaderContentParser(reader)
                             for (page in 1..numPages) {
+                                viewModel.setImportProgress(page, numPages, "Leyendo página $page de $numPages...")
                                 val extractor = PageElementExtractor(context, imageDir, totalElementsExtracted)
                                 parser.processContent(page, extractor)
                                 val pageBlocks = processPageElements(extractor.elements, extractor.markers)
@@ -328,15 +329,26 @@ fun AetherAppScreen(
                         } catch (e: Exception) {
                             android.util.Log.e("PDFImport", "Error extracting PDF", e)
                         }
-                        if (totalElementsExtracted == 0) {
-                            blocks.add(
-                                EditorBlock.Text(
-                                    content = "No se pudo extraer texto legible ni imágenes de las páginas de este PDF.",
-                                    isItalic = true,
-                                    fontSize = 13,
-                                    fontColor = "Red"
+
+                        // Si el PDF es escaneado (sin texto digital), ejecutar Google ML Kit OCR página por página sin límite
+                        val textBlocksCount = blocks.count { it is EditorBlock.Text && it.content.trim().isNotEmpty() }
+                        if (textBlocksCount == 0 || totalElementsExtracted == 0) {
+                            blocks.clear()
+                            val mlKitBlocks = com.example.util.LocalMediaAnalyzer.extractPdfWithMlKit(context, destFile) { cur, tot ->
+                                viewModel.setImportProgress(cur, tot, "Escaneando con Google ML Kit: Página $cur de $tot...")
+                            }
+                            if (mlKitBlocks.isNotEmpty()) {
+                                blocks.addAll(mlKitBlocks)
+                            } else {
+                                blocks.add(
+                                    EditorBlock.Text(
+                                        content = "No se pudo extraer texto legible mediante escaneo óptico ni digital.",
+                                        isItalic = true,
+                                        fontSize = 13,
+                                        fontColor = "Red"
+                                    )
                                 )
-                            )
+                            }
                         }
                     } else if (isTextFile) {
                         val textContent = try {
@@ -399,6 +411,21 @@ fun AetherAppScreen(
                                 size = sizeString
                             )
                         )
+                        // Extraer texto con Google ML Kit si la imagen contiene apuntes/texto
+                        viewModel.setImportProgress(1, 1, "Extrayendo texto con Google ML Kit...")
+                        val ocrImageBlocks = com.example.util.LocalMediaAnalyzer.analyzeImageToBlocks(context, uri)
+                        if (ocrImageBlocks.isNotEmpty()) {
+                            blocks.add(EditorBlock.Divider(style = "Solid", colorHex = "#D0BCFF"))
+                            blocks.add(
+                                EditorBlock.Text(
+                                    content = "Texto extraído de la imagen (Google ML Kit):",
+                                    fontSize = 14,
+                                    isBold = true,
+                                    fontColor = "Purple"
+                                )
+                            )
+                            blocks.addAll(ocrImageBlocks)
+                        }
                     } else {
                         // General file
                         blocks.add(
@@ -446,25 +473,92 @@ fun AetherAppScreen(
                     Toast.makeText(context, "Error al importar archivo: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                 } finally {
                     isImportingPdf = false
+                    viewModel.clearImportProgress()
                 }
             }
         }
     }
 
+    val importProgress by viewModel.importProgress.collectAsState()
+    val importStatusMessage by viewModel.importStatusMessage.collectAsState()
+
     if (isImportingPdf) {
         Dialog(onDismissRequest = {}) {
             Surface(
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(20.dp),
                 color = CosmicSurface,
                 border = BorderStroke(1.dp, CosmicBorder)
             ) {
-                Row(
-                    modifier = Modifier.padding(24.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                Column(
+                    modifier = Modifier.padding(24.dp).widthIn(min = 280.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    CircularProgressIndicator(color = GeminiBlue)
-                    Text("Importando archivo...", color = TextPrimary, fontSize = 16.sp)
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(GeminiBlue.copy(alpha = 0.15f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoStories,
+                            contentDescription = "Escáner ML Kit",
+                            tint = GeminiCyanAccent,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "Importando con Google ML Kit",
+                            color = TextPrimary,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = importStatusMessage ?: "Procesando documento...",
+                            color = TextSecondary,
+                            fontSize = 13.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+
+                    val progressRatio = if (importProgress != null && importProgress!!.second > 0) {
+                        importProgress!!.first.toFloat() / importProgress!!.second.toFloat()
+                    } else null
+
+                    if (progressRatio != null) {
+                        Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                            LinearProgressIndicator(
+                                progress = { progressRatio },
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                color = GeminiCyanAccent,
+                                trackColor = CosmicBackground
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Página ${importProgress!!.first} de ${importProgress!!.second} (${(progressRatio * 100).toInt()}%)",
+                                color = GeminiCyanAccent,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.align(Alignment.End)
+                            )
+                        }
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                            color = GeminiCyanAccent,
+                            trackColor = CosmicBackground
+                        )
+                    }
+
+                    Text(
+                        text = "Convirtiendo párrafos y respetando maquetación",
+                        color = TextTertiary,
+                        fontSize = 11.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
                 }
             }
         }
@@ -4194,6 +4288,9 @@ fun NoteEditorWorkspace(
     var showTextColorPicker by remember { mutableStateOf(false) }
 
     var isImportingPdfInNote by remember { mutableStateOf(false) }
+    var inNoteImportProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    var inNoteImportStatusMessage by remember { mutableStateOf<String?>("Procesando documento...") }
+
     val pdfPickerLauncherInNote = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri: android.net.Uri? ->
@@ -4239,6 +4336,8 @@ fun NoteEditorWorkspace(
                             val parser = com.itextpdf.text.pdf.parser.PdfReaderContentParser(reader)
                             
                             for (page in 1..numPages) {
+                                inNoteImportProgress = Pair(page, numPages)
+                                inNoteImportStatusMessage = "Leyendo página $page de $numPages..."
                                 val extractor = PageElementExtractor(context, imageDir, totalElementsExtracted)
                                 parser.processContent(page, extractor)
                                 
@@ -4273,15 +4372,26 @@ fun NoteEditorWorkspace(
                             android.util.Log.e("PDFImport", "Error extracting content with iTextG in-note flow", e)
                         }
 
-                        if (totalElementsExtracted == 0) {
-                            newExtractedBlocks.add(
-                                EditorBlock.Text(
-                                    content = "No se pudo extraer texto legible ni imágenes de las páginas de este PDF.",
-                                    isItalic = true,
-                                    fontSize = 13,
-                                    fontColor = "Red"
+                        // Si el PDF es escaneado (sin texto digital), ejecutar Google ML Kit OCR página por página sin límite
+                        val textBlocksCount = newExtractedBlocks.count { it is EditorBlock.Text && it.content.trim().isNotEmpty() }
+                        if (textBlocksCount == 0 || totalElementsExtracted == 0) {
+                            newExtractedBlocks.clear()
+                            val mlKitBlocks = com.example.util.LocalMediaAnalyzer.extractPdfWithMlKit(context, destFile) { cur, tot ->
+                                inNoteImportProgress = Pair(cur, tot)
+                                inNoteImportStatusMessage = "Escaneando con Google ML Kit: Página $cur de $tot..."
+                            }
+                            if (mlKitBlocks.isNotEmpty()) {
+                                newExtractedBlocks.addAll(mlKitBlocks)
+                            } else {
+                                newExtractedBlocks.add(
+                                    EditorBlock.Text(
+                                        content = "No se pudo extraer texto legible mediante escaneo óptico ni digital.",
+                                        isItalic = true,
+                                        fontSize = 13,
+                                        fontColor = "Red"
+                                    )
                                 )
-                            )
+                            }
                         }
                     } else if (isTextFile) {
                         val textContent = try {
@@ -4344,6 +4454,22 @@ fun NoteEditorWorkspace(
                                 size = sizeString
                             )
                         )
+                        // Extraer texto con Google ML Kit si la imagen contiene apuntes/texto
+                        inNoteImportProgress = Pair(1, 1)
+                        inNoteImportStatusMessage = "Extrayendo texto con Google ML Kit..."
+                        val ocrImageBlocks = com.example.util.LocalMediaAnalyzer.analyzeImageToBlocks(context, uri)
+                        if (ocrImageBlocks.isNotEmpty()) {
+                            newExtractedBlocks.add(EditorBlock.Divider(style = "Solid", colorHex = "#D0BCFF"))
+                            newExtractedBlocks.add(
+                                EditorBlock.Text(
+                                    content = "Texto extraído de la imagen (Google ML Kit):",
+                                    fontSize = 14,
+                                    isBold = true,
+                                    fontColor = "Purple"
+                                )
+                            )
+                            newExtractedBlocks.addAll(ocrImageBlocks)
+                        }
                     } else {
                         // General file
                         newExtractedBlocks.add(
@@ -4382,6 +4508,8 @@ fun NoteEditorWorkspace(
                     Toast.makeText(context, "Error al importar archivo: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                 } finally {
                     isImportingPdfInNote = false
+                    inNoteImportProgress = null
+                    inNoteImportStatusMessage = null
                 }
             }
         }
@@ -4390,17 +4518,80 @@ fun NoteEditorWorkspace(
     if (isImportingPdfInNote) {
         androidx.compose.ui.window.Dialog(onDismissRequest = {}) {
             Surface(
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(20.dp),
                 color = CosmicSurface,
                 border = BorderStroke(1.dp, CosmicBorder)
             ) {
-                Row(
-                    modifier = Modifier.padding(24.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                Column(
+                    modifier = Modifier.padding(24.dp).widthIn(min = 280.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    CircularProgressIndicator(color = GeminiBlue)
-                    Text("Importando archivo...", color = TextPrimary, fontSize = 16.sp)
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(GeminiBlue.copy(alpha = 0.15f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AutoStories,
+                            contentDescription = "Escáner ML Kit",
+                            tint = GeminiCyanAccent,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "Importando con Google ML Kit",
+                            color = TextPrimary,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = inNoteImportStatusMessage ?: "Procesando documento...",
+                            color = TextSecondary,
+                            fontSize = 13.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+
+                    val progressRatio = if (inNoteImportProgress != null && inNoteImportProgress!!.second > 0) {
+                        inNoteImportProgress!!.first.toFloat() / inNoteImportProgress!!.second.toFloat()
+                    } else null
+
+                    if (progressRatio != null) {
+                        Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                            LinearProgressIndicator(
+                                progress = { progressRatio },
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                color = GeminiCyanAccent,
+                                trackColor = CosmicBackground
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Página ${inNoteImportProgress!!.first} de ${inNoteImportProgress!!.second} (${(progressRatio * 100).toInt()}%)",
+                                color = GeminiCyanAccent,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.align(Alignment.End)
+                            )
+                        }
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                            color = GeminiCyanAccent,
+                            trackColor = CosmicBackground
+                        )
+                    }
+
+                    Text(
+                        text = "Convirtiendo párrafos y respetando maquetación",
+                        color = TextTertiary,
+                        fontSize = 11.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
                 }
             }
         }
@@ -9232,18 +9423,21 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                 val isNewDialogueTurn = rawText.startsWith("—") || rawText.startsWith("–") ||
                         (rawText.startsWith("-") && rawText.length > 2 && rawText[1] == ' ' && rawText[2].isLetter())
                 
-                // Espacio vertical extra perceptible entre bloques / párrafos en Notion (típicamente > 1.8x el interlineado normal)
-                val isExtraVerticalSpace = prevY != null && deltaY > (typicalLineSpacing * 1.8f).coerceAtLeast(24f)
-                
-                // Punto y aparte real: el renglón anterior terminó con punto y el salto de línea presenta separación adicional
+                // Punto y aparte real: el renglón anterior terminó con signo de puntuación de cierre
                 val prevText = currentParagraph.toString().trimEnd()
-                val prevEndsSentence = prevText.endsWith(".") || prevText.endsWith(".\"") || prevText.endsWith(".”")
-                val isPuntoYAparte = prevEndsSentence && prevY != null && deltaY > (typicalLineSpacing * 1.6f).coerceAtLeast(21f)
+                val prevEndsSentence = prevText.endsWith(".") || prevText.endsWith(".\"") || prevText.endsWith(".”") ||
+                        prevText.endsWith("!") || prevText.endsWith("?") || prevText.endsWith(":") ||
+                        prevText.endsWith("»") || prevText.endsWith(")")
+                
+                // Separación vertical entre párrafos: requiere cierre de oración previo o sangría distinta
+                val isPuntoYAparte = prevEndsSentence && prevY != null && (deltaY > (typicalLineSpacing * 1.4f).coerceAtLeast(18f) || indentLevel != currentParagraphIndent)
+                // Salto enorme de sección independiente de puntuación
+                val isMassiveSectionJump = prevY != null && deltaY > (typicalLineSpacing * 2.8f).coerceAtLeast(42f)
                 
                 // Salto brusco de tipografía (ej. notas o encabezados)
                 val isFontSizeJump = currentParagraph.isNotEmpty() && Math.abs(fSize - currentParagraphFontSize) > 4f
 
-                if (isNewDialogueTurn || isExtraVerticalSpace || isPuntoYAparte || isFontSizeJump) {
+                if (isNewDialogueTurn || isPuntoYAparte || isMassiveSectionJump || isFontSizeJump) {
                     flushParagraph()
                 }
 

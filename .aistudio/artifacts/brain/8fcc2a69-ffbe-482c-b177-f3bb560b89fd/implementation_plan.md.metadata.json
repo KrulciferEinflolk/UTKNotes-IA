@@ -1,6 +1,6 @@
 {
-  "summary":  "Plan de implementación para agrupar líneas continuas en un solo párrafo estilo Notion, detectando saltos de párrafo reales mediante espacio extra vertical, sangría o elementos estructurales, evitando fragmentar el texto en renglones diminutos.",
-  "updatedAt":  "2026-10-11T16:07:27.611525811Z",
+  "summary":  "Plan de implementación para la integración optimizada de Google ML Kit: procesamiento de documentos extensos de cualquier número de páginas en segundo plano con barra de progreso, y reconstrucción precisa de cada párrafo real del original en un bloque de UTK Notes sin cortes de línea indebidos.",
+  "updatedAt":  "2026-10-12T05:07:51.930821036Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

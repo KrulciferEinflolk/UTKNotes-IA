@@ -9,7 +9,9 @@ import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import com.example.EditorBlock
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.itextpdf.text.pdf.PdfReader
@@ -24,6 +26,7 @@ import kotlin.coroutines.resumeWithException
 
 object LocalMediaAnalyzer {
     private const val TAG = "LocalMediaAnalyzer"
+    private val REGEX_TODO = Regex("""^[-*+]?\s*\[([ xX])\]\s*(.*)""")
 
     private suspend fun <T> com.google.android.gms.tasks.Task<T>.awaitTask(): T {
         return suspendCancellableCoroutine { cont ->
@@ -37,6 +40,236 @@ object LocalMediaAnalyzer {
                 if (cont.isActive) cont.cancel()
             }
         }
+    }
+
+    /**
+     * Convierte el resultado óptico de Google ML Kit en bloques de editor (EditorBlock),
+     * garantizando que cada párrafo real del original se consolide en un solo bloque,
+     * uniendo renglones cortados por márgenes y resolviendo cortes con guion.
+     */
+    fun processMlKitVisionTextToBlocks(visionText: Text): List<EditorBlock> {
+        val blocks = mutableListOf<EditorBlock>()
+        val textBlocks = visionText.textBlocks
+
+        for (block in textBlocks) {
+            val lines = block.lines
+            if (lines.isEmpty()) continue
+
+            val rawBlockText = block.text.trim()
+            if (rawBlockText.isEmpty()) continue
+
+            // 1. Detección de Encabezado / Título de Sección
+            val isHeadingCandidate = (lines.size <= 2 && rawBlockText.length in 3..90) && (
+                rawBlockText.startsWith("#") ||
+                Regex("^(Capítulo|Capitulo|Chapter|Sección|Seccion|Tema|Módulo|Modulo)\\s+[\\dA-Za-z]+", RegexOption.IGNORE_CASE).find(rawBlockText) != null ||
+                listOf("Introducción", "Resumen", "Abstract", "Metodología", "Resultados", "Conclusiones", "Bibliografía", "Referencias", "Índice", "Temario", "Prólogo", "Epílogo").any {
+                    rawBlockText.equals(it, ignoreCase = true) || rawBlockText.startsWith("$it:", ignoreCase = true)
+                } ||
+                (rawBlockText.length in 4..60 && rawBlockText.all { it.isUpperCase() || !it.isLetter() })
+            )
+
+            if (isHeadingCandidate) {
+                val cleanHeader = rawBlockText.removePrefix("#").removePrefix("#").removePrefix("#").trim()
+                blocks.add(
+                    EditorBlock.Text(
+                        content = cleanHeader,
+                        fontSize = 20,
+                        isBold = true,
+                        isHeader = true
+                    )
+                )
+                continue
+            }
+
+            // 2. Procesamiento de líneas unificando párrafos reales
+            val currentParagraph = StringBuilder()
+            var currentIsBullet = false
+            var currentIsNumbered = false
+            var currentIndentLevel = 0
+
+            fun flushCurrentParagraph() {
+                val pText = currentParagraph.toString().trim()
+                if (pText.isNotEmpty()) {
+                    blocks.add(
+                        EditorBlock.Text(
+                            content = pText,
+                            fontSize = 15,
+                            isBullet = currentIsBullet,
+                            isNumbered = currentIsNumbered,
+                            indentLevel = currentIndentLevel
+                        )
+                    )
+                    currentParagraph.setLength(0)
+                    currentIsBullet = false
+                    currentIsNumbered = false
+                    currentIndentLevel = 0
+                }
+            }
+
+            for (i in lines.indices) {
+                val line = lines[i]
+                val rawLine = line.text.trim()
+                if (rawLine.isEmpty()) continue
+
+                // Checkbox / Tareas
+                val todoMatch = REGEX_TODO.matchEntire(rawLine)
+                val isUnicodeCheckbox = rawLine.startsWith("☐") || rawLine.startsWith("☑")
+                if (todoMatch != null || isUnicodeCheckbox) {
+                    flushCurrentParagraph()
+                    val checked = todoMatch?.groupValues?.get(1)?.equals("x", ignoreCase = true) == true || rawLine.startsWith("☑")
+                    val cleanTodo = if (todoMatch != null) todoMatch.groupValues[2].trim() else rawLine.removePrefix("☐").removePrefix("☑").trim()
+                    blocks.add(EditorBlock.Todo(content = cleanTodo, isChecked = checked))
+                    continue
+                }
+
+                // Viñetas
+                val isBullet = rawLine.startsWith("•") || rawLine.startsWith("– ") || rawLine.startsWith("- ") ||
+                               rawLine.startsWith("* ") || rawLine.startsWith("◦") || rawLine.startsWith("▪")
+                if (isBullet) {
+                    flushCurrentParagraph()
+                    val cleanBullet = rawLine
+                        .removePrefix("•").removePrefix("– ").removePrefix("- ").removePrefix("* ")
+                        .removePrefix("◦").removePrefix("▪").trim()
+                    currentIsBullet = true
+                    currentParagraph.append(cleanBullet)
+                    continue
+                }
+
+                // Listas numeradas
+                val isNumbered = Regex("^(?:\\d+[\\.\\)]|\\(\\d+\\))\\s+(.*)").matchEntire(rawLine)
+                if (isNumbered != null) {
+                    flushCurrentParagraph()
+                    val cleanNumbered = isNumbered.groupValues[1].trim()
+                    currentIsNumbered = true
+                    currentParagraph.append(cleanNumbered)
+                    continue
+                }
+
+                // Diálogos con guion largo (— o –)
+                val isDialogue = rawLine.startsWith("—") || rawLine.startsWith("–")
+                if (isDialogue) {
+                    flushCurrentParagraph()
+                    currentParagraph.append(rawLine)
+                    continue
+                }
+
+                // Línea normal de texto de párrafo
+                if (currentParagraph.isEmpty()) {
+                    currentParagraph.append(rawLine)
+                } else {
+                    // Si el renglón previo terminó en guion de corte de palabra (ej. "interopera-"), unir sin espacio
+                    if (currentParagraph.endsWith("-") && currentParagraph.length >= 2 && currentParagraph[currentParagraph.length - 2].isLetter()) {
+                        currentParagraph.deleteCharAt(currentParagraph.length - 1)
+                        currentParagraph.append(rawLine)
+                    } else {
+                        // Unir con espacio normal para mantener la continuidad natural del párrafo
+                        currentParagraph.append(" ").append(rawLine)
+                    }
+                }
+            }
+            flushCurrentParagraph()
+        }
+
+        return blocks
+    }
+
+    /**
+     * Escanea un PDF completo página por página mediante Google ML Kit OCR local,
+     * sin límite de páginas, con reporte de progreso en tiempo real y reciclaje
+     * estricto de memoria para prevenir caídas de memoria (OOM).
+     */
+    suspend fun extractPdfWithMlKit(
+        context: Context,
+        pdfFile: File,
+        onProgress: ((current: Int, total: Int) -> Unit)? = null
+    ): List<EditorBlock> = withContext(Dispatchers.IO) {
+        val blocks = mutableListOf<EditorBlock>()
+        var pfd: ParcelFileDescriptor? = null
+        var renderer: PdfRenderer? = null
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+
+        try {
+            pfd = ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY)
+            renderer = PdfRenderer(pfd)
+            val totalPages = renderer.pageCount
+
+            for (pageIndex in 0 until totalPages) {
+                // Notificar página actual al observador de UI
+                onProgress?.invoke(pageIndex + 1, totalPages)
+
+                val page = renderer.openPage(pageIndex)
+                val width = (page.width * 1.5f).toInt().coerceIn(600, 1400)
+                val height = (page.height * 1.5f).toInt().coerceIn(800, 2000)
+                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bitmap)
+                canvas.drawColor(Color.WHITE)
+                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                page.close()
+
+                val inputImage = InputImage.fromBitmap(bitmap, 0)
+                val visionText = recognizer.process(inputImage).awaitTask()
+                bitmap.recycle() // Liberación inmediata de RAM nativa
+
+                val pageBlocks = processMlKitVisionTextToBlocks(visionText)
+                if (pageBlocks.isNotEmpty()) {
+                    val lastBlock = blocks.lastOrNull()
+                    val firstBlock = pageBlocks.firstOrNull()
+
+                    // Continuidad entre páginas: si la página anterior termina a mitad de oración
+                    if (lastBlock is EditorBlock.Text && firstBlock is EditorBlock.Text &&
+                        !lastBlock.isHeader && !firstBlock.isHeader &&
+                        !lastBlock.isBullet && !firstBlock.isBullet &&
+                        !lastBlock.isNumbered && !firstBlock.isNumbered &&
+                        !lastBlock.content.trimEnd().endsWith(".") &&
+                        !lastBlock.content.trimEnd().endsWith("!") &&
+                        !lastBlock.content.trimEnd().endsWith("?") &&
+                        !firstBlock.content.startsWith("—") &&
+                        !firstBlock.content.startsWith("–")
+                    ) {
+                        val mergedText = if (lastBlock.content.endsWith("-")) {
+                            lastBlock.content.dropLast(1) + firstBlock.content
+                        } else {
+                            lastBlock.content + " " + firstBlock.content
+                        }
+                        blocks[blocks.size - 1] = lastBlock.copy(content = mergedText)
+                        blocks.addAll(pageBlocks.drop(1))
+                    } else {
+                        blocks.addAll(pageBlocks)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error procesando PDF multi-página con ML Kit", e)
+        } finally {
+            try { renderer?.close() } catch (e: Exception) {}
+            try { pfd?.close() } catch (e: Exception) {}
+        }
+
+        return@withContext blocks
+    }
+
+    /**
+     * Extrae texto estructurado en bloques de una imagen fotográfica o escaneo mediante ML Kit.
+     */
+    suspend fun analyzeImageToBlocks(context: Context, uri: Uri): List<EditorBlock> = withContext(Dispatchers.IO) {
+        var bitmap: Bitmap? = null
+        try {
+            val contentResolver = context.contentResolver
+            contentResolver.openInputStream(uri)?.use { inputStream ->
+                bitmap = BitmapFactory.decodeStream(inputStream)
+            }
+            if (bitmap != null) {
+                val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                val inputImage = InputImage.fromBitmap(bitmap!!, 0)
+                val visionText = recognizer.process(inputImage).awaitTask()
+                return@withContext processMlKitVisionTextToBlocks(visionText)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error analizando imagen a bloques con ML Kit", e)
+        } finally {
+            bitmap?.recycle()
+        }
+        return@withContext emptyList()
     }
 
     /**
@@ -67,15 +300,28 @@ object LocalMediaAnalyzer {
             val inputImage = InputImage.fromBitmap(bitmap, 0)
             val visionText = recognizer.process(inputImage).awaitTask()
 
-            val extractedText = visionText.text.trim()
-            if (extractedText.isNotBlank()) {
-                sb.append("• TEXTO DETECTADO MEDIANTE OCR EN LA IMAGEN:\n")
+            val extractedBlocks = processMlKitVisionTextToBlocks(visionText)
+            if (extractedBlocks.isNotEmpty()) {
+                sb.append("• TEXTO DETECTADO MEDIANTE GOOGLE ML KIT EN LA IMAGEN:\n")
                 sb.append("\"\"\"\n")
-                sb.append(extractedText.take(3000))
-                sb.append("\n\"\"\"\n")
-                sb.append("• Bloques de texto detectados: ${visionText.textBlocks.size}\n")
+                for (b in extractedBlocks) {
+                    when (b) {
+                        is EditorBlock.Text -> {
+                            if (b.isHeader) sb.append("### ").append(b.content).append("\n\n")
+                            else if (b.isBullet) sb.append("• ").append(b.content).append("\n")
+                            else if (b.isNumbered) sb.append("1. ").append(b.content).append("\n")
+                            else sb.append(b.content).append("\n\n")
+                        }
+                        is EditorBlock.Todo -> {
+                            sb.append(if (b.isChecked) "[x] " else "[ ] ").append(b.content).append("\n")
+                        }
+                        else -> {}
+                    }
+                }
+                sb.append("\"\"\"\n")
+                sb.append("• Párrafos y bloques detectados: ${extractedBlocks.size}\n")
             } else {
-                sb.append("• TEXTO EN IMAGEN: No se detectó texto legible en esta imagen (fotografía, ilustración o gráfico sin texto escrito).\n")
+                sb.append("• TEXTO EN IMAGEN: No se detectó texto legible en esta imagen.\n")
             }
             sb.append("=========================================\n")
         } catch (e: Exception) {
@@ -89,12 +335,14 @@ object LocalMediaAnalyzer {
 
     /**
      * Extrae texto completo de documentos (PDF, TXT, MD, CSV, JSON, etc.) de forma robusta y local.
-     * Si un PDF es escaneado o tiene imágenes sin texto digital, aplica OCR de ML Kit página por página.
+     * Si un PDF es escaneado o tiene imágenes sin texto digital, aplica OCR de ML Kit página por página
+     * sin límite de páginas.
      */
     suspend fun extractDocumentText(
         context: Context,
         uri: Uri,
-        fileName: String?
+        fileName: String?,
+        onProgress: ((current: Int, total: Int) -> Unit)? = null
     ): String = withContext(Dispatchers.IO) {
         try {
             val contentResolver = context.contentResolver
@@ -105,7 +353,7 @@ object LocalMediaAnalyzer {
                         uri.toString().contains(".pdf", ignoreCase = true)
 
             if (isPdf) {
-                return@withContext extractPdfTextWithOcrFallback(context, uri, name)
+                return@withContext extractPdfTextWithOcrFallback(context, uri, name, onProgress)
             } else {
                 // Archivos de texto plano (.txt, .md, .csv, .json, .xml, etc.)
                 val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
@@ -117,8 +365,7 @@ object LocalMediaAnalyzer {
                 } catch (e: Exception) {
                     String(bytes, Charsets.ISO_8859_1)
                 }
-                val safeText = text.take(6000)
-                return@withContext safeText.ifBlank { "El archivo \"$name\" no contiene texto legible." }
+                return@withContext text.ifBlank { "El archivo \"$name\" no contiene texto legible." }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error extrayendo texto del documento $fileName", e)
@@ -127,13 +374,14 @@ object LocalMediaAnalyzer {
     }
 
     /**
-     * Lee un PDF usando iText y, si no tiene texto digital (ej. documento escaneado),
-     * renderiza las páginas a Bitmap y aplica OCR con ML Kit.
+     * Lee un PDF usando iText y, si no tiene texto digital suficiente (ej. documento escaneado),
+     * renderiza todas las páginas y aplica Google ML Kit OCR página por página.
      */
     private suspend fun extractPdfTextWithOcrFallback(
         context: Context,
         uri: Uri,
-        fileName: String
+        fileName: String,
+        onProgress: ((current: Int, total: Int) -> Unit)? = null
     ): String {
         val bytes = try {
             context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
@@ -146,75 +394,62 @@ object LocalMediaAnalyzer {
             return "No se pudo leer el archivo PDF \"$fileName\" o el archivo está vacío."
         }
 
-        // 1. Intento con iText (Extracción de texto digital rápido)
+        // 1. Intento con iText (Extracción de texto digital rápido para todas las páginas)
         val itextSb = StringBuilder()
         var totalPages = 0
         try {
             val reader = PdfReader(bytes)
             totalPages = reader.numberOfPages
-            val maxPages = totalPages.coerceAtMost(15)
-            for (p in 1..maxPages) {
+            for (p in 1..totalPages) {
+                onProgress?.invoke(p, totalPages)
                 val pageText = try {
                     PdfTextExtractor.getTextFromPage(reader, p)
                 } catch (e: Exception) {
                     ""
                 }
                 if (!pageText.isNullOrBlank()) {
-                    itextSb.append(pageText.trim()).append("\n\n")
+                    // Limpieza y unificación básica de líneas del PDF digital
+                    val cleanedPage = pageText.lines()
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .joinToString(" ")
+                    itextSb.append(cleanedPage).append("\n\n")
                 }
-                if (itextSb.length > 5000) break
             }
             reader.close()
         } catch (e: Exception) {
-            Log.w(TAG, "iText falló al leer el PDF, se intentará PdfRenderer + OCR", e)
+            Log.w(TAG, "iText falló al leer el PDF, se intentará PdfRenderer + ML Kit OCR", e)
         }
 
         val itextResult = itextSb.toString().trim()
-        // Si iText extrajo suficiente texto digital, lo devolvemos
-        if (itextResult.length >= 60) {
+        // Si iText extrajo texto digital significativo (promedio de más de 60 caracteres), lo devolvemos
+        if (itextResult.length >= 80) {
             return itextResult
         }
 
-        // 2. Fallback: El PDF es escaneado o tiene imágenes. Usamos PdfRenderer + ML Kit OCR
+        // 2. Fallback: El PDF es escaneado o tiene imágenes. Usamos PdfRenderer + Google ML Kit OCR para todas las páginas
         return try {
             val tempFile = File.createTempFile("pdf_ocr_", ".pdf", context.cacheDir)
             FileOutputStream(tempFile).use { it.write(bytes) }
 
-            val pfd = ParcelFileDescriptor.open(tempFile, ParcelFileDescriptor.MODE_READ_ONLY)
-            val renderer = PdfRenderer(pfd)
-            val pageCount = renderer.pageCount
-            val ocrSb = StringBuilder()
-            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-
-            val maxOcrPages = pageCount.coerceAtMost(5) // Escanear hasta 5 páginas por rendimiento
-            for (i in 0 until maxOcrPages) {
-                val page = renderer.openPage(i)
-                val width = (page.width * 1.5f).toInt().coerceAtMost(1400)
-                val height = (page.height * 1.5f).toInt().coerceAtMost(2000)
-                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                val canvas = Canvas(bitmap)
-                canvas.drawColor(Color.WHITE)
-                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                page.close()
-
-                val inputImage = InputImage.fromBitmap(bitmap, 0)
-                val visionText = recognizer.process(inputImage).awaitTask()
-                bitmap.recycle()
-
-                val pageText = visionText.text.trim()
-                if (pageText.isNotBlank()) {
-                    ocrSb.append(pageText).append("\n\n")
-                }
-                if (ocrSb.length > 5000) break
-            }
-
-            renderer.close()
-            pfd.close()
+            val blocks = extractPdfWithMlKit(context, tempFile, onProgress)
             tempFile.delete()
 
-            val ocrResult = ocrSb.toString().trim()
-            if (ocrResult.isNotBlank()) {
-                ocrResult
+            if (blocks.isNotEmpty()) {
+                val ocrSb = StringBuilder()
+                for (b in blocks) {
+                    when (b) {
+                        is EditorBlock.Text -> {
+                            if (b.isHeader) ocrSb.append("### ").append(b.content).append("\n\n")
+                            else if (b.isBullet) ocrSb.append("• ").append(b.content).append("\n")
+                            else if (b.isNumbered) ocrSb.append("1. ").append(b.content).append("\n")
+                            else ocrSb.append(b.content).append("\n\n")
+                        }
+                        is EditorBlock.Todo -> ocrSb.append(if (b.isChecked) "[x] " else "[ ] ").append(b.content).append("\n")
+                        else -> {}
+                    }
+                }
+                ocrSb.toString().trim()
             } else if (itextResult.isNotBlank()) {
                 itextResult
             } else {

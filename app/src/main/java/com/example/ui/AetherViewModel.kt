@@ -87,6 +87,28 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     private val _chatbotStatusText = MutableStateFlow<String?>(null)
     val chatbotStatusText: StateFlow<String?> = _chatbotStatusText.asStateFlow()
 
+    // --- DOCUMENT IMPORT PROGRESS STATES (GOOGLE ML KIT) ---
+    private val _isImportingDocument = MutableStateFlow(false)
+    val isImportingDocument: StateFlow<Boolean> = _isImportingDocument.asStateFlow()
+
+    private val _importProgress = MutableStateFlow<Pair<Int, Int>?>(null) // (current, total)
+    val importProgress: StateFlow<Pair<Int, Int>?> = _importProgress.asStateFlow()
+
+    private val _importStatusMessage = MutableStateFlow<String?>(null)
+    val importStatusMessage: StateFlow<String?> = _importStatusMessage.asStateFlow()
+
+    fun setImportProgress(current: Int, total: Int, message: String) {
+        _isImportingDocument.value = true
+        _importProgress.value = Pair(current, total)
+        _importStatusMessage.value = message
+    }
+
+    fun clearImportProgress() {
+        _isImportingDocument.value = false
+        _importProgress.value = null
+        _importStatusMessage.value = null
+    }
+
     private var chatbotJob: kotlinx.coroutines.Job? = null
 
     fun openChatbot(preAttachedNote: NoteEntity? = null, preAttachedText: String? = null) {
