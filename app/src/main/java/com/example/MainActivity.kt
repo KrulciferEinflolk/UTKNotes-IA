@@ -309,11 +309,8 @@ fun AetherAppScreen(
                                         !lastBlock.isNumbered && !firstBlock.isNumbered &&
                                         lastBlock.parentToggleId == firstBlock.parentToggleId &&
                                         !lastBlock.content.trimEnd().endsWith(".") &&
-                                        !lastBlock.content.trimEnd().endsWith("?") &&
-                                        !lastBlock.content.trimEnd().endsWith("!") &&
-                                        !lastBlock.content.trimEnd().endsWith(":") &&
-                                        !lastBlock.content.trimEnd().endsWith("”") &&
-                                        !firstBlock.content.startsWith("—")
+                                        !firstBlock.content.startsWith("—") &&
+                                        !firstBlock.content.startsWith("–")
                                     ) {
                                         val mergedText = if (lastBlock.content.endsWith("-")) {
                                             lastBlock.content.dropLast(1) + firstBlock.content
@@ -4256,11 +4253,8 @@ fun NoteEditorWorkspace(
                                         !lastBlock.isNumbered && !firstBlock.isNumbered &&
                                         lastBlock.parentToggleId == firstBlock.parentToggleId &&
                                         !lastBlock.content.trimEnd().endsWith(".") &&
-                                        !lastBlock.content.trimEnd().endsWith("?") &&
-                                        !lastBlock.content.trimEnd().endsWith("!") &&
-                                        !lastBlock.content.trimEnd().endsWith(":") &&
-                                        !lastBlock.content.trimEnd().endsWith("”") &&
-                                        !firstBlock.content.startsWith("—")
+                                        !firstBlock.content.startsWith("—") &&
+                                        !firstBlock.content.startsWith("–")
                                     ) {
                                         val mergedText = if (lastBlock.content.endsWith("-")) {
                                             lastBlock.content.dropLast(1) + firstBlock.content
@@ -5661,7 +5655,7 @@ fun NoteEditorWorkspace(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = if (block is EditorBlock.Text && (block.isHeader || block.isCollapsedHeader)) 6.dp else 2.dp)
+                                .padding(vertical = if (block is EditorBlock.Text && (block.isHeader || block.isCollapsedHeader)) 8.dp else if (block is EditorBlock.Text && (block.isBullet || block.isNumbered)) 2.dp else 5.dp)
                                 .then(
                                     if (matchesSearch) {
                                         Modifier
@@ -5733,6 +5727,7 @@ fun NoteEditorWorkspace(
                                             val textStyle = TextStyle(
                                                 fontFamily = getAppFontFamily(block.fontFamily),
                                                 fontSize = block.fontSize.sp,
+                                                lineHeight = if (block.isHeader) (block.fontSize * 1.3f).sp else (block.fontSize * 1.55f).sp,
                                                 fontWeight = if (block.isBold) FontWeight.Bold else FontWeight.Normal,
                                                 fontStyle = if (block.isItalic) FontStyle.Italic else FontStyle.Normal,
                                                 textDecoration = if (block.isUnderline) TextDecoration.Underline else TextDecoration.None,
@@ -9099,10 +9094,11 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                     continue
                 }
 
-                // 4. Viñetas anidadas y viñetas estándar (•, ◦, ▪, -, *) o detectadas por vector bullet marker
-                val isSubBulletCircle = rawText.startsWith("◦") || rawText.startsWith("  ◦") || rawText.startsWith("\t◦")
+                // 4. Viñetas anidadas y viñetas estándar (•, ◦, ▪, o, -, *) o detectadas por vector bullet marker
+                val isSubBulletCircle = rawText.startsWith("◦") || rawText.startsWith("  ◦") || rawText.startsWith("\t◦") ||
+                                        (rawText.startsWith("o ") && rawText.length > 3)
                 val isSubBulletSquare = rawText.startsWith("▪") || rawText.startsWith("  ▪") || rawText.startsWith("\t▪")
-                val isStandardBulletText = rawText.startsWith("•") || rawText.startsWith("–") || rawText.startsWith("- ") || rawText.startsWith("* ")
+                val isStandardBulletText = rawText.startsWith("•") || rawText.startsWith("– ") || rawText.startsWith("- ") || rawText.startsWith("* ")
                 val isBulletMarker = nearbyMarker is ExtractedMarker.Bullet
                 
                 // In Notion, Page 1 list items ("Los elfos, son...", "Y aún no haz visto nada.") are indented at x ≈ baseMarginX + 16f
@@ -9114,9 +9110,9 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                 if (isSubBulletCircle || isSubBulletSquare || isStandardBulletText || isBulletMarker || isGutterBulletCandidate) {
                     flushParagraph()
                     val cleanBullet = when {
-                        isSubBulletCircle -> rawText.removePrefix("◦").removePrefix("  ◦").removePrefix("\t◦").trim()
+                        isSubBulletCircle -> rawText.removePrefix("◦").removePrefix("  ◦").removePrefix("\t◦").removePrefix("o ").trim()
                         isSubBulletSquare -> rawText.removePrefix("▪").removePrefix("  ▪").removePrefix("\t▪").trim()
-                        else -> rawText.removePrefix("•").removePrefix("–").removePrefix("-").removePrefix("*").trim()
+                        else -> rawText.removePrefix("•").removePrefix("– ").removePrefix("- ").removePrefix("* ").trim()
                     }
                     val itemIndent = when {
                         isSubBulletSquare -> maxOf(2, indentLevel)
@@ -9136,17 +9132,17 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                     continue
                 }
 
-                // 5. Listas numeradas (1., 1.1., 1.1.1., 1.1.1.1., 1-, 2-, 1), (1), etc.)
-                // Intercambiar el número del PDF con el de nuestra app (isNumbered = true) y limpiar el texto para no duplicar números
-                val numberedMatch = Regex("^(?:(?:\\d+\\.){1,4}\\d*|(?:\\d+\\.)*\\d+[\\.\\-\\)]|\\([0-9]+\\))\\s*(.*)").matchEntire(rawText)
+                // 5. Listas numeradas (1., 1.1., 1.1.1., 1.1.1.1., 1), (1), etc.)
+                // NO capturar diálogos numerados de personajes como "1 Presentate...", "2 A que te refieres...", "1- Presentate..."
+                val isCharacterDialogueNumber = Regex("^\\d+\\s+[-—–]?\\s*[A-ZÁÉÍÓÚÑ¡¿\"]").find(rawText) != null ||
+                                                Regex("^\\d+-\\s*[A-ZÁÉÍÓÚÑ¡¿\"]").find(rawText) != null
+                val numberedMatch = if (!isCharacterDialogueNumber) Regex("^(?:(?:\\d+\\.){1,4}\\d*|(?:\\d+\\.)*\\d+[\\.\\)]|\\([0-9]+\\))\\s*(.*)").matchEntire(rawText) else null
                 if (numberedMatch != null) {
                     flushParagraph()
                     val cleanNumbered = numberedMatch.groupValues[1].trim().ifEmpty { rawText }
-                    // Strip any additional duplicate numbering prefixes that may have been baked in
-                    val fullyCleaned = Regex("^(?:(?:\\d+\\.){1,4}\\d*|(?:\\d+\\.)*\\d+[\\.\\-\\)]|\\([0-9]+\\))\\s*").replace(cleanNumbered, "").trim().ifEmpty { cleanNumbered }
+                    val fullyCleaned = Regex("^(?:(?:\\d+\\.){1,4}\\d*|(?:\\d+\\.)*\\d+[\\.\\)]|\\([0-9]+\\))\\s*").replace(cleanNumbered, "").trim().ifEmpty { cleanNumbered }
                     
-                    // Determine indent level from hierarchy in prefix if present (e.g. 1.1 -> level 1, 1.1.1 -> level 2, 1.1.1.1 -> level 3)
-                    val rawPrefixMatch = Regex("^(?:(?:\\d+\\.){1,4}\\d*|(?:\\d+\\.)*\\d+[\\.\\-\\)]|\\([0-9]+\\))").find(rawText)
+                    val rawPrefixMatch = Regex("^(?:(?:\\d+\\.){1,4}\\d*|(?:\\d+\\.)*\\d+[\\.\\)]|\\([0-9]+\\))").find(rawText)
                     val rawPrefix = rawPrefixMatch?.value?.trim() ?: ""
                     val dotCountLevel = if (rawPrefix.contains(".")) {
                         val trimmedPrefix = rawPrefix.trimEnd('.', '-', ')', ' ')
@@ -9232,22 +9228,20 @@ fun processPageElements(elements: List<ExtractedElement>, markers: List<Extracte
                 val prevY = lastLineY
                 val deltaY = if (prevY != null) Math.abs(prevY - element.y) else 0f
                 
-                // Un nuevo turno de diálogo (—, –, o - seguido de letra) siempre inicia un párrafo nuevo
+                // Un nuevo turno de diálogo (—, –, o guion seguido de letra) siempre inicia un párrafo nuevo
                 val isNewDialogueTurn = rawText.startsWith("—") || rawText.startsWith("–") ||
                         (rawText.startsWith("-") && rawText.length > 2 && rawText[1] == ' ' && rawText[2].isLetter())
                 
-                // Espacio vertical extra perceptible entre bloques / párrafos (espacio mayor a 1.65x el interlineado normal)
-                val isExtraVerticalSpace = prevY != null && (deltaY > typicalLineSpacing * 1.65f || deltaY > 30f)
+                // Espacio vertical extra perceptible entre bloques / párrafos en Notion (típicamente > 1.8x el interlineado normal)
+                val isExtraVerticalSpace = prevY != null && deltaY > (typicalLineSpacing * 1.8f).coerceAtLeast(24f)
                 
-                // Punto y aparte: el renglón anterior cerró una oración (. ? ! : ”) Y hay una separación visible o fue un renglón corto antes del salto
+                // Punto y aparte real: el renglón anterior terminó con punto y el salto de línea presenta separación adicional
                 val prevText = currentParagraph.toString().trimEnd()
-                val prevEndsSentence = prevText.endsWith(".") || prevText.endsWith("?") || prevText.endsWith("!") ||
-                        prevText.endsWith(":") || prevText.endsWith(".\"") || prevText.endsWith(".”")
-                val isShortTerminalLine = prevLastLineLen in 1..((typicalLineLen * 0.65f).toInt()) && prevLastLineLen < 45
-                val isPuntoYAparte = prevEndsSentence && prevY != null && (deltaY > typicalLineSpacing * 1.4f || isShortTerminalLine)
+                val prevEndsSentence = prevText.endsWith(".") || prevText.endsWith(".\"") || prevText.endsWith(".”")
+                val isPuntoYAparte = prevEndsSentence && prevY != null && deltaY > (typicalLineSpacing * 1.6f).coerceAtLeast(21f)
                 
-                // Salto brusco de tipografía (ej. notas al pie o cambio radical de tamaño)
-                val isFontSizeJump = currentParagraph.isNotEmpty() && Math.abs(fSize - currentParagraphFontSize) > 3.5f
+                // Salto brusco de tipografía (ej. notas o encabezados)
+                val isFontSizeJump = currentParagraph.isNotEmpty() && Math.abs(fSize - currentParagraphFontSize) > 4f
 
                 if (isNewDialogueTurn || isExtraVerticalSpace || isPuntoYAparte || isFontSizeJump) {
                     flushParagraph()
