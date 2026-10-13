@@ -1,6 +1,6 @@
 {
-  "summary": "Plan de optimización para la importación y segmentación de documentos en UTK Notes con Google ML Kit e iText: división fiel de párrafos en signos de puntuación (puntos, puntos suspensivos, punto y coma) y preservación completa de cada línea de listas como ítems independientes.",
-  "updatedAt": "2026-10-12T15:24:32.812657719Z",
+  "summary": "Plan de corrección para eliminar falsos positivos de listas y unificar párrafos narrativos en un bloque continuo fluido, limitando las viñetas exclusivamente a líneas con símbolos explícitos.",
+  "updatedAt": "2026-10-13T01:40:21.477913001Z",
   "requestFeedback": true,
   "userFacing": true
 }

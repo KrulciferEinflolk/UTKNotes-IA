@@ -49,7 +49,10 @@ object LocalMediaAnalyzer {
      */
     fun processMlKitVisionTextToBlocks(visionText: Text): List<EditorBlock> {
         val blocks = mutableListOf<EditorBlock>()
-        val textBlocks = visionText.textBlocks
+        val textBlocks = visionText.textBlocks.sortedWith(
+            compareBy<Text.TextBlock> { it.boundingBox?.top ?: 0 }
+                .thenBy { it.boundingBox?.left ?: 0 }
+        )
 
         for (block in textBlocks) {
             val lines = block.lines
@@ -201,36 +204,11 @@ object LocalMediaAnalyzer {
                     continue
                 }
 
-                // Si estamos dentro del contexto de una lista y la línea forma parte de la lista,
-                // convertir cada línea en un ítem de lista independiente para abarcar todo el contenido.
-                if (inBulletList || inNumberedList) {
-                    flushCurrentParagraph()
-                    val isTerminatingItem = rawLine.endsWith(".")
-                    blocks.add(
-                        EditorBlock.Text(
-                            content = rawLine,
-                            fontSize = 15,
-                            isBullet = inBulletList,
-                            isNumbered = inNumberedList,
-                            indentLevel = currentIndentLevel
-                        )
-                    )
-                    if (isTerminatingItem) {
-                        inBulletList = false
-                        inNumberedList = false
-                    }
-                    continue
-                }
+                // Reseteo categórico del estado de lista al procesar renglones de texto normal
+                inBulletList = false
+                inNumberedList = false
 
                 // Línea normal de texto de párrafo
-                if (currentParagraph.isNotEmpty()) {
-                    // Si el párrafo anterior terminó con signos de puntuación (puntos, comas, tres puntos, punto y coma, etc.)
-                    // separar en un nuevo bloque de párrafo independiente
-                    if (endsWithTerminalOrBreakPunctuation(currentParagraph.toString())) {
-                        flushCurrentParagraph()
-                    }
-                }
-
                 if (currentParagraph.isEmpty()) {
                     currentParagraph.append(rawLine)
                 } else {
@@ -535,6 +513,27 @@ object LocalMediaAnalyzer {
         } catch (e: Exception) {
             Log.e(TAG, "Error ejecutando OCR en páginas del PDF", e)
             if (itextResult.isNotBlank()) itextResult else "No se pudo extraer texto del PDF \"$fileName\": ${e.localizedMessage ?: e.message}"
+        }
+    }
+
+    /**
+     * Comprueba si un PDF contiene texto digital nativo para seleccionar
+     * el pipeline óptimo (iText vectorial nativo vs Google ML Kit OCR).
+     */
+    fun isPdfDigitallyNative(pdfFile: File): Boolean {
+        return try {
+            val reader = PdfReader(pdfFile.absolutePath)
+            val numPages = reader.numberOfPages
+            var totalChars = 0
+            for (p in 1..numPages.coerceAtMost(3)) {
+                val pageText = com.itextpdf.text.pdf.parser.PdfTextExtractor.getTextFromPage(reader, p)
+                totalChars += pageText?.trim()?.length ?: 0
+                if (totalChars > 40) break
+            }
+            reader.close()
+            totalChars > 40
+        } catch (e: Exception) {
+            false
         }
     }
 }
