@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.draw.clipToBounds
+import com.example.ui.creationlab.CreationLabHostScreen
 
 enum class LibraryViewMode {
     Grid,
@@ -701,6 +702,7 @@ enum class NavigationTab {
     Search,
     Home,
     Community,
+    Translator,
     Trash
 }
 
@@ -709,6 +711,7 @@ fun HomeCustomBottomBar(
     viewModel: AetherViewModel,
     onNavigateToSearch: () -> Unit,
     onNavigateToCommunity: () -> Unit,
+    onNavigateToTranslator: () -> Unit = {},
     onOpenSettings: () -> Unit,
     onOpenTrash: () -> Unit
 ) {
@@ -826,6 +829,17 @@ fun HomeCustomBottomBar(
                     )
                     HorizontalDivider(color = CosmicBorder.copy(alpha = 0.5f))
                     DropdownMenuItem(
+                        text = { Text("Traductor", color = TextPrimary, fontWeight = FontWeight.Medium) },
+                        leadingIcon = {
+                            Icon(Icons.Default.Translate, contentDescription = null, tint = GeminiCyanAccent)
+                        },
+                        onClick = {
+                            showMenu = false
+                            onNavigateToTranslator()
+                        }
+                    )
+                    HorizontalDivider(color = CosmicBorder.copy(alpha = 0.5f))
+                    DropdownMenuItem(
                         text = { Text("Ajustes", color = TextPrimary, fontWeight = FontWeight.Medium) },
                         leadingIcon = {
                             Icon(Icons.Default.Settings, contentDescription = null, tint = GeminiCyanAccent)
@@ -925,6 +939,7 @@ fun LibraryMainScreen(viewModel: AetherViewModel, modifier: Modifier = Modifier)
                     viewModel = viewModel,
                     onNavigateToSearch = { currentTab = NavigationTab.Search },
                     onNavigateToCommunity = { currentTab = NavigationTab.Community },
+                    onNavigateToTranslator = { currentTab = NavigationTab.Translator },
                     onOpenSettings = { showSettingsDialog = true },
                     onOpenTrash = { currentTab = NavigationTab.Trash }
                 )
@@ -952,6 +967,10 @@ fun LibraryMainScreen(viewModel: AetherViewModel, modifier: Modifier = Modifier)
                 NavigationTab.Community -> {
                     androidx.activity.compose.BackHandler { currentTab = NavigationTab.Home }
                     LibraryCommunityScreen(onBack = { currentTab = NavigationTab.Home })
+                }
+                NavigationTab.Translator -> {
+                    androidx.activity.compose.BackHandler { currentTab = NavigationTab.Home }
+                    CreationLabHostScreen(viewModel = viewModel, onBack = { currentTab = NavigationTab.Home })
                 }
                 NavigationTab.Trash -> {
                     androidx.activity.compose.BackHandler { currentTab = NavigationTab.Home }
@@ -1621,6 +1640,17 @@ fun AppSettingsDialog(
                         Text("Sincronizar carpetas en Drive", fontSize = 12.sp)
                     }
                 }
+
+                Spacer(modifier = Modifier.height(16.dp))
+                HorizontalDivider(color = CosmicBorder.copy(alpha = 0.5f))
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "UTK Notes • Versión 1.8.03",
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         },
         confirmButton = {

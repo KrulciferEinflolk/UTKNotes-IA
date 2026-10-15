@@ -17,8 +17,8 @@ android {
     applicationId = "utk.notes.ia"
     minSdk = 24
     targetSdk = 36
-    versionCode = 17
-    versionName = "1.7.2"
+    versionCode = 18
+    versionName = "1.8.03"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

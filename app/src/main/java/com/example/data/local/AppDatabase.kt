@@ -9,12 +9,19 @@ import com.example.data.model.NoteEntity
 import com.example.data.model.PageEntity
 
 @Database(
-    entities = [BookEntity::class, PageEntity::class, NoteEntity::class, com.example.data.model.ChatSessionEntity::class],
-    version = 7,
+    entities = [
+        BookEntity::class,
+        PageEntity::class,
+        NoteEntity::class,
+        com.example.data.model.ChatSessionEntity::class,
+        com.example.data.model.LabItemEntity::class
+    ],
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun notesDao(): NotesDao
+    abstract fun labDao(): LabDao
 
     companion object {
         @Volatile
