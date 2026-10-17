@@ -30,51 +30,30 @@ class CreationLabRepository(private val labDao: LabDao) {
         labDao.deleteLabItemById(id)
 
     /**
-     * Inicializa datos predeterminados esenciales si el usuario no tiene ninguno guardado.
+     * Purga los datos y ejemplos de prueba precargados por defecto (raíces, modificadores y categorías canónicas de Vyianóra)
+     * para que el usuario comience con un léxico completamente propio y limpio.
      */
-    suspend fun ensureDefaultData(userEmail: String) {
+    suspend fun purgeDefaultExamples(userEmail: String) {
         val existing = labDao.getAllLabItemsFlow(userEmail).first()
-        if (existing.isEmpty()) {
-            // Categorías canónicas oficiales de Vyianóra
-            val categories = VyianoraMasterData.canonicalCategories
-            categories.forEach { cat ->
-                labDao.insertLabItem(
-                    LabItemEntity(
-                        userEmail = userEmail,
-                        itemType = LabItemType.CATEGORY,
-                        categoryOrType = cat,
-                        termSpanish = "Dominio conceptual de $cat"
-                    )
-                )
+        val defaultCategories = VyianoraMasterData.canonicalCategories.toSet()
+        val defaultRoots = VyianoraMasterData.canonicalRoots.map { it.root }.toSet()
+        val defaultModifiers = VyianoraMasterData.canonicalModifiers.map { it.affix }.toSet()
+        existing.forEach { item ->
+            val isDefault = when (item.itemType) {
+                LabItemType.CATEGORY -> defaultCategories.contains(item.categoryOrType)
+                LabItemType.NUCLEUS -> defaultRoots.contains(item.termLanguage)
+                LabItemType.MORPHOLOGY -> defaultModifiers.contains(item.termLanguage)
+                else -> false
             }
-
-            // 9 Raíces fundamentales canónicas oficiales de Vyianóra
-            VyianoraMasterData.canonicalRoots.forEach { r ->
-                labDao.insertLabItem(
-                    LabItemEntity(
-                        userEmail = userEmail,
-                        itemType = LabItemType.NUCLEUS,
-                        termLanguage = r.root,
-                        termSpanish = r.meaningSpanish,
-                        categoryOrType = r.category
-                    )
-                )
-            }
-
-            // 11 Modificadores oficiales (Prefijos y Sufijos) de Vyianóra
-            VyianoraMasterData.canonicalModifiers.forEach { m ->
-                labDao.insertLabItem(
-                    LabItemEntity(
-                        userEmail = userEmail,
-                        itemType = LabItemType.MORPHOLOGY,
-                        termLanguage = m.affix,
-                        categoryOrType = m.type,
-                        meaningLanguage = m.semanticImpact,
-                        meaningSpanish = m.meaningSpanish
-                    )
-                )
+            if (isDefault) {
+                labDao.deleteLabItem(item)
             }
         }
+    }
+
+    suspend fun ensureDefaultData(userEmail: String) {
+        // En lugar de precargar datos de ejemplo, aseguramos la purga de cualquier dato canónico previo
+        purgeDefaultExamples(userEmail)
     }
 
     companion object {

@@ -101,16 +101,16 @@ object VyianoraMasterData {
                 clean.endsWith("u") || clean.endsWith("n")
 
         if (!endsCorrectly) {
-            return false to "Debe terminar en vocal o 'n' para cumplir la fonética de Vyianóra."
+            return false to "Debe terminar en vocal o 'n' para cumplir la fonética recomendada."
         }
 
         // Conteo aproximado de sílabas por vocales
         val vowels = clean.count { it in listOf('a', 'e', 'i', 'o', 'u') }
         if (vowels > 4) {
-            return true to "Aviso: supera las 3 sílabas recomendadas de Vyianóra."
+            return true to "Aviso: supera las 3 sílabas recomendadas."
         }
 
-        return true to "Fonética fluida y válida en Vyianóra."
+        return true to "Fonética fluida y válida en el nuevo idioma."
     }
 
     /**

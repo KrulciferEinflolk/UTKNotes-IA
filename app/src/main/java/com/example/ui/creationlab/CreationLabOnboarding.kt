@@ -72,8 +72,8 @@ fun CreationLabOnboardingScreen(
         OnboardingStep(
             stepNumber = 1,
             title = "Exploración de Raíces y Léxico",
-            subtitle = "Arquitectura de morfemas de Vyianora",
-            description = "Descubre y forja raíces base, prefijos y sufijos esenciales para expandir la lengua Vyianora. Mezcla morfemas para descubrir nuevos significados y resonancias al instante.",
+            subtitle = "Arquitectura de morfemas y raíces",
+            description = "Descubre y forja raíces base, prefijos y sufijos esenciales para expandir tu propia lengua construida. Mezcla morfemas para descubrir nuevos significados y resonancias al instante.",
             icon = Icons.Default.Extension,
             accentColor = Color(0xFF00CEC9),
             secondaryColor = Color(0xFF8C7CFF),
@@ -91,13 +91,13 @@ fun CreationLabOnboardingScreen(
         ),
         OnboardingStep(
             stepNumber = 3,
-            title = "Lienzo Vyianji (Canvas)",
-            subtitle = "Trazos y caligrafía de ideogramas",
-            description = "Plasma y diseña caracteres ideográficos sagrados (Vyianji) con un lienzo táctil de dibujo en tiempo real. Ajusta grosores, experimenta con colores neón cósmicos y cataloga tus creaciones.",
+            title = "Lienzo de Escritura",
+            subtitle = "Trazos y caligrafía de símbolos",
+            description = "Plasma y diseña caracteres, glifos y símbolos con un lienzo táctil de dibujo en tiempo real. Ajusta grosores, experimenta con colores neón cósmicos y cataloga tus creaciones.",
             icon = Icons.Default.Brush,
             accentColor = Color(0xFFFFD166),
             secondaryColor = Color(0xFFFF7675),
-            tagText = "Paso 3 de 3 • Glifos Vyianji"
+            tagText = "Paso 3 de 3 • Glifos y Símbolos"
         )
     )
 

@@ -53,7 +53,7 @@ import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-// Paleta de Estilo Vyianora Translate
+// Paleta de Estilo Laboratorio Lingüístico
 val VyianoraDarkBackground = Color(0xFF090C15)
 val VyianoraSurface = Color(0xFF131826)
 val VyianoraBorder = Color(0xFF26304A)
@@ -86,7 +86,7 @@ enum class LibrarySubTab(val label: String) {
     Morphology("Morfología"),
     Words("Palabras"),
     Phrases("Frases"),
-    Vyianji("Glifos Vyianji")
+    WritingCanvas("Lienzo de escritura")
 }
 
 enum class FilterOrder {
@@ -120,12 +120,14 @@ fun CreationLabScreen(
     val phrases = remember(allItems) { allItems.filter { it.itemType == LabItemType.PHRASE } }
 
     var selectedMainMenu by rememberSaveable { mutableStateOf(LabMainMenu.Lexicon) }
-    var showVyianjiCanvasDialog by rememberSaveable { mutableStateOf(false) }
+    var showWritingCanvasDialog by rememberSaveable { mutableStateOf(false) }
+    var labTitle by rememberSaveable { mutableStateOf(CreationLabPrefs.getLabTitle(context)) }
+    var showEditLabNameDialog by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         modifier = modifier
             .fillMaxSize()
-            .testTag("vyianora_creation_lab"),
+            .testTag("creation_lab_screen"),
         containerColor = VyianoraDarkBackground,
         topBar = {
             Column(
@@ -134,7 +136,7 @@ fun CreationLabScreen(
                     .background(VyianoraSurface)
                     .statusBarsPadding()
             ) {
-                // Header estilo Vyianora Translate
+                // Header del Laboratorio
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -157,18 +159,27 @@ fun CreationLabScreen(
                         Column {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    text = "Vyianora",
-                                    fontSize = 19.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = VyianoraCyan
-                                )
-                                Text(
-                                    text = " • Laboratorio",
+                                    text = labTitle,
                                     fontSize = 17.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextPrimary
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = VyianoraCyan,
+                                    maxLines = 1
                                 )
-                                Spacer(modifier = Modifier.width(8.dp))
+                                Spacer(modifier = Modifier.width(2.dp))
+                                IconButton(
+                                    onClick = { showEditLabNameDialog = true },
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .testTag("edit_lab_name_btn")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "Editar nombre del laboratorio o idioma",
+                                        tint = VyianoraPurple,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(4.dp))
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
                                     color = VyianoraPurple.copy(alpha = 0.2f),
@@ -195,7 +206,7 @@ fun CreationLabScreen(
                                 }
                             }
                             Text(
-                                text = "Léxico, morfología, frases y caracteres Vyianji",
+                                text = "Léxico, morfología, frases y biblioteca",
                                 fontSize = 11.sp,
                                 color = TextSecondary
                             )
@@ -203,9 +214,9 @@ fun CreationLabScreen(
                     }
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        // Botón Lienzo Vyianji
+                        // Botón Lienzo de Escritura
                         FilledTonalButton(
-                            onClick = { showVyianjiCanvasDialog = true },
+                            onClick = { showWritingCanvasDialog = true },
                             shape = RoundedCornerShape(10.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                             colors = ButtonDefaults.filledTonalButtonColors(
@@ -214,9 +225,9 @@ fun CreationLabScreen(
                             ),
                             border = BorderStroke(1.dp, VyianoraPurple.copy(alpha = 0.4f))
                         ) {
-                            Icon(Icons.Default.Brush, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.Brush, contentDescription = "Lienzo de escritura", modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Vyianji", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("Lienzo", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
 
                         IconButton(onClick = onReopenTutorial) {
@@ -305,18 +316,73 @@ fun CreationLabScreen(
                         morphology = morphology,
                         words = generatedWords,
                         phrases = phrases,
-                        onOpenVyianjiCanvas = { showVyianjiCanvasDialog = true }
+                        onOpenWritingCanvas = { showWritingCanvasDialog = true }
                     )
                 }
             }
 
-            // Diálogo Modal Lienzo Vyianji (Vyianji Canvas)
-            if (showVyianjiCanvasDialog) {
-                VyianjiCanvasDialog(
+            // Diálogo Modal Lienzo de Escritura (Canvas)
+            if (showWritingCanvasDialog) {
+                WritingCanvasDialog(
                     viewModel = viewModel,
                     repository = repository,
                     userEmail = safeUserEmail,
-                    onDismiss = { showVyianjiCanvasDialog = false }
+                    onDismiss = { showWritingCanvasDialog = false }
+                )
+            }
+
+            // Diálogo Modal para Editar el Nombre del Laboratorio / Idioma
+            if (showEditLabNameDialog) {
+                var tempTitle by rememberSaveable { mutableStateOf(labTitle) }
+                AlertDialog(
+                    onDismissRequest = { showEditLabNameDialog = false },
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Edit, contentDescription = null, tint = VyianoraCyan, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Nombre del Laboratorio / Idioma", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                "Personaliza el nombre de tu laboratorio o de la lengua construida que estás creando.",
+                                fontSize = 12.sp,
+                                color = TextSecondary
+                            )
+                            OutlinedTextField(
+                                value = tempTitle,
+                                onValueChange = { tempTitle = it },
+                                label = { Text("Nombre") },
+                                placeholder = { Text("Ej. Laboratorio Lingüístico, Mi Lengua, etc.") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                val trimmed = tempTitle.trim().ifEmpty { CreationLabPrefs.DEFAULT_LAB_TITLE }
+                                labTitle = trimmed
+                                CreationLabPrefs.setLabTitle(context, trimmed)
+                                showEditLabNameDialog = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = VyianoraCyan)
+                        ) {
+                            Text("Guardar", color = Color(0xFF090C15), fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showEditLabNameDialog = false }) {
+                            Text("Cancelar", color = TextSecondary)
+                        }
+                    },
+                    containerColor = VyianoraSurface,
+                    titleContentColor = TextPrimary,
+                    textContentColor = TextSecondary,
+                    shape = RoundedCornerShape(18.dp)
                 )
             }
         }
@@ -333,271 +399,60 @@ fun LexiconMainModule(
     morphology: List<LabItemEntity>,
     modifier: Modifier = Modifier
 ) {
-    var isCanonicalMode by rememberSaveable { mutableStateOf(true) }
     var selectedSubMenu by rememberSaveable { mutableStateOf(LexiconSubMenu.Nuclei) }
 
     Column(modifier = modifier.fillMaxSize()) {
-        // Alternador de Modo: Glosario Canónico vs Creación Libre
+        // Selector de 3 Submenús: Núcleos, Morfología, Categorías
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = VyianoraSurface,
-                border = BorderStroke(1.dp, VyianoraBorder)
-            ) {
-                Row(modifier = Modifier.padding(3.dp)) {
-                    FilledTonalButton(
-                        onClick = { isCanonicalMode = true },
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = if (isCanonicalMode) VyianoraPurple else Color.Transparent,
-                            contentColor = if (isCanonicalMode) Color.White else TextSecondary
-                        ),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text("★ Canónico Vyio", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
-                    FilledTonalButton(
-                        onClick = { isCanonicalMode = false },
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = if (!isCanonicalMode) VyianoraCyan else Color.Transparent,
-                            contentColor = if (!isCanonicalMode) Color(0xFF090C15) else TextSecondary
-                        ),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text("✎ Creación Libre", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
+            LexiconSubMenu.values().forEach { subMenu ->
+                val isSelected = selectedSubMenu == subMenu
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { selectedSubMenu = subMenu },
+                    label = { Text(subMenu.label, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = VyianoraPurple.copy(alpha = 0.25f),
+                        selectedLabelColor = VyianoraCyan,
+                        containerColor = VyianoraSurface,
+                        labelColor = TextSecondary
+                    ),
+                    border = BorderStroke(1.dp, if (isSelected) VyianoraCyan else VyianoraBorder)
+                )
             }
-
-            Text(
-                text = if (isCanonicalMode) "Bases Oficiales" else "Términos Creados",
-                fontSize = 11.sp,
-                color = TextSecondary
-            )
         }
 
         HorizontalDivider(color = VyianoraBorder.copy(alpha = 0.6f))
 
-        if (isCanonicalMode) {
-            // Visor del Glosario Canónico Oficial de Vyianóra
-            CanonicalGlossaryViewer()
-        } else {
-            // Modo Creación Libre con sus 3 submenús
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                LexiconSubMenu.values().forEach { subMenu ->
-                    val isSelected = selectedSubMenu == subMenu
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { selectedSubMenu = subMenu },
-                        label = { Text(subMenu.label, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = VyianoraPurple.copy(alpha = 0.25f),
-                            selectedLabelColor = VyianoraCyan,
-                            containerColor = VyianoraSurface,
-                            labelColor = TextSecondary
-                        ),
-                        border = BorderStroke(1.dp, if (isSelected) VyianoraCyan else VyianoraBorder)
-                    )
-                }
-            }
-
-            when (selectedSubMenu) {
-                LexiconSubMenu.Nuclei -> {
-                    NucleiSubMenu(
-                        viewModel = viewModel,
-                        repository = repository,
-                        userEmail = userEmail,
-                        categories = categories,
-                        nuclei = nuclei
-                    )
-                }
-                LexiconSubMenu.Morphology -> {
-                    MorphologySubMenu(
-                        viewModel = viewModel,
-                        repository = repository,
-                        userEmail = userEmail,
-                        morphology = morphology
-                    )
-                }
-                LexiconSubMenu.Categories -> {
-                    CategoriesSubMenu(
-                        viewModel = viewModel,
-                        repository = repository,
-                        userEmail = userEmail,
-                        categories = categories
-                    )
-                }
-            }
-        }
-    }
-}
-
-/**
- * Visor del Glosario Canónico Oficial de Vyianóra (9 Raíces base, 11 Modificadores y 5 Categorías)
- */
-@Composable
-fun CanonicalGlossaryViewer(modifier: Modifier = Modifier) {
-    val clipboardManager = LocalClipboardManager.current
-    var canonicalTab by rememberSaveable { mutableStateOf(0) } // 0: Raíces, 1: Modificadores, 2: Reglas
-
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-        // Regla absoluta banner
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = VyianoraPurple.copy(alpha = 0.12f),
-            border = BorderStroke(1.dp, VyianoraPurple.copy(alpha = 0.35f)),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier.padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = VyianoraCyan, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "\"Una palabra no describe… domina el concepto.\"",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = VyianoraCyan
+        when (selectedSubMenu) {
+            LexiconSubMenu.Nuclei -> {
+                NucleiSubMenu(
+                    viewModel = viewModel,
+                    repository = repository,
+                    userEmail = userEmail,
+                    categories = categories,
+                    nuclei = nuclei
                 )
             }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            listOf("9 Raíces Base", "11 Modificadores", "Reglas Fonéticas").forEachIndexed { index, title ->
-                val isSelected = canonicalTab == index
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { canonicalTab = index },
-                    label = { Text(title, fontSize = 11.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal) }
+            LexiconSubMenu.Morphology -> {
+                MorphologySubMenu(
+                    viewModel = viewModel,
+                    repository = repository,
+                    userEmail = userEmail,
+                    morphology = morphology
                 )
             }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            when (canonicalTab) {
-                0 -> {
-                    items(VyianoraMasterData.canonicalRoots) { r ->
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = VyianoraSurface,
-                            border = BorderStroke(1.dp, VyianoraBorder),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(r.root, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = VyianoraCyan)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = VyianoraBorder.copy(alpha = 0.6f)
-                                        ) {
-                                            Text(r.category, fontSize = 10.sp, color = TextSecondary, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
-                                        }
-                                    }
-                                    Text(r.meaningSpanish, fontSize = 13.sp, color = TextPrimary)
-                                    Text(r.conceptualDomain, fontSize = 11.sp, color = TextSecondary)
-                                }
-
-                                IconButton(onClick = { clipboardManager.setText(AnnotatedString("${r.root}: ${r.meaningSpanish}")) }) {
-                                    Icon(Icons.Default.ContentCopy, contentDescription = "Copiar", tint = TextSecondary, modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
-                    }
-                }
-                1 -> {
-                    items(VyianoraMasterData.canonicalModifiers) { m ->
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = VyianoraSurface,
-                            border = BorderStroke(1.dp, VyianoraBorder),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(m.affix, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = VyianoraPurple)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = VyianoraBorder.copy(alpha = 0.6f)
-                                        ) {
-                                            Text(m.type, fontSize = 10.sp, color = TextSecondary, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
-                                        }
-                                    }
-                                    Text(m.meaningSpanish, fontSize = 13.sp, color = TextPrimary)
-                                    Text(m.semanticImpact, fontSize = 11.sp, color = TextSecondary)
-                                }
-
-                                IconButton(onClick = { clipboardManager.setText(AnnotatedString("${m.affix}: ${m.meaningSpanish}")) }) {
-                                    Icon(Icons.Default.ContentCopy, contentDescription = "Copiar", tint = TextSecondary, modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
-                    }
-                }
-                2 -> {
-                    item {
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = VyianoraSurface,
-                            border = BorderStroke(1.dp, VyianoraBorder),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text("Leyes Fonéticas de Vyianóra", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = VyianoraGold)
-                                Text("1. Terminación obligatoria: Siempre debe terminar en vocal o 'n'.", fontSize = 12.sp, color = TextPrimary)
-                                Text("2. Longitud máxima: Máximo 3 sílabas idealmente para mantener la fuerza.", fontSize = 12.sp, color = TextPrimary)
-                                Text("3. Evitar choques duros: No emplear combinaciones ásperas como 'kt' o 'tsr'.", fontSize = 12.sp, color = TextPrimary)
-                                Text("4. Clases de palabras: Sustantivos (raíz + en), Verbos (raíz pura), Adjetivos (raíz + yo).", fontSize = 12.sp, color = TextPrimary)
-                                Text("5. Sintaxis de frases: [Sujeto] + [Concepto] + [Acción] (ej. Mi shenryo nara).", fontSize = 12.sp, color = VyianoraCyan)
-                            }
-                        }
-                    }
-                }
+            LexiconSubMenu.Categories -> {
+                CategoriesSubMenu(
+                    viewModel = viewModel,
+                    repository = repository,
+                    userEmail = userEmail,
+                    categories = categories
+                )
             }
         }
     }
@@ -617,8 +472,10 @@ fun NucleiSubMenu(
     val coroutineScope = rememberCoroutineScope()
     var termLanguage by rememberSaveable { mutableStateOf("") }
     var termSpanish by rememberSaveable { mutableStateOf("") }
-    var selectedCategory by rememberSaveable { mutableStateOf(categories.firstOrNull()?.categoryOrType ?: "Cosmos & Éter") }
+    var selectedCategory by rememberSaveable { mutableStateOf(categories.firstOrNull()?.categoryOrType ?: "General") }
+    var categoryDropdownExpanded by remember { mutableStateOf(false) }
     var isGeneratingByAi by remember { mutableStateOf(false) }
+    var auraNucleusSuggestion by remember { mutableStateOf<Pair<String, String>?>(null) }
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(categories) {
@@ -646,24 +503,104 @@ fun NucleiSubMenu(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "Forjar Nuevo Núcleo / Raíz de Vyianora",
+                        text = "Forjar Nuevo Núcleo / Raíz",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary
                     )
 
-                    Text("Categoría / Dominio Arcano:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TextSecondary)
-                    if (categories.isEmpty()) {
-                        Text("No hay categorías creadas. Agrega una en la pestaña Categorías.", fontSize = 12.sp, color = VyianoraCyan)
-                    } else {
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(categories) { cat ->
-                                val isSelected = selectedCategory == cat.categoryOrType
-                                FilterChip(
-                                    selected = isSelected,
-                                    onClick = { selectedCategory = cat.categoryOrType },
-                                    label = { Text(cat.categoryOrType, fontSize = 11.sp) }
-                                )
+                    // Lista desplegable para seleccionar las categorías
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Categoría de la Raíz:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TextSecondary)
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = VyianoraDarkBackground,
+                                border = BorderStroke(1.dp, if (categoryDropdownExpanded) VyianoraCyan else VyianoraBorder),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { categoryDropdownExpanded = true }
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = selectedCategory.ifBlank { "Selecciona una categoría" },
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = if (selectedCategory.isNotBlank()) TextPrimary else TextSecondary
+                                        )
+                                        val catDesc = categories.firstOrNull { it.categoryOrType == selectedCategory }?.termSpanish
+                                        if (!catDesc.isNullOrBlank()) {
+                                            Text(
+                                                text = catDesc,
+                                                fontSize = 11.sp,
+                                                color = TextSecondary,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                    Icon(
+                                        imageVector = if (categoryDropdownExpanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
+                                        contentDescription = "Desplegar categorías",
+                                        tint = VyianoraCyan
+                                    )
+                                }
+                            }
+
+                            DropdownMenu(
+                                expanded = categoryDropdownExpanded,
+                                onDismissRequest = { categoryDropdownExpanded = false },
+                                modifier = Modifier
+                                    .background(VyianoraSurface)
+                                    .border(BorderStroke(1.dp, VyianoraBorder), RoundedCornerShape(12.dp))
+                            ) {
+                                if (categories.isEmpty()) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text("Sin categorías creadas", color = VyianoraGold, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                                Text("Crea una en la pestaña 'Categorías' o usa General", color = TextSecondary, fontSize = 11.sp)
+                                            }
+                                        },
+                                        onClick = {
+                                            selectedCategory = "General"
+                                            categoryDropdownExpanded = false
+                                        }
+                                    )
+                                } else {
+                                    categories.forEach { cat ->
+                                        val isCurrent = selectedCategory == cat.categoryOrType
+                                        DropdownMenuItem(
+                                            text = {
+                                                Column {
+                                                    Text(
+                                                        text = cat.categoryOrType,
+                                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                                        fontSize = 13.sp,
+                                                        color = if (isCurrent) VyianoraCyan else TextPrimary
+                                                    )
+                                                    if (cat.termSpanish.isNotBlank()) {
+                                                        Text(
+                                                            text = cat.termSpanish,
+                                                            fontSize = 11.sp,
+                                                            color = TextSecondary
+                                                        )
+                                                    }
+                                                }
+                                            },
+                                            onClick = {
+                                                selectedCategory = cat.categoryOrType
+                                                categoryDropdownExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -671,8 +608,8 @@ fun NucleiSubMenu(
                     OutlinedTextField(
                         value = termLanguage,
                         onValueChange = { termLanguage = it },
-                        label = { Text("Cómo se dirá en Vyianora (Raíz)") },
-                        placeholder = { Text("Ej. Vyia, Astra, Lumen, Chron, Kael") },
+                        label = { Text("Cómo se dirá en el idioma (Raíz)") },
+                        placeholder = { Text("Ej. Astra, Lumen, Chron, Kael") },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp)
                     )
@@ -681,7 +618,7 @@ fun NucleiSubMenu(
                         value = termSpanish,
                         onValueChange = { termSpanish = it },
                         label = { Text("Cómo se dirá en español") },
-                        placeholder = { Text("Ej. Vida consciente, Luz celestial, Tiempo") },
+                        placeholder = { Text("Ej. Luz celestial, Tiempo, Sabiduría") },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp)
                     )
@@ -706,7 +643,7 @@ fun NucleiSubMenu(
                                         )
                                         termLanguage = ""
                                         termSpanish = ""
-                                        feedbackMessage = "✅ Núcleo guardado en el léxico de Vyianora."
+                                        feedbackMessage = "✅ Núcleo guardado en el léxico."
                                     }
                                 }
                             },
@@ -725,29 +662,18 @@ fun NucleiSubMenu(
                                 isGeneratingByAi = true
                                 feedbackMessage = null
                                 coroutineScope.launch {
-                                    val prompt = """
-                                        Eres Aura Kioko, compañera e IA lingüística de Vyianora Translate.
-                                        Genera una raíz o núcleo armónico para la lengua Vyianora perteneciente a la categoría "$selectedCategory".
-                                        Los términos de Vyianora poseen armonía mística, estética etérea y sonoridad cósmica (ejemplos: Vyia, Nora, Kael, Zeth, Lumen, Astrix, Chron, Vesper).
-                                        Responde ÚNICAMENTE en JSON estricto sin markdown:
-                                        {"idioma": "palabra_vyianora", "espanol": "traduccion_espanol"}
-                                    """.trimIndent()
-                                    try {
-                                        val response = viewModel.sendMessage(prompt)
-                                        if (!response.isNullOrBlank()) {
-                                            val clean = response.substringAfter("{").substringBeforeLast("}")
-                                            val json = JSONObject("{$clean}")
-                                            termLanguage = json.optString("idioma", "Zethra")
-                                            termSpanish = json.optString("espanol", "Esencia celestial")
-                                            feedbackMessage = "✨ Aura forjó el núcleo de Vyianora para $selectedCategory."
-                                        }
-                                    } catch (e: Exception) {
-                                        termLanguage = "Aethra"
-                                        termSpanish = "Destello del éter"
-                                        feedbackMessage = "✨ Aura forjó sugerencia de raíz."
-                                    } finally {
-                                        isGeneratingByAi = false
-                                    }
+                                    val catEntity = categories.firstOrNull { it.categoryOrType == selectedCategory }
+                                    val catName = selectedCategory.ifBlank { "General" }
+                                    val catDesc = catEntity?.termSpanish.orEmpty()
+
+                                    auraNucleusSuggestion = AuraLinguisticEngine.suggestNucleus(
+                                        viewModel = viewModel,
+                                        categoryName = catName,
+                                        categoryDescription = catDesc,
+                                        currentLanguage = termLanguage,
+                                        currentSpanish = termSpanish
+                                    )
+                                    isGeneratingByAi = false
                                 }
                             },
                             modifier = Modifier.weight(1f),
@@ -761,6 +687,71 @@ fun NucleiSubMenu(
                                 Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text("Forjar con Aura", color = Color(0xFF090C15), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    // Tarjeta Interactiva de Sugerencia Previa de Aura (Aplicar / Descartar)
+                    if (auraNucleusSuggestion != null) {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = VyianoraPurple.copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, VyianoraCyan.copy(alpha = 0.7f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = VyianoraCyan, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        "Sugerencia de Aura (${selectedCategory.ifBlank { "General" }})",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = VyianoraCyan
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Término en el idioma:", fontSize = 11.sp, color = TextSecondary)
+                                        Text(auraNucleusSuggestion!!.first, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                    }
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Traducción al español:", fontSize = 11.sp, color = TextSecondary)
+                                        Text(auraNucleusSuggestion!!.second, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = VyianoraCyan)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { auraNucleusSuggestion = null },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, VyianoraBorder),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("Descartar", color = TextSecondary, fontSize = 12.sp)
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Button(
+                                        onClick = {
+                                            termLanguage = auraNucleusSuggestion!!.first
+                                            termSpanish = auraNucleusSuggestion!!.second
+                                            auraNucleusSuggestion = null
+                                            feedbackMessage = "✅ Sugerencia aplicada a los campos."
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = VyianoraCyan),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("Aplicar", color = Color(0xFF090C15), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    }
+                                }
                             }
                         }
                     }
@@ -779,7 +770,7 @@ fun NucleiSubMenu(
 
         item {
             Text(
-                text = "Núcleos de Vyianora (${nuclei.size})",
+                text = "Núcleos Registrados (${nuclei.size})",
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Bold,
                 color = TextPrimary
@@ -840,7 +831,7 @@ fun NucleiSubMenu(
 }
 
 /**
- * Submenú Morfología: Prefijo o Sufijo, significados en Vyianora y español, Guardar y Autollenar con Aura
+ * Submenú Morfología: Prefijo o Sufijo, significado en español, Guardar y Autollenar con Aura
  */
 @Composable
 fun MorphologySubMenu(
@@ -852,9 +843,9 @@ fun MorphologySubMenu(
     val coroutineScope = rememberCoroutineScope()
     var selectedType by rememberSaveable { mutableStateOf("Prefijo") }
     var morphemeText by rememberSaveable { mutableStateOf("") }
-    var meaningLanguage by rememberSaveable { mutableStateOf("") }
     var meaningSpanish by rememberSaveable { mutableStateOf("") }
     var isGeneratingByAi by remember { mutableStateOf(false) }
+    var auraMorphologySuggestion by remember { mutableStateOf<Pair<String, String>?>(null) }
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
 
     LazyColumn(
@@ -876,7 +867,7 @@ fun MorphologySubMenu(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "Crear Modificador Morfológico (Vyianora)",
+                        text = "Crear Modificador Morfológico",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary
@@ -899,16 +890,7 @@ fun MorphologySubMenu(
                         value = morphemeText,
                         onValueChange = { morphemeText = it },
                         label = { Text("Morfema") },
-                        placeholder = { Text(if (selectedType == "Prefijo") "Ej. Vyi-, Aeth-, Syn-" else "Ej. -anora, -kji, -alia, -ix") },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-
-                    OutlinedTextField(
-                        value = meaningLanguage,
-                        onValueChange = { meaningLanguage = it },
-                        label = { Text("Significado en Vyianora") },
-                        placeholder = { Text("Ej. Trascendencia sagrada, aliento cósmico") },
+                        placeholder = { Text(if (selectedType == "Prefijo") "Ej. Tor-, Kra-, Syn-" else "Ej. -ash, -on, -il, -el") },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp)
                     )
@@ -916,8 +898,8 @@ fun MorphologySubMenu(
                     OutlinedTextField(
                         value = meaningSpanish,
                         onValueChange = { meaningSpanish = it },
-                        label = { Text("Significado en español") },
-                        placeholder = { Text("Ej. Sagrado, celeste, manifestación") },
+                        label = { Text("Significado o función en español") },
+                        placeholder = { Text("Ej. Fuerza, intensidad, estado o pluralidad") },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp)
                     )
@@ -936,12 +918,11 @@ fun MorphologySubMenu(
                                                 itemType = LabItemType.MORPHOLOGY,
                                                 termLanguage = morphemeText.trim(),
                                                 categoryOrType = selectedType,
-                                                meaningLanguage = meaningLanguage.trim(),
+                                                meaningLanguage = "",
                                                 meaningSpanish = meaningSpanish.trim()
                                             )
                                         )
                                         morphemeText = ""
-                                        meaningLanguage = ""
                                         meaningSpanish = ""
                                         feedbackMessage = "✅ Modificador morfológico guardado."
                                     }
@@ -962,30 +943,13 @@ fun MorphologySubMenu(
                                 isGeneratingByAi = true
                                 feedbackMessage = null
                                 coroutineScope.launch {
-                                    val prompt = """
-                                        Eres Aura Kioko de Vyianora Translate. Diseña un $selectedType morfológico para la lengua Vyianora.
-                                        Debe evocar el misterio y la armonía de Vyianora (ejemplos: Vyi-, Aeth-, Kji-, -anora, -kji, -alia, -ix, -um).
-                                        Responde ÚNICAMENTE en JSON estricto sin markdown:
-                                        {"morfema": "ejemplo-", "significado_vyianora": "definicion_vyianora", "significado_espanol": "traduccion_espanol"}
-                                    """.trimIndent()
-                                    try {
-                                        val response = viewModel.sendMessage(prompt)
-                                        if (!response.isNullOrBlank()) {
-                                            val clean = response.substringAfter("{").substringBeforeLast("}")
-                                            val json = JSONObject("{$clean}")
-                                            morphemeText = json.optString("morfema", if (selectedType == "Prefijo") "Vyi-" else "-anora")
-                                            meaningLanguage = json.optString("significado_vyianora", "Cántico sagrado")
-                                            meaningSpanish = json.optString("significado_espanol", "Lengua o plegaria de")
-                                            feedbackMessage = "✨ Aura generó el modificador automáticamente."
-                                        }
-                                    } catch (e: Exception) {
-                                        morphemeText = if (selectedType == "Prefijo") "Kaela-" else "-kji"
-                                        meaningLanguage = "Símbolo ancestral grabado"
-                                        meaningSpanish = "Runa o glifo eterno"
-                                        feedbackMessage = "✨ Aura sugirió morfema."
-                                    } finally {
-                                        isGeneratingByAi = false
-                                    }
+                                    auraMorphologySuggestion = AuraLinguisticEngine.suggestMorphology(
+                                        viewModel = viewModel,
+                                        type = selectedType,
+                                        currentMorpheme = morphemeText,
+                                        currentMeaning = meaningSpanish
+                                    )
+                                    isGeneratingByAi = false
                                 }
                             },
                             modifier = Modifier.weight(1f),
@@ -998,7 +962,72 @@ fun MorphologySubMenu(
                             } else {
                                 Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Canalizar con Aura", color = Color(0xFF090C15), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("Forjar con Aura", color = Color(0xFF090C15), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    // Tarjeta Interactiva de Sugerencia Previa de Aura (Aplicar / Descartar)
+                    if (auraMorphologySuggestion != null) {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = VyianoraPurple.copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, VyianoraCyan.copy(alpha = 0.7f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = VyianoraCyan, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        "Sugerencia de Aura ($selectedType)",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = VyianoraCyan
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Morfema:", fontSize = 11.sp, color = TextSecondary)
+                                        Text(auraMorphologySuggestion!!.first, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                    }
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Función en español:", fontSize = 11.sp, color = TextSecondary)
+                                        Text(auraMorphologySuggestion!!.second, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = VyianoraCyan)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { auraMorphologySuggestion = null },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, VyianoraBorder),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("Descartar", color = TextSecondary, fontSize = 12.sp)
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Button(
+                                        onClick = {
+                                            morphemeText = auraMorphologySuggestion!!.first
+                                            meaningSpanish = auraMorphologySuggestion!!.second
+                                            auraMorphologySuggestion = null
+                                            feedbackMessage = "✅ Sugerencia aplicada a los campos."
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = VyianoraCyan),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("Aplicar", color = Color(0xFF090C15), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    }
+                                }
                             }
                         }
                     }
@@ -1060,7 +1089,6 @@ fun MorphologySubMenu(
                             }
                         }
                         if (item.meaningSpanish.isNotBlank()) Text("Español: ${item.meaningSpanish}", fontSize = 12.sp, color = TextPrimary)
-                        if (item.meaningLanguage.isNotBlank()) Text("Vyianora: ${item.meaningLanguage}", fontSize = 11.sp, color = TextSecondary)
                     }
 
                     IconButton(
@@ -1088,6 +1116,7 @@ fun CategoriesSubMenu(
     var categoryName by rememberSaveable { mutableStateOf("") }
     var categoryDescription by rememberSaveable { mutableStateOf("") }
     var isGeneratingByAi by remember { mutableStateOf(false) }
+    var auraCategorySuggestion by remember { mutableStateOf<Pair<String, String>?>(null) }
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
 
     LazyColumn(
@@ -1109,17 +1138,22 @@ fun CategoriesSubMenu(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "Dominios y Categorías de Vyianora",
+                        text = "Categorías para Núcleos y Raíces de Palabras",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary
+                    )
+                    Text(
+                        text = "Crea o genera con Aura categorías temáticas donde clasificarás y organizarás los núcleos y raíces del idioma.",
+                        fontSize = 12.sp,
+                        color = TextSecondary
                     )
 
                     OutlinedTextField(
                         value = categoryName,
                         onValueChange = { categoryName = it },
-                        label = { Text("Nombre del dominio") },
-                        placeholder = { Text("Ej. Cosmos & Éter, Esencia Espiritual, Runas Arcanas") },
+                        label = { Text("Nombre de la categoría") },
+                        placeholder = { Text("Ej. Guerra y Estrategia, Naturaleza, Cosmos, Mística") },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp)
                     )
@@ -1127,8 +1161,8 @@ fun CategoriesSubMenu(
                     OutlinedTextField(
                         value = categoryDescription,
                         onValueChange = { categoryDescription = it },
-                        label = { Text("Descripción o ámbito temático") },
-                        placeholder = { Text("Ej. Conceptos vinculados a las entidades celestes de Vyianora") },
+                        label = { Text("Contexto temático para núcleos y raíces") },
+                        placeholder = { Text("Ej. Raíces para armas, combate, asedio, defensa y honor marcial") },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp)
                     )
@@ -1151,7 +1185,7 @@ fun CategoriesSubMenu(
                                         )
                                         categoryName = ""
                                         categoryDescription = ""
-                                        feedbackMessage = "✅ Dominio registrado."
+                                        feedbackMessage = "✅ Categoría de núcleos registrada."
                                     }
                                 }
                             },
@@ -1170,27 +1204,12 @@ fun CategoriesSubMenu(
                                 isGeneratingByAi = true
                                 feedbackMessage = null
                                 coroutineScope.launch {
-                                    val prompt = """
-                                        Eres Aura Kioko de Vyianora Translate. Sugiere un dominio o categoría arquetípica fascinante para la cosmología y lengua de Vyianora.
-                                        Responde ÚNICAMENTE en JSON estricto sin markdown:
-                                        {"categoria": "nombre_dominio", "descripcion": "descripcion_dominio"}
-                                    """.trimIndent()
-                                    try {
-                                        val response = viewModel.sendMessage(prompt)
-                                        if (!response.isNullOrBlank()) {
-                                            val clean = response.substringAfter("{").substringBeforeLast("}")
-                                            val json = JSONObject("{$clean}")
-                                            categoryName = json.optString("categoria", "Fuerza del Éter Primordial")
-                                            categoryDescription = json.optString("descripcion", "Morfemas que gobiernan el vacío y la resonancia estelar")
-                                            feedbackMessage = "✨ Aura reveló una nueva categoría de Vyianora."
-                                        }
-                                    } catch (e: Exception) {
-                                        categoryName = "Runas de Orión"
-                                        categoryDescription = "Glifos dedicados a las constelaciones protectoras"
-                                        feedbackMessage = "✨ Aura sugirió dominio."
-                                    } finally {
-                                        isGeneratingByAi = false
-                                    }
+                                    auraCategorySuggestion = AuraLinguisticEngine.suggestCategory(
+                                        viewModel = viewModel,
+                                        currentName = categoryName,
+                                        currentDesc = categoryDescription
+                                    )
+                                    isGeneratingByAi = false
                                 }
                             },
                             modifier = Modifier.weight(1f),
@@ -1203,7 +1222,72 @@ fun CategoriesSubMenu(
                             } else {
                                 Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Revelar con Aura", color = Color(0xFF090C15), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("Sugerir con Aura", color = Color(0xFF090C15), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    // Tarjeta Interactiva de Sugerencia Previa de Aura (Aplicar / Descartar)
+                    if (auraCategorySuggestion != null) {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = VyianoraPurple.copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, VyianoraCyan.copy(alpha = 0.7f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = VyianoraCyan, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        "Sugerencia de Aura (Categoría)",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = VyianoraCyan
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("Categoría:", fontSize = 11.sp, color = TextSecondary)
+                                        Text(auraCategorySuggestion!!.first, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                    }
+                                    Column(modifier = Modifier.weight(1.5f)) {
+                                        Text("Contexto:", fontSize = 11.sp, color = TextSecondary)
+                                        Text(auraCategorySuggestion!!.second, fontSize = 14.sp, fontWeight = FontWeight.Normal, color = VyianoraCyan)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { auraCategorySuggestion = null },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, VyianoraBorder),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("Descartar", color = TextSecondary, fontSize = 12.sp)
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Button(
+                                        onClick = {
+                                            categoryName = auraCategorySuggestion!!.first
+                                            categoryDescription = auraCategorySuggestion!!.second
+                                            auraCategorySuggestion = null
+                                            feedbackMessage = "✅ Sugerencia aplicada a los campos."
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = VyianoraCyan),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("Aplicar", color = Color(0xFF090C15), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    }
+                                }
                             }
                         }
                     }
@@ -1271,7 +1355,7 @@ fun CategoriesSubMenu(
 }
 
 /**
- * 2. MENÚ GENERADOR (Constructor de Morfemas al estilo Vyianora con significado automático por Aura)
+ * 2. MENÚ GENERADOR (Constructor de Morfemas con síntesis rápida por Aura)
  */
 @Composable
 fun GeneratorMorphemesModule(
@@ -1306,25 +1390,17 @@ fun GeneratorMorphemesModule(
         if (assembled.isNotBlank()) {
             isGeneratingMeaning = true
             coroutineScope.launch {
-                val prompt = """
-                    Eres Aura Kioko, compañera e intérprete del sistema lingüístico Vyianora Translate.
-                    El usuario ha forjado una nueva palabra en Vyianora combinando:
-                    - Prefijo: "${p?.termLanguage ?: "ninguno"}" (Significado: ${p?.meaningSpanish ?: "N/A"})
-                    - Núcleo: "${n?.termLanguage ?: "ninguno"}" (Significado: ${n?.termSpanish ?: "N/A"})
-                    - Sufijo: "${s?.termLanguage ?: "ninguno"}" (Significado: ${s?.meaningSpanish ?: "N/A"})
-                    Palabra forjada en Vyianora: "$assembled"
-                    
-                    Determina su traducción y significado conciso en español respetando la esencia mística de Vyianora. Responde solo con el significado (máximo 12 palabras, en español).
-                """.trimIndent()
-                try {
-                    val resp = viewModel.sendMessage(prompt)
-                    aiSpanishMeaning = resp?.trim()?.removePrefix("\"")?.removeSuffix("\"") ?: "Significado sintetizado en Vyianora"
-                } catch (e: Exception) {
-                    val fallbackMeaning = listOfNotNull(p?.meaningSpanish, n?.termSpanish, s?.meaningSpanish).joinToString(" de ")
-                    aiSpanishMeaning = fallbackMeaning.ifBlank { "Esencia primordial de Vyianora" }
-                } finally {
-                    isGeneratingMeaning = false
-                }
+                aiSpanishMeaning = AuraLinguisticEngine.interpretAssembledWord(
+                    viewModel = viewModel,
+                    prefixTerm = p?.termLanguage,
+                    prefixMeaning = p?.meaningSpanish?.ifBlank { p.termSpanish },
+                    nucleusTerm = n?.termLanguage,
+                    nucleusMeaning = n?.termSpanish?.ifBlank { n.meaningSpanish },
+                    suffixTerm = s?.termLanguage,
+                    suffixMeaning = s?.meaningSpanish?.ifBlank { s.termSpanish },
+                    assembledWord = assembled
+                )
+                isGeneratingMeaning = false
             }
         } else {
             aiSpanishMeaning = ""
@@ -1339,13 +1415,13 @@ fun GeneratorMorphemesModule(
     ) {
         item {
             Text(
-                text = "Generador de Morfemas • Vyianora",
+                text = "Generador de Morfemas",
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
                 color = TextPrimary
             )
             Text(
-                text = "Combina prefijos, raíces y sufijos para forjar nuevos términos en Vyianora. Aura deducirá automáticamente su significado en español.",
+                text = "Selecciona entre prefijos, núcleos y sufijos desde las listas desplegables. Aura deducirá automáticamente su significado coherente en español.",
                 fontSize = 12.sp,
                 color = TextSecondary
             )
@@ -1366,7 +1442,7 @@ fun GeneratorMorphemesModule(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "PALABRA FORJADA EN VYIANORA",
+                        text = "PALABRA FORJADA",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = VyianoraCyan,
@@ -1374,8 +1450,8 @@ fun GeneratorMorphemesModule(
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = if (generatedWordText.isNotBlank()) generatedWordText else "(Elige modificadores abajo)",
-                        fontSize = 30.sp,
+                        text = if (generatedWordText.isNotBlank()) generatedWordText else "(Selecciona en los desplegables abajo)",
+                        fontSize = 28.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = if (generatedWordText.isNotBlank()) Color.White else TextSecondary.copy(alpha = 0.5f),
                         textAlign = TextAlign.Center
@@ -1426,7 +1502,7 @@ fun GeneratorMorphemesModule(
                                                 usedComponents = componentsList
                                             )
                                         )
-                                        saveSuccessMessage = "✅ Guardada en la Biblioteca de Vyianora."
+                                        saveSuccessMessage = "✅ Guardada en la Biblioteca."
                                     }
                                 },
                                 shape = RoundedCornerShape(12.dp),
@@ -1462,37 +1538,46 @@ fun GeneratorMorphemesModule(
             }
         }
 
+        // 1. Apartado de Prefijos con Lista Desplegable
         item {
-            MorphemeChoiceSection(
-                title = "1. Prefijo de Vyianora (Opcional)",
+            MorphemeDropdownSection(
+                title = "1. Apartado de Prefijos",
                 items = prefixes,
                 selected = selectedPrefix,
+                isOptional = true,
+                emptyPrompt = "— Selecciona un Prefijo (Opcional) —",
                 onSelected = {
-                    selectedPrefix = if (selectedPrefix == it) null else it
+                    selectedPrefix = it
                     triggerWordAssembly(selectedPrefix, selectedNucleus, selectedSuffix)
                 }
             )
         }
 
+        // 2. Apartado de Núcleos con Lista Desplegable
         item {
-            MorphemeChoiceSection(
-                title = "2. Núcleo / Raíz Base (Vyianora)",
+            MorphemeDropdownSection(
+                title = "2. Apartado de Núcleos (Raíces)",
                 items = nuclei,
                 selected = selectedNucleus,
+                isOptional = false,
+                emptyPrompt = "— Selecciona un Núcleo / Raíz —",
                 onSelected = {
-                    selectedNucleus = if (selectedNucleus == it) null else it
+                    selectedNucleus = it
                     triggerWordAssembly(selectedPrefix, selectedNucleus, selectedSuffix)
                 }
             )
         }
 
+        // 3. Apartado de Sufijos con Lista Desplegable
         item {
-            MorphemeChoiceSection(
-                title = "3. Sufijo de Vyianora (Opcional)",
+            MorphemeDropdownSection(
+                title = "3. Apartado de Sufijos",
                 items = suffixes,
                 selected = selectedSuffix,
+                isOptional = true,
+                emptyPrompt = "— Selecciona un Sufijo (Opcional) —",
                 onSelected = {
-                    selectedSuffix = if (selectedSuffix == it) null else it
+                    selectedSuffix = it
                     triggerWordAssembly(selectedPrefix, selectedNucleus, selectedSuffix)
                 }
             )
@@ -1500,52 +1585,174 @@ fun GeneratorMorphemesModule(
     }
 }
 
+/**
+ * Componente de Apartado Desplegable para Prefijos, Núcleos y Sufijos con Significado en Español
+ */
 @Composable
-fun MorphemeChoiceSection(
+fun MorphemeDropdownSection(
     title: String,
     items: List<LabItemEntity>,
     selected: LabItemEntity?,
-    onSelected: (LabItemEntity) -> Unit
+    isOptional: Boolean = true,
+    emptyPrompt: String,
+    onSelected: (LabItemEntity?) -> Unit
 ) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = title,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
-            color = TextPrimary,
-            modifier = Modifier.padding(bottom = 6.dp)
-        )
-        if (items.isEmpty()) {
-            Text("No hay elementos registrados.", fontSize = 12.sp, color = TextSecondary)
-        } else {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(items) { item ->
-                    val isSelected = selected == item
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (isSelected) VyianoraPurple.copy(alpha = 0.25f) else VyianoraSurface,
-                        border = BorderStroke(
-                            width = if (isSelected) 1.5.dp else 1.dp,
-                            color = if (isSelected) VyianoraCyan else VyianoraBorder
-                        ),
-                        modifier = Modifier.clickable { onSelected(item) }
+    var expanded by remember { mutableStateOf(false) }
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = VyianoraSurface,
+        border = BorderStroke(1.dp, if (selected != null) VyianoraCyan.copy(alpha = 0.7f) else VyianoraBorder),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = title,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary
+                )
+                if (selected != null && isOptional) {
+                    TextButton(
+                        onClick = { onSelected(null) },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                     ) {
-                        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) {
-                            Text(
-                                text = item.termLanguage,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp,
-                                color = if (isSelected) VyianoraCyan else TextPrimary
-                            )
-                            val desc = if (item.termSpanish.isNotBlank()) item.termSpanish else item.meaningSpanish
-                            if (desc.isNotBlank()) {
+                        Text("Quitar", fontSize = 11.sp, color = VyianoraRose)
+                    }
+                }
+            }
+
+            Box(modifier = Modifier.fillMaxWidth()) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = VyianoraDarkBackground,
+                    border = BorderStroke(1.dp, if (expanded) VyianoraCyan else VyianoraBorder),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { expanded = true }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            if (selected != null) {
                                 Text(
-                                    text = desc,
-                                    fontSize = 10.sp,
-                                    color = TextSecondary,
-                                    maxLines = 1
+                                    text = selected.termLanguage,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    color = VyianoraCyan
+                                )
+                                val desc = selected.meaningSpanish.ifBlank { selected.termSpanish }
+                                if (desc.isNotBlank()) {
+                                    Text(
+                                        text = "Significado: $desc",
+                                        fontSize = 12.sp,
+                                        color = TextSecondary,
+                                        maxLines = 1
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    text = emptyPrompt,
+                                    fontSize = 13.sp,
+                                    color = TextSecondary
                                 )
                             }
+                        }
+                        Icon(
+                            imageVector = if (expanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
+                            contentDescription = "Desplegar opciones",
+                            tint = VyianoraCyan
+                        )
+                    }
+                }
+
+                DropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false },
+                    modifier = Modifier
+                        .background(VyianoraSurface)
+                        .border(BorderStroke(1.dp, VyianoraBorder), RoundedCornerShape(12.dp))
+                ) {
+                    if (isOptional) {
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text("— Ninguno (Omitir) —", fontSize = 13.sp, color = TextSecondary, fontWeight = FontWeight.SemiBold)
+                                    Text("No incluir este modificador en la palabra", fontSize = 11.sp, color = TextSecondary.copy(alpha = 0.7f))
+                                }
+                            },
+                            onClick = {
+                                onSelected(null)
+                                expanded = false
+                            }
+                        )
+                    }
+
+                    if (items.isEmpty()) {
+                        DropdownMenuItem(
+                            text = {
+                                Text("No hay elementos registrados en el léxico", fontSize = 12.sp, color = VyianoraGold)
+                            },
+                            onClick = { expanded = false }
+                        )
+                    } else {
+                        items.forEach { item ->
+                            val isCurrent = selected?.id == item.id
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = item.termLanguage,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp,
+                                                color = if (isCurrent) VyianoraCyan else TextPrimary
+                                            )
+                                            if (item.categoryOrType.isNotBlank()) {
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Surface(
+                                                    shape = RoundedCornerShape(4.dp),
+                                                    color = VyianoraBorder.copy(alpha = 0.6f)
+                                                ) {
+                                                    Text(
+                                                        text = item.categoryOrType,
+                                                        fontSize = 9.sp,
+                                                        color = TextSecondary,
+                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        val desc = item.meaningSpanish.ifBlank { item.termSpanish }
+                                        if (desc.isNotBlank()) {
+                                            Text(
+                                                text = "Significado: $desc",
+                                                fontSize = 11.sp,
+                                                color = TextSecondary
+                                            )
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    onSelected(item)
+                                    expanded = false
+                                }
+                            )
                         }
                     }
                 }
@@ -1555,7 +1762,7 @@ fun MorphemeChoiceSection(
 }
 
 /**
- * 3. MENÚ FRASES O PALABRAS (Vyianora Translate)
+ * 3. MENÚ FRASES O PALABRAS (Traductor y Constructor de Frases)
  * Filtrador por tipo, alfabético y fecha. Constructor de morfología con Aura.
  * Muestra núcleos usados, significado literal, contextual de la IA y Grado de Poder (1-10 con Insignia).
  */
@@ -1612,13 +1819,13 @@ fun PhrasesModule(
     ) {
         item {
             Text(
-                text = "Generador de Frases • Vyianora",
+                text = "Generador de Frases",
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
                 color = TextPrimary
             )
             Text(
-                text = "Escribe o compone frases en la lengua Vyianora. Aura analizará su morfología, el significado literal y su contexto místico, junto con el Grado de Poder (1-10).",
+                text = "Escribe o compone frases en la lengua que estás creando. Aura analizará su morfología, el significado literal y su contexto, junto con el Grado de Poder (1-10).",
                 fontSize = 12.sp,
                 color = TextSecondary
             )
@@ -1638,7 +1845,7 @@ fun PhrasesModule(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "Frase en Vyianora:",
+                        text = "Frase en el idioma:",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = TextSecondary
@@ -1659,53 +1866,18 @@ fun PhrasesModule(
                                 isAnalyzingWithAura = true
                                 phraseSaveMessage = null
                                 coroutineScope.launch {
-                                    val knownGlossary = nuclei.joinToString("; ") { "${it.termLanguage}=${it.termSpanish}" }
-                                    val prompt = """
-                                        Eres Aura Kioko, compañera e intérprete del universo Vyianora Translate.
-                                        Analiza la siguiente frase construida en la lengua sagrada Vyianora:
-                                        Frase: "$phraseInput"
-                                        Glosario conocido: $knownGlossary
-                                        
-                                        Calcula la morfología, significado literal y significado contextual. Determina el "grado_poder" (entero del 1 al 10) y su correspondiente "insignia_poder".
-                                        Escala de poder de Vyianora:
-                                        1-2: Insignia Terrenal
-                                        3-4: Insignia Resonante
-                                        5-6: Insignia Arcana
-                                        7-8: Insignia Ancestral Éter
-                                        9-10: Insignia Cósmica Suprema
-                                        
-                                        Responde ÚNICAMENTE en JSON estricto sin markdown:
-                                        {
-                                          "nucleos_usados": "desglose de raices y morfemas usados con significado",
-                                          "significado_literal": "traduccion palabra por palabra",
-                                          "significado_contextual": "interpretacion conceptual profunda y poetica de Vyianora",
-                                          "grado_poder": 8,
-                                          "insignia_poder": "Insignia Ancestral Éter",
-                                          "estructura": "Sujeto + Cántico + Verbo Trascendental"
-                                        }
-                                    """.trimIndent()
-                                    try {
-                                        val response = viewModel.sendMessage(prompt)
-                                        if (!response.isNullOrBlank()) {
-                                            val clean = response.substringAfter("{").substringBeforeLast("}")
-                                            val json = JSONObject("{$clean}")
-                                            analyzedNucleiUsed = json.optString("nucleos_usados", "Raíces de Vyianora detectadas")
-                                            analyzedLiteralMeaning = json.optString("significado_literal", phraseInput)
-                                            analyzedContextualMeaning = json.optString("significado_contextual", "Plegaria mística de resonancia cósmica")
-                                            analyzedPowerLevel = json.optInt("grado_poder", 8).coerceIn(1, 10)
-                                            analyzedPowerBadge = json.optString("insignia_poder", "Insignia Arcana")
-                                            analyzedStructure = json.optString("estructura", "Sintaxis Vyianora Clásica")
-                                        }
-                                    } catch (e: Exception) {
-                                        analyzedNucleiUsed = "Raíces identificadas: ${phraseInput.take(25)}"
-                                        analyzedLiteralMeaning = "Traducción directa de los términos"
-                                        analyzedContextualMeaning = "Sentencia armónica que sintoniza con el cosmos de Vyianora"
-                                        analyzedPowerLevel = 7
-                                        analyzedPowerBadge = "Insignia Ancestral Éter"
-                                        analyzedStructure = "Orden SOV Místico"
-                                    } finally {
-                                        isAnalyzingWithAura = false
-                                    }
+                                    val analysis = AuraLinguisticEngine.analyzePhrase(
+                                        viewModel = viewModel,
+                                        phrase = phraseInput,
+                                        glossary = nuclei.map { Pair(it.termLanguage, it.termSpanish) }
+                                    )
+                                    analyzedNucleiUsed = analysis.nucleiUsed
+                                    analyzedLiteralMeaning = analysis.literalMeaning
+                                    analyzedContextualMeaning = analysis.contextualMeaning
+                                    analyzedPowerLevel = analysis.powerLevel
+                                    analyzedPowerBadge = analysis.powerBadge
+                                    analyzedStructure = analysis.structure
+                                    isAnalyzingWithAura = false
                                 }
                             }
                         },
@@ -1719,7 +1891,7 @@ fun PhrasesModule(
                         if (isAnalyzingWithAura) {
                             CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color(0xFF090C15), strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Aura analizando en Vyianora...", color = Color(0xFF090C15), fontWeight = FontWeight.Bold)
+                            Text("Aura analizando la frase...", color = Color(0xFF090C15), fontWeight = FontWeight.Bold)
                         } else {
                             Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color(0xFF090C15))
                             Spacer(modifier = Modifier.width(8.dp))
@@ -1751,7 +1923,7 @@ fun PhrasesModule(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "ANÁLISIS MORFOLÓGICO VYIANORA",
+                                text = "ANÁLISIS MORFOLÓGICO Y PODER",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = VyianoraCyan,
@@ -1828,7 +2000,7 @@ fun PhrasesModule(
                                             grammaticalStructure = analyzedStructure
                                         )
                                     )
-                                    phraseSaveMessage = "✅ Frase guardada en la Biblioteca de Vyianora."
+                                    phraseSaveMessage = "✅ Frase guardada en la Biblioteca."
                                 }
                             },
                             modifier = Modifier.fillMaxWidth(),
@@ -1852,7 +2024,7 @@ fun PhrasesModule(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Explorar Léxico de Vyianora",
+                    text = "Explorar Léxico Creado",
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     color = TextPrimary
@@ -1944,7 +2116,7 @@ fun PhrasesModule(
 }
 
 /**
- * 4. MENÚ BIBLIOTECA (Organizado en pestañas dedicadas estilo Vyianora Translate)
+ * 4. MENÚ BIBLIOTECA (Organizado en pestañas dedicadas)
  */
 @Composable
 fun LibraryLabModule(
@@ -1953,7 +2125,7 @@ fun LibraryLabModule(
     morphology: List<LabItemEntity>,
     words: List<LabItemEntity>,
     phrases: List<LabItemEntity>,
-    onOpenVyianjiCanvas: () -> Unit,
+    onOpenWritingCanvas: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -1975,20 +2147,20 @@ fun LibraryLabModule(
                     LibrarySubTab.Morphology -> morphology.size
                     LibrarySubTab.Words -> words.size
                     LibrarySubTab.Phrases -> phrases.size
-                    LibrarySubTab.Vyianji -> 0
+                    LibrarySubTab.WritingCanvas -> 0
                 }
                 Tab(
                     selected = isSelected,
                     onClick = {
-                        if (tab == LibrarySubTab.Vyianji) {
-                            onOpenVyianjiCanvas()
+                        if (tab == LibrarySubTab.WritingCanvas) {
+                            onOpenWritingCanvas()
                         } else {
                             selectedTab = tab
                         }
                     },
                     text = {
                         Text(
-                            text = if (tab == LibrarySubTab.Vyianji) "Lienzo Vyianji" else "${tab.label} ($count)",
+                            text = if (tab == LibrarySubTab.WritingCanvas) "Lienzo de escritura" else "${tab.label} ($count)",
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                             fontSize = 12.sp,
                             color = if (isSelected) VyianoraCyan else TextSecondary
@@ -2067,7 +2239,6 @@ fun LibraryLabModule(
                                         }
                                     }
                                     if (item.meaningSpanish.isNotBlank()) Text("Español: ${item.meaningSpanish}", fontSize = 12.sp, color = TextPrimary)
-                                    if (item.meaningLanguage.isNotBlank()) Text("Vyianora: ${item.meaningLanguage}", fontSize = 11.sp, color = TextSecondary)
                                 }
                                 Row {
                                     IconButton(onClick = { clipboardManager.setText(AnnotatedString("${item.termLanguage}: ${item.meaningSpanish}")) }) {
@@ -2120,7 +2291,7 @@ fun LibraryLabModule(
                 }
                 LibrarySubTab.Phrases -> {
                     if (phrases.isEmpty()) {
-                        item { EmptyLibraryPlaceholder("No hay frases de Vyianora guardadas.") }
+                        item { EmptyLibraryPlaceholder("No hay frases guardadas en la biblioteca.") }
                     }
                     items(phrases) { item ->
                         Surface(
@@ -2191,7 +2362,7 @@ fun LibraryLabModule(
                         }
                     }
                 }
-                LibrarySubTab.Vyianji -> {
+                LibrarySubTab.WritingCanvas -> {
                     // Controlado por el click listener
                 }
             }
@@ -2200,10 +2371,10 @@ fun LibraryLabModule(
 }
 
 /**
- * 5. LIENZO VYIANJI (Vyianji Canvas - Inspirado en VyianjiCanvas.jsx de Vyianora Translate)
+ * 5. LIENZO DE ESCRITURA (Canvas interactivo para trazar glifos, símbolos o caracteres)
  */
 @Composable
-fun VyianjiCanvasDialog(
+fun WritingCanvasDialog(
     viewModel: AetherViewModel,
     repository: CreationLabRepository,
     userEmail: String,
@@ -2251,8 +2422,8 @@ fun VyianjiCanvasDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("Lienzo Vyianji (Carácter Sagrado)", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = VyianoraCyan)
-                        Text("Dibuja trazos ideográficos de Vyianora con tu dedo", fontSize = 11.sp, color = TextSecondary)
+                        Text("Lienzo de Escritura", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = VyianoraCyan)
+                        Text("Dibuja trazos, glifos o ideogramas con tu dedo", fontSize = 11.sp, color = TextSecondary)
                     }
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = TextSecondary)
@@ -2289,7 +2460,7 @@ fun VyianjiCanvasDialog(
                                     )
                                 }
                         ) {
-                            // Cuadrícula caligráfica tenue estilo Vyianji
+                            // Cuadrícula caligráfica tenue
                             val step = 36.dp.toPx()
                             var x = 0f
                             while (x < size.width) {
@@ -2337,7 +2508,7 @@ fun VyianjiCanvasDialog(
 
                         if (paths.isEmpty() && currentPoints.isEmpty()) {
                             Text(
-                                text = "Traza aquí el ideograma Vyianji...",
+                                text = "Traza aquí tu glifo o símbolo...",
                                 color = TextSecondary.copy(alpha = 0.4f),
                                 fontSize = 13.sp,
                                 modifier = Modifier.align(Alignment.Center)
@@ -2384,8 +2555,8 @@ fun VyianjiCanvasDialog(
                 OutlinedTextField(
                     value = glyphName,
                     onValueChange = { glyphName = it },
-                    label = { Text("Nombre del Carácter Vyianji") },
-                    placeholder = { Text("Ej. Vyianji de la Sabiduría, Runa de Nora") },
+                    label = { Text("Nombre del Glifo o Símbolo") },
+                    placeholder = { Text("Ej. Glifo del Amanecer, Runa de Fuerza") },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp)
                 )
@@ -2397,14 +2568,14 @@ fun VyianjiCanvasDialog(
                                 isInterpreting = true
                                 coroutineScope.launch {
                                     val prompt = """
-                                        Eres Aura Kioko de Vyianora Translate.
-                                        El usuario ha dibujado el carácter ideográfico Vyianji "${glyphName.ifBlank { "Glifo Cósmico" }}".
-                                        Interpreta su resonancia en una frase corta y mística (máximo 14 palabras).
+                                        Eres Aura, asistente rápida del laboratorio lingüístico.
+                                        El usuario dibujó el símbolo o carácter "${glyphName.ifBlank { "Glifo Simbólico" }}".
+                                        Interpreta su posible significado directo y conciso en español (máximo 8 palabras).
                                     """.trimIndent()
                                     try {
-                                        auraInterpretation = viewModel.sendMessage(prompt)
+                                        auraInterpretation = viewModel.sendMessage(prompt)?.trim()?.removePrefix("\"")?.removeSuffix("\"")
                                     } catch (e: Exception) {
-                                        auraInterpretation = "Carácter sagrado que canaliza la luz de Vyianora."
+                                        auraInterpretation = "Carácter simbólico y representativo."
                                     } finally {
                                         isInterpreting = false
                                     }
@@ -2433,9 +2604,9 @@ fun VyianjiCanvasDialog(
                                         LabItemEntity(
                                             userEmail = userEmail,
                                             itemType = LabItemType.WORD,
-                                            termLanguage = glyphName.ifBlank { "Vyianji #${System.currentTimeMillis() % 1000}" },
-                                            termSpanish = auraInterpretation ?: "Glifo grabado en el lienzo Vyianji",
-                                            categoryOrType = "Glifo Vyianji"
+                                            termLanguage = glyphName.ifBlank { "Glifo #${System.currentTimeMillis() % 1000}" },
+                                            termSpanish = auraInterpretation ?: "Glifo grabado en el lienzo de escritura",
+                                            categoryOrType = "Glifo de Escritura"
                                         )
                                     )
                                     onDismiss()

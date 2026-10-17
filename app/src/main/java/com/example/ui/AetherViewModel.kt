@@ -1361,6 +1361,29 @@ En cualquier otra consulta, análisis, reflexión o conversación, responde en M
         return trimmedClean
     }
 
+    suspend fun queryCreationLabAi(
+        prompt: String,
+        systemInstruction: String = "Eres Aura, motor lingüístico y fonotáctico rápido, preciso y sin alucinaciones para creación de lenguas y conlangs. Responde estrictamente lo solicitado."
+    ): String? {
+        val status = modelVerifier.checkCurrentStatus()
+        if (status !is ModelDownloadStatus.Ready) {
+            return null
+        }
+        val isLoaded = localLlm.ensureModelLoaded(modelVerifier.modelFile)
+        if (!isLoaded) return null
+
+        return try {
+            localLlm.generateResponse(
+                prompt = prompt,
+                systemPrompt = systemInstruction,
+                history = emptyList(),
+                onStatusUpdate = {}
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     suspend fun sendMessage(
         message: String,
         imageBase64: String? = null,
