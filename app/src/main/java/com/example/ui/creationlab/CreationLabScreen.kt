@@ -730,6 +730,34 @@ fun NucleiSubMenu(
                                     horizontalArrangement = Arrangement.End
                                 ) {
                                     OutlinedButton(
+                                        onClick = {
+                                            isGeneratingByAi = true
+                                            coroutineScope.launch {
+                                                val catEntity = categories.firstOrNull { it.categoryOrType == selectedCategory }
+                                                val catName = selectedCategory.ifBlank { "General" }
+                                                val catDesc = catEntity?.termSpanish.orEmpty()
+                                                auraNucleusSuggestion = AuraLinguisticEngine.suggestNucleus(
+                                                    viewModel = viewModel,
+                                                    categoryName = catName,
+                                                    categoryDescription = catDesc,
+                                                    currentLanguage = auraNucleusSuggestion?.first ?: termLanguage,
+                                                    currentSpanish = auraNucleusSuggestion?.second ?: termSpanish,
+                                                    forceNew = true
+                                                )
+                                                isGeneratingByAi = false
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, VyianoraCyan.copy(alpha = 0.6f)),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        enabled = !isGeneratingByAi
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Otra opción", tint = VyianoraCyan, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Otra opción", color = VyianoraCyan, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    OutlinedButton(
                                         onClick = { auraNucleusSuggestion = null },
                                         shape = RoundedCornerShape(8.dp),
                                         border = BorderStroke(1.dp, VyianoraBorder),
@@ -1006,6 +1034,30 @@ fun MorphologySubMenu(
                                     horizontalArrangement = Arrangement.End
                                 ) {
                                     OutlinedButton(
+                                        onClick = {
+                                            isGeneratingByAi = true
+                                            coroutineScope.launch {
+                                                auraMorphologySuggestion = AuraLinguisticEngine.suggestMorphology(
+                                                    viewModel = viewModel,
+                                                    type = selectedType,
+                                                    currentMorpheme = auraMorphologySuggestion?.first ?: morphemeText,
+                                                    currentMeaning = auraMorphologySuggestion?.second ?: meaningSpanish,
+                                                    forceNew = true
+                                                )
+                                                isGeneratingByAi = false
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, VyianoraCyan.copy(alpha = 0.6f)),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        enabled = !isGeneratingByAi
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Otra opción", tint = VyianoraCyan, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Otra opción", color = VyianoraCyan, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    OutlinedButton(
                                         onClick = { auraMorphologySuggestion = null },
                                         shape = RoundedCornerShape(8.dp),
                                         border = BorderStroke(1.dp, VyianoraBorder),
@@ -1265,6 +1317,29 @@ fun CategoriesSubMenu(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.End
                                 ) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            isGeneratingByAi = true
+                                            coroutineScope.launch {
+                                                auraCategorySuggestion = AuraLinguisticEngine.suggestCategory(
+                                                    viewModel = viewModel,
+                                                    currentName = auraCategorySuggestion?.first ?: categoryName,
+                                                    currentDesc = auraCategorySuggestion?.second ?: categoryDescription,
+                                                    forceNew = true
+                                                )
+                                                isGeneratingByAi = false
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, VyianoraCyan.copy(alpha = 0.6f)),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        enabled = !isGeneratingByAi
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Otra opción", tint = VyianoraCyan, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Otra opción", color = VyianoraCyan, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
                                     OutlinedButton(
                                         onClick = { auraCategorySuggestion = null },
                                         shape = RoundedCornerShape(8.dp),

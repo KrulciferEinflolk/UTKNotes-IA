@@ -205,16 +205,25 @@ object AuraLinguisticEngine {
         return forbidden.any { s == it || s == "\"$it\"" }
     }
 
+    // Memoria de sugerencias recientes para garantizar rotación y alternancia sin repeticiones
+    private val recentRoots = mutableListOf<String>()
+    private val recentMorphemes = mutableListOf<String>()
+    private val recentCategories = mutableListOf<String>()
+
     suspend fun suggestNucleus(
         viewModel: AetherViewModel,
         categoryName: String,
         categoryDescription: String,
         currentLanguage: String,
-        currentSpanish: String
+        currentSpanish: String,
+        forceNew: Boolean = false
     ): Pair<String, String> {
         val catName = categoryName.ifBlank { "General" }
         val domain = findMatchingDomain(catName, categoryDescription)
         val catDesc = categoryDescription.ifBlank { domain.description }
+
+        val excluded = (recentRoots + listOfNotNull(currentLanguage.takeIf { it.isNotBlank() }, currentSpanish.takeIf { it.isNotBlank() })).toSet()
+        val exclusionNote = if (excluded.isNotEmpty()) "NO repitas ninguna de estas opciones ya mostradas: ${excluded.take(6).joinToString(", ")}." else ""
 
         // Intentar consulta IA limpia si el modelo local está listo
         val prompt = when {
@@ -222,7 +231,7 @@ object AuraLinguisticEngine {
                 Contexto: Conlang (lengua inventada).
                 Categoría: "$catName" ($catDesc).
                 Raíz ingresada: "$currentLanguage".
-                Determina una traducción concisa en español (1 a 3 palabras) coherente con "$catName".
+                Determina una traducción concisa en español (1 a 3 palabras) coherente con "$catName". $exclusionNote
                 Responde ÚNICAMENTE un objeto JSON:
                 {"idioma": "$currentLanguage", "espanol": "..."}
             """.trimIndent()
@@ -231,7 +240,7 @@ object AuraLinguisticEngine {
                 Contexto: Conlang (lengua inventada).
                 Categoría: "$catName" ($catDesc).
                 Significado en español: "$currentSpanish".
-                Genera una raíz corta (1 a 2 sílabas, eufónica, ej. Krag, Skar, Vorn, Syl, Nal) coherente con "$catName".
+                Genera una raíz corta (1 a 2 sílabas, eufónica, ej. Krag, Skar, Vorn, Syl, Nal) coherente con "$catName". $exclusionNote
                 Responde ÚNICAMENTE un objeto JSON:
                 {"idioma": "...", "espanol": "$currentSpanish"}
             """.trimIndent()
@@ -240,7 +249,7 @@ object AuraLinguisticEngine {
                 Contexto: Conlang (lengua inventada).
                 Categoría temática: "$catName".
                 Ámbito de raíces: "$catDesc".
-                Crea una nueva raíz corta (1 a 2 sílabas, eufónica, ej. Krag, Skar, Vorn, Nal, Syl, Vael, Chron) y su significado en español (1 a 3 palabras).
+                Crea una nueva raíz corta (1 a 2 sílabas, eufónica) y su significado en español (1 a 3 palabras). $exclusionNote
                 Responde ÚNICAMENTE un objeto JSON:
                 {"idioma": "...", "espanol": "..."}
             """.trimIndent()
@@ -249,7 +258,7 @@ object AuraLinguisticEngine {
         try {
             val response = viewModel.queryCreationLabAi(
                 prompt = prompt,
-                systemInstruction = "Eres Aura, motor fonotáctico rápido para conlangs. Devuelve únicamente JSON válido con campos 'idioma' y 'espanol'. Prohibido usar placeholders o palabras como 'raíz_corta' o 'morfología'."
+                systemInstruction = "Eres Aura, motor fonotáctico rápido para conlangs. Devuelve únicamente JSON válido con campos 'idioma' y 'espanol'. Prohibido usar placeholders, palabras como 'raíz_corta' o repetir opciones recientes."
             )
             if (!response.isNullOrBlank()) {
                 val clean = response.substringAfter("{").substringBeforeLast("}")
@@ -259,10 +268,14 @@ object AuraLinguisticEngine {
                 if (idm.isNotBlank() && esp.isNotBlank() &&
                     !isInvalidLinguisticPlaceholder(idm) &&
                     !isInvalidLinguisticPlaceholder(esp) &&
-                    idm.length in 2..14 && esp.length in 3..60
+                    idm.length in 2..14 && esp.length in 3..60 &&
+                    (forceNew.not() || (idm != currentLanguage && esp != currentSpanish))
                 ) {
-                    val finalIdm = if (currentLanguage.isNotBlank()) currentLanguage else idm
-                    val finalEsp = if (currentSpanish.isNotBlank()) currentSpanish else esp
+                    val finalIdm = if (currentLanguage.isNotBlank() && !forceNew) currentLanguage else idm
+                    val finalEsp = if (currentSpanish.isNotBlank() && !forceNew) currentSpanish else esp
+                    recentRoots.add(finalIdm)
+                    recentRoots.add(finalEsp)
+                    while (recentRoots.size > 20) recentRoots.removeAt(0)
                     return Pair(finalIdm, finalEsp)
                 }
             }
@@ -270,29 +283,33 @@ object AuraLinguisticEngine {
             // Continúa inmediatamente a la generación fonotáctica procedural
         }
 
-        // Generación procedural determinista y rica
-        val pool = domain.roots.shuffled()
-        val chosen = pool.random()
+        // Generación procedural determinista y rica con alternancia garantizada
+        val available = domain.roots.filter { it.first !in excluded && it.second !in excluded }
+        val pool = if (available.isNotEmpty()) available else domain.roots.filter { it.first != currentLanguage && it.second != currentSpanish }.ifEmpty { domain.roots }
+        val chosen = pool.shuffled().first()
 
         val finalIdm = when {
-            currentLanguage.isNotBlank() -> currentLanguage
+            currentLanguage.isNotBlank() && !forceNew -> currentLanguage
             currentSpanish.isNotBlank() -> {
-                // Generar raíz adecuada al significado del usuario
                 val base = chosen.first
-                val prefixVariant = listOf("K", "V", "S", "D", "T", "Z").random()
-                if (base.length >= 3) prefixVariant + base.drop(1) else base
+                val prefixVariants = listOf("K", "V", "S", "D", "T", "Z", "Th", "Kr", "Sk").filter { !base.startsWith(it) }
+                val pfx = prefixVariants.random()
+                if (base.length >= 3) pfx + base.drop(1) else base
             }
             else -> chosen.first
         }
 
         val finalEsp = when {
-            currentSpanish.isNotBlank() -> currentSpanish
-            currentLanguage.isNotBlank() -> {
-                // Asignar significado del dominio a la raíz ingresada
+            currentSpanish.isNotBlank() && !forceNew -> currentSpanish
+            currentLanguage.isNotBlank() && !forceNew -> {
                 "${chosen.second} ($catName)"
             }
             else -> chosen.second
         }
+
+        recentRoots.add(finalIdm)
+        recentRoots.add(finalEsp)
+        while (recentRoots.size > 20) recentRoots.removeAt(0)
 
         return Pair(finalIdm, finalEsp)
     }
@@ -340,7 +357,8 @@ object AuraLinguisticEngine {
         viewModel: AetherViewModel,
         type: String,
         currentMorpheme: String,
-        currentMeaning: String
+        currentMeaning: String,
+        forceNew: Boolean = false
     ): Pair<String, String> {
         val isPrefix = type.equals("Prefijo", ignoreCase = true)
         val catalog = if (isPrefix) prefixCatalog else suffixCatalog
@@ -355,12 +373,15 @@ object AuraLinguisticEngine {
             }
         }
 
+        val excluded = (recentMorphemes + listOfNotNull(formattedUserMorpheme.takeIf { it.isNotBlank() }, currentMeaning.takeIf { it.isNotBlank() })).toSet()
+        val exclusionNote = if (excluded.isNotEmpty()) "NO repitas opciones previas: ${excluded.take(5).joinToString(", ")}." else ""
+
         val prompt = when {
             formattedUserMorpheme.isNotBlank() && currentMeaning.isBlank() -> """
                 Contexto: Morfología lingüística para conlang.
                 Tipo: $type.
                 Morfema: "$formattedUserMorpheme".
-                Determina una función gramatical concisa en español (1 a 4 palabras, ej. 'Aumentativo / Gran escala', 'Pluralidad colectiva', 'Agente causante'). Prohibido responder 'morfología'.
+                Determina una función gramatical concisa en español (1 a 4 palabras, ej. 'Aumentativo / Gran escala', 'Pluralidad colectiva', 'Agente causante'). Prohibido responder 'morfología'. $exclusionNote
                 Responde ÚNICAMENTE un objeto JSON:
                 {"morfema": "$formattedUserMorpheme", "significado_espanol": "..."}
             """.trimIndent()
@@ -369,7 +390,7 @@ object AuraLinguisticEngine {
                 Contexto: Morfología lingüística para conlang.
                 Tipo: $type.
                 Función en español: "$currentMeaning".
-                Crea un $type corto (1 sílaba, con guión al ${if (isPrefix) "final ej. Tor-, Kra-" else "inicio ej. -ash, -il"}).
+                Crea un $type corto (1 sílaba, con guión al ${if (isPrefix) "final ej. Tor-, Kra-" else "inicio ej. -ash, -il"}). $exclusionNote
                 Responde ÚNICAMENTE un objeto JSON:
                 {"morfema": "...", "significado_espanol": "$currentMeaning"}
             """.trimIndent()
@@ -377,7 +398,7 @@ object AuraLinguisticEngine {
             else -> """
                 Contexto: Morfología lingüística para conlang.
                 Tipo: $type.
-                Genera un $type corto (1 sílaba con guión al ${if (isPrefix) "final ej. Tor-, Kra-" else "inicio ej. -ash, -il"}) y su función gramatical concisa en español (1 a 4 palabras). NUNCA devuelvas la palabra 'morfología'.
+                Genera un $type corto (1 sílaba con guión al ${if (isPrefix) "final ej. Tor-, Kra-" else "inicio ej. -ash, -il"}) y su función gramatical concisa en español (1 a 4 palabras). NUNCA devuelvas la palabra 'morfología'. $exclusionNote
                 Responde ÚNICAMENTE un objeto JSON:
                 {"morfema": "...", "significado_espanol": "..."}
             """.trimIndent()
@@ -400,10 +421,14 @@ object AuraLinguisticEngine {
                 if (mor.isNotBlank() && esp.isNotBlank() &&
                     !isInvalidLinguisticPlaceholder(mor) &&
                     !isInvalidLinguisticPlaceholder(esp) &&
-                    mor.length in 2..10 && esp.length in 3..60
+                    mor.length in 2..10 && esp.length in 3..60 &&
+                    (forceNew.not() || (mor != formattedUserMorpheme && esp != currentMeaning))
                 ) {
-                    val finalMor = if (formattedUserMorpheme.isNotBlank()) formattedUserMorpheme else mor
-                    val finalEsp = if (currentMeaning.isNotBlank()) currentMeaning else esp
+                    val finalMor = if (formattedUserMorpheme.isNotBlank() && !forceNew) formattedUserMorpheme else mor
+                    val finalEsp = if (currentMeaning.isNotBlank() && !forceNew) currentMeaning else esp
+                    recentMorphemes.add(finalMor)
+                    recentMorphemes.add(finalEsp)
+                    while (recentMorphemes.size > 20) recentMorphemes.removeAt(0)
                     return Pair(finalMor, finalEsp)
                 }
             }
@@ -411,10 +436,16 @@ object AuraLinguisticEngine {
             // Continuar a la biblioteca enriquecida
         }
 
-        // Procedural
-        val chosen = catalog.shuffled().random()
-        val finalMor = if (formattedUserMorpheme.isNotBlank()) formattedUserMorpheme else chosen.first
-        val finalEsp = if (currentMeaning.isNotBlank()) currentMeaning else chosen.second
+        // Procedural con alternancia
+        val available = catalog.filter { it.first !in excluded && it.second !in excluded }
+        val pool = if (available.isNotEmpty()) available else catalog.filter { it.first != formattedUserMorpheme && it.second != currentMeaning }.ifEmpty { catalog }
+        val chosen = pool.shuffled().first()
+        val finalMor = if (formattedUserMorpheme.isNotBlank() && !forceNew) formattedUserMorpheme else chosen.first
+        val finalEsp = if (currentMeaning.isNotBlank() && !forceNew) currentMeaning else chosen.second
+
+        recentMorphemes.add(finalMor)
+        recentMorphemes.add(finalEsp)
+        while (recentMorphemes.size > 20) recentMorphemes.removeAt(0)
 
         return Pair(finalMor, finalEsp)
     }
@@ -443,13 +474,17 @@ object AuraLinguisticEngine {
     suspend fun suggestCategory(
         viewModel: AetherViewModel,
         currentName: String,
-        currentDesc: String
+        currentDesc: String,
+        forceNew: Boolean = false
     ): Pair<String, String> {
+        val excluded = (recentCategories + listOfNotNull(currentName.takeIf { it.isNotBlank() }, currentDesc.takeIf { it.isNotBlank() })).toSet()
+        val exclusionNote = if (excluded.isNotEmpty()) "NO repitas estas categorías: ${excluded.take(5).joinToString(", ")}." else ""
+
         val prompt = when {
             currentName.isNotBlank() && currentDesc.isBlank() -> """
                 Contexto: Creación de categorías temáticas para organizar raíces de palabras en un conlang.
                 Nombre de la categoría: "$currentName".
-                Genera un contexto o ámbito temático conciso (1 línea, de 6 a 14 palabras) explicando qué raíces contendrá (ej. 'Raíces para armas, combate, defensa y asedio').
+                Genera un contexto o ámbito temático conciso (1 línea, de 6 a 14 palabras) explicando qué raíces contendrá (ej. 'Raíces para armas, combate, defensa y asedio'). $exclusionNote
                 Responde ÚNICAMENTE un objeto JSON:
                 {"categoria": "$currentName", "descripcion": "..."}
             """.trimIndent()
@@ -457,14 +492,14 @@ object AuraLinguisticEngine {
             currentDesc.isNotBlank() && currentName.isBlank() -> """
                 Contexto: Creación de categorías temáticas para organizar raíces de palabras en un conlang.
                 Ámbito de raíces descrito: "$currentDesc".
-                Sugiere un nombre inspirador para la categoría (1 a 3 palabras, ej. 'Guerra y Táctica', 'Cosmos y Firmamento').
+                Sugiere un nombre inspirador para la categoría (1 a 3 palabras, ej. 'Guerra y Táctica', 'Cosmos y Firmamento'). $exclusionNote
                 Responde ÚNICAMENTE un objeto JSON:
                 {"categoria": "...", "descripcion": "$currentDesc"}
             """.trimIndent()
 
             else -> """
                 Contexto: Creación de categorías temáticas para organizar raíces de palabras en un conlang.
-                Sugiere una categoría inspiradora (1 a 3 palabras) y su ámbito temático para raíces (1 línea de 6 a 14 palabras).
+                Sugiere una categoría inspiradora (1 a 3 palabras) y su ámbito temático para raíces (1 línea de 6 a 14 palabras). $exclusionNote
                 Responde ÚNICAMENTE un objeto JSON:
                 {"categoria": "...", "descripcion": "..."}
             """.trimIndent()
@@ -484,10 +519,13 @@ object AuraLinguisticEngine {
                 if (cat.isNotBlank() && desc.isNotBlank() &&
                     !isInvalidLinguisticPlaceholder(cat) &&
                     !isInvalidLinguisticPlaceholder(desc) &&
-                    cat.length in 3..40 && desc.length in 10..120
+                    cat.length in 3..40 && desc.length in 10..120 &&
+                    (forceNew.not() || (cat != currentName && desc != currentDesc))
                 ) {
-                    val finalCat = if (currentName.isNotBlank()) currentName else cat
-                    val finalDesc = if (currentDesc.isNotBlank()) currentDesc else desc
+                    val finalCat = if (currentName.isNotBlank() && !forceNew) currentName else cat
+                    val finalDesc = if (currentDesc.isNotBlank() && !forceNew) currentDesc else desc
+                    recentCategories.add(finalCat)
+                    while (recentCategories.size > 20) recentCategories.removeAt(0)
                     return Pair(finalCat, finalDesc)
                 }
             }
@@ -495,12 +533,17 @@ object AuraLinguisticEngine {
             // Continuar al pool procedimental
         }
 
-        // Procedural
-        val chosen = categorySuggestions.shuffled().random()
-        val finalCat = if (currentName.isNotBlank()) currentName else chosen.first
-        val finalDesc = if (currentDesc.isNotBlank()) currentDesc else {
-            if (currentName.isNotBlank()) "Raíces y núcleos léxicos dedicados a ${currentName.lowercase()}" else chosen.second
+        // Procedural con alternancia
+        val available = categorySuggestions.filter { it.first !in excluded && it.second !in excluded }
+        val pool = if (available.isNotEmpty()) available else categorySuggestions.filter { it.first != currentName }.ifEmpty { categorySuggestions }
+        val chosen = pool.shuffled().first()
+        val finalCat = if (currentName.isNotBlank() && !forceNew) currentName else chosen.first
+        val finalDesc = if (currentDesc.isNotBlank() && !forceNew) currentDesc else {
+            if (currentName.isNotBlank() && !forceNew) "Raíces y núcleos léxicos dedicados a ${currentName.lowercase()}" else chosen.second
         }
+
+        recentCategories.add(finalCat)
+        while (recentCategories.size > 20) recentCategories.removeAt(0)
 
         return Pair(finalCat, finalDesc)
     }

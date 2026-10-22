@@ -37,8 +37,8 @@ class LocalLlmManager(
 
     companion object {
         private const val TAG = "LocalLlmManager"
-        // Contexto altamente optimizado y balanceado para velocidad y respuesta en dispositivos Android (4096 tokens)
-        const val DEFAULT_CONTEXT_SIZE = 4096
+        // Contexto ampliado a 8192 tokens para permitir respuestas completas, extensas y sin cortes
+        const val DEFAULT_CONTEXT_SIZE = 8192
     }
 
     private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Unloaded)
@@ -333,8 +333,8 @@ class LocalLlmManager(
                  }
              }
 
-             // Proteger el tamaño del prompt formateado para no saturar la CPU del dispositivo móvil
-             val maxPromptChars = 8000
+             // Proteger el tamaño del prompt formateado dentro de la ventana ampliada de 8192 tokens
+             val maxPromptChars = 14000
              val safePrompt = if (formattedPrompt.length > maxPromptChars) {
                  val sysStart = formattedPrompt.indexOf("<|im_start|>system")
                  val sysEnd = if (sysStart != -1) formattedPrompt.indexOf("<|im_end|>", sysStart) else -1

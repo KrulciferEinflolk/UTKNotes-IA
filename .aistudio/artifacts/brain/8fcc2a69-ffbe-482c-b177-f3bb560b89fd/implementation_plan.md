@@ -1,131 +1,154 @@
-# Plan de Implementación: Desacoplamiento Léxico Total, Lienzo de Escritura y Optimización Rápida de Aura IA
+# Plan de Implementación: Sistema Estructurado de Contexto y Acciones JSON para Aura
 
-Erradicación integral de nombres y referencias fijas (*Vyanora*, *Vyianora*, *Vyanji*, *Vyio*) en todo el laboratorio y pantallas de presentación/onboarding, adoptando **Lienzo de escritura** y dotando a la IA Aura de un motor de asistencia ultrarrápido, eufónico y preciso con autocompletado contextual y previsualización interactiva (Aplicar / Descartar).
+Configuración del motor de Aura con el protocolo estructurado de contexto de notas en Markdown, directivas de comportamiento, ejemplos few-shot y formato de salida JSON unificado (`action`, `target_scope`, `explanation`, `content`), junto con tarjetas de acción en la interfaz para aplicar los cambios en la nota con un solo toque.
 
 ---
 
-## Decisiones Confirmadas del Usuario
+## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> A través de la interacción de clarificación se han ratificado los siguientes lineamientos esenciales:
-
-1. **Estilo de Términos de Aura**: Cortos, directos, eufónicos con una estructura estricta y con términos variados según la categoría temátiva (ej. términos marciales concisos para *Guerra*, fluidos para *Agua/Éter*, etc.), sin textos explicativos ni alucinaciones.
-2. **Renombrado del Sistema Gráfico**: Sustituir definitivamente "Lienzo Vyianji / Vyianji" por **Lienzo de escritura** en toda la interfaz (botones de barra superior, diálogo de dibujo libre, pestañas de biblioteca y tarjetas de onboarding).
-3. **Flujo de Asistencia de Aura en Formularios**: En lugar de sobrescribir a ciegas los campos del usuario, Aura presentará una **tarjeta previa interactiva** con los valores generados/autocompletados y dos botones claros: **Aplicar** (copia a los campos) y **Descartar** (cancela la sugerencia).
-4. **Simplificación del Formulario de Morfología**: Se elimina de forma definitiva el campo *"Significado en Vyianora"*, dejando únicamente el identificador del morfema (ej. prefijo/sufijo) y su significado en español.
-5. **Autocompletado Contextual Bidireccional**: Si el usuario ya completó la categoría o uno de los campos (ej. solo el término o solo el significado en español), Aura detectará qué campo falta y generará el complemento adecuado de manera inmediata.
-
----
-
-## 1. Visión General y Concepto
-
-El **Laboratorio Lingüístico** se convierte en un entorno 100% agnóstico y personalizable, donde el usuario es el único creador de su conlang (lengua construida). 
-
-- **Cero sesgo o marcas residuales**: Eliminación completa de términos heredados (*Vyianora*, *Vyio*, *Vyianji*) en código, títulos, descripciones, marcadores de posición (*placeholders*), mensajes de retroalimentación y onboarding tutorial.
-- **Asistente Aura de Alta Precisión**: Respuestas atómicas en formato JSON estricto, prompts sin ruido metafórico innecesario, baja latencia, fallbacks consistentes y coherentes basados en la categoría activa.
-- **Lienzo de Escritura**: Espacio de dibujo táctil para plasmar caracteres, glifos o ideogramas del idioma en creación, con catalogación limpia en la biblioteca.
-
----
-
-## 2. Experiencia de Usuario y Diseño Visual
-
-### 2.1 Flujo de Usuario: Léxico y Núcleos / Raíces
-1. El usuario selecciona o crea una categoría (ej. *"Guerra"* o *"Naturaleza"*).
-2. Si los campos de término o español están vacíos, presiona **"Forjar con Aura"**:
-   - Aura responde en milisegundos con un término corto, estricto y eufónico (ej. para *Guerra*: término `"Krag"`, español `"Batalla / Filo"`).
-   - Se despliega una tarjeta de vista previa con acento cian:
-     ```
-     ┌────────────────────────────────────────────────────────┐
-     │ ✨ Sugerencia de Aura (Guerra)                          │
-     │ Término: Krag   •   Español: Batalla / Asedio          │
-     │ [ Descartar ]                     [ Aplicar a Campos ] │
-     └────────────────────────────────────────────────────────┘
-     ```
-3. Si el usuario ya escribió `"Valen"` en término pero dejó vacío el español, Aura autocompleta únicamente la traducción coherente en español, sin sobreescribir lo ya escrito.
-
-### 2.2 Flujo de Usuario: Modificadores Morfológicos
-- Selector de tipo: `Prefijo` o `Sufijo`.
-- Se remueve por completo el campo *"Significado en Vyianora"*.
-- Campos activos: **Morfema** (ej. `Tor-`, `-ash`) y **Significado en español** (ej. `Aumentativo de fuerza`).
-- Asistencia de Aura genera morfemas concisos con tarjeta de confirmación previa.
-
-### 2.3 Flujo de Usuario: Categorías y Dominios
-- Campos: **Nombre del dominio** y **Contexto de la categoría**.
-- Aura sugiere dominios concisos y contextualmente ricos para organizar el léxico.
-
-### 2.4 Flujo de Usuario: Lienzo de Escritura
-- Botón superior e ítem de biblioteca renombrados a **"Lienzo de escritura"**.
-- Diálogo de dibujo caligráfico con grid táctil para trazar glifos del idioma.
-- Guardado en la biblioteca bajo la categoría limpia `"Glifo de Escritura"`.
-
-### 2.5 Pantalla de Presentación / Onboarding
-- En `CreationLabOnboarding.kt`, el paso 3 se actualiza de *"Lienzo Vyianji"* a *"Lienzo de Escritura (Canvas)"*, con descripción enfocada en diseñar glifos, caracteres y runas para el idioma propio.
+> **Decisiones de diseño y arquitectura confirmadas:**
+> 1. **Estructura del Contexto de Entrada:**
+>    - Cada consulta a Aura inyectará las secciones delimitadas:
+>      - `<full_note>`: Contenido completo de la nota activa en Markdown limpio.
+>      - `<selected_text>`: Texto o bloque enfocado por el usuario (si existe).
+>      - `<cursor_position>`: Indicación del punto de inserción (al final de la nota o en el bloque activo).
+>      - `<attached_file>`: Texto extraído del documento o archivo PDF adjunto (si existe).
+> 2. **Esquema de Salida JSON Estricto:**
+>    - Aura responderá siempre con un objeto JSON:
+>      ```json
+>      {
+>        "action": "insert_at_cursor" | "replace_selection" | "replace_full_note" | "conversation",
+>        "target_scope": "cursor_position" | "selected_text" | "full_note" | "chat",
+>        "explanation": "Resumen claro del cambio realizado",
+>        "content": "Markdown listo para ser insertado en la nota"
+>      }
+>      ```
+> 3. **Interacción y Control en la Interfaz:**
+>    - Cuando Aura proponga una modificación en la nota, la tarjeta del mensaje en el chat mostrará la explicación (`explanation`), una vista previa del contenido (`content`) y botones claros para ejecutar la acción:
+>      - `[ ➕ Insertar al cursor / al final ]` (para `insert_at_cursor`).
+>      - `[ 🔄 Reemplazar selección ]` (para `replace_selection`).
+>      - `[ 📝 Reemplazar nota completa ]` (para `replace_full_note`).
+>    - Para consultas generales sin modificación, la acción será `conversation` y se mostrará de forma natural en el chat.
+> 4. **Parser Tolerante a Fallos:**
+>    - Se implementará un deserializador resiliente que limpie delimitadores de código (como ````json`), espacios o posibles caracteres iniciales, garantizando que el modelo local Qwen2.5 nunca rompa la interfaz.
 
 ---
 
-## 3. Decisiones Técnicas y Arquitectura
+## 1. Overview & Core Concept
 
+El objetivo es transformar a Aura en un copiloto de notas modular de alta precisión (similar a Cursor o Notion AI):
+- Aura deja de emitir texto no estructurado o rodeos innecesarios.
+- El modelo recibe el estado exacto de la nota y del archivo adjunto entre etiquetas XML claras.
+- La app interpreta el JSON resultante y sabe con exactitud matemática qué bloque o fragmento de la nota modificar, preservando el formato original del usuario.
+
+---
+
+## 2. User Experience & Visual Design
+
+### Flujo de Interacción en el Chat
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                   CREATION LAB SCREEN                            │
-│  [ Nombre Dinámico (Lápiz) ]        [ Lienzo de Escritura (Btn) ]│
-├──────────────────────────────────────────────────────────────────┤
-│  [1. Léxico]        [2. Generador]   [3. Frases]   [4. Biblioteca]│
-│       │                                                          │
-│   ┌───┴──────────────────────────────────────────┐               │
-│   │ Submenú Núcleos / Morfología / Categorías    │               │
-│   │ ──────────────────────────────────────────   │               │
-│   │  Inputs de Texto + Selector de Categoría     │               │
-│   │  [ Botón Asistencia Aura ]                   │               │
-│   │         │                                    │               │
-│   │         ▼                                    │               │
-│   │  ┌────────────────────────────────────────┐  │               │
-│   │  │ Tarjeta Preview (Aplicar / Descartar)  │  │               │
-│   │  └────────────────────────────────────────┘  │               │
-│   └──────────────────────────────────────────────┘               │
-└──────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-                     [ AetherViewModel / Gemini ]
-             Prompt Estricto: JSON Corto, Eufónico, Sin Alucinaciones
-             Fallback instantáneo según categoría si falla red
+┌─────────────────────────────────────────────────────────────┐
+│ 💬 Chat de Aura con Contexto de Nota Activa                 │
+│ Usuario: "Continúa la nota con 2 ideas más de marketing"    │
+├─────────────────────────────────────────────────────────────┤
+│ 🔮 Aura ha procesado tu solicitud:                          │
+│                                                             │
+│ "Se añadieron dos estrategias adicionales manteniendo       │
+│ el estilo de la lista."                                     │
+│                                                             │
+│ ┌─────────────────────────────────────────────────────────┐ │
+│ │ Vista previa del Markdown:                              │ │
+│ │ - SEO y Blog: Publicar 2 artículos semanales...         │ │
+│ │ - Colaboraciones: Crear alianzas con creadores...       │ │
+│ └─────────────────────────────────────────────────────────┘ │
+│                                                             │
+│ [ ➕ Insertar en la nota ]             [ ✕ Solo en chat ]   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### 3.1 Estructura de Prompts de Aura
-Los prompts pasan de tener un tono místico/poético denso que provocaba respuestas largas y alucinaciones, a instrucciones concisas y directas:
-- **Núcleo**:
-  `"Eres un generador fonotáctico. Categoría: '$category'. Palabra existente: '$currentWord'. Español existente: '$currentSpanish'. Genera una raíz corta (1-2 sílabas, eufónica, estricta) y su significado en español. Responde SOLO JSON: {\"idioma\": \"...\", \"espanol\": \"...\"}"`
-- **Morfema**:
-  `"Genera un $type (prefijo o sufijo) breve para este idioma y su significado directo en español. Responde SOLO JSON: {\"morfema\": \"...\", \"significado_espanol\": \"...\"}"`
-- **Categoría**:
-  `"Sugiere una categoría temática y una descripción breve para un diccionario conlang. Responde SOLO JSON: {\"categoria\": \"...\", \"descripcion\": \"...\"}"`
+- **Acción inmediata:** Al pulsar el botón de aplicar, la app inserta o reemplaza los bloques correspondientes en tiempo real en la nota abierta, actualiza el editor y guarda automáticamente en la base de datos local.
+- **Feedback visual:** La tarjeta muestra un estado de confirmación verde ("✓ Aplicado a la nota").
 
 ---
 
-## 4. Plan de Archivos y Tareas de Ejecución
+## 3. Key Product Decisions & Trade-Offs
 
-1. **`CreationLabOnboarding.kt`**:
-   - Reemplazar referencias a *Vyianji* por *Lienzo de Escritura* y glifos/caracteres del idioma.
-   - Limpiar cualquier mención a *Vyianora* en títulos y descripciones del onboarding.
+- **Compatibilidad con Preguntas Abiertas (`conversation`):**
+  - *Decisión:* Incluir la acción `"conversation"` en el prompt y en el parser.
+  - *Por qué:* Si el usuario saluda o pregunta algo teórico sin querer alterar la nota, Aura responde fluidamente sin forzar una inserción vacía en el documento.
+- **Transición Automática Markdown -> Bloques:**
+  - *Decisión:* Conectar el campo `"content"` directamente con `parseTextContentToBlocks()`.
+  - *Por qué:* Permite que Aura genere Markdown estándar (títulos, viñetas, casillas, tablas, citas) y la app lo convierta de forma nativa a los bloques de edición de la app (`EditorBlock`).
 
-2. **`CreationLabScreen.kt`**:
-   - **TopBar y Diálogo**: Actualizar el botón de la cabecera a `"Lienzo"` / `"Escritura"`. Renombrar `VyianjiCanvasDialog` a `WritingCanvasDialog`.
-   - **Núcleos (`NucleiSubMenu`)**:
-     - Implementar estado para tarjeta de previsualización (`AuraSuggestionPreview(idioma, espanol)`).
-     - Incorporar autocompletado bidireccional si alguno de los campos ya tiene texto.
-     - Botones *"Aplicar"* y *"Descartar"*.
-     - Actualizar títulos ("Núcleos del Idioma" en lugar de "Núcleos de Vyianora").
-   - **Morfología (`MorphologySubMenu`)**:
-     - Eliminar el campo `meaningLanguage` ("Significado en Vyianora").
-     - Implementar tarjeta de previsualización para aplicar/descartar sugerencias.
-     - Ajustar prompt de Aura para generar respuestas ultra cortas y precisas.
-   - **Categorías (`CategoriesSubMenu`)**:
-     - Implementar tarjeta de previsualización para aplicar/descartar sugerencias de categoría.
-   - **Generador y Frases (`GeneratorMorphemesModule`, `PhrasesModule`)**:
-     - Limpiar textos descriptivos y prompts de IA para que Aura sea rápida y analítica.
-   - **Biblioteca (`LibraryLabModule`)**:
-     - Actualizar la pestaña de `"Vyianji"` a `"Escritura"` o `"Glifos"`.
-     - Actualizar etiquetas y placeholders que mencionaban "Vyianora".
+---
 
-3. **Verificación y Compilación**:
-   - Ejecutar `compile_applet` para garantizar que la compilación sea limpia, sin errores de tipado ni referencias rotas.
+## 4. Technical Architecture & Component Mapping
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│                     ARQUITECTURA DE CONTEXTO Y ACCIÓN                     │
+└───────────────────────────────────────────────────────────────────────────┘
+                                       │
+                 ┌─────────────────────┴─────────────────────┐
+                 ▼                                           ▼
+      [ Context Assembly ]                        [ Response & Action ]
+       AetherViewModel.kt                          AetherViewModel.kt
+                 │                                           │
+  - Ensambla:                               - Parser resiliente JSON de Aura
+    <full_note>                              - Extracción de action, scope,
+    <selected_text>                            explanation y content
+    <cursor_position>                        - Métodos:
+    <attached_file>                            applyAuraActionToNote(...)
+  - Inyecta System Prompt estructurado       - Inserción en bloques Room
+                 │                                           │
+                 └─────────────────────┬─────────────────────┘
+                                       │
+                                       ▼
+                         MainActivity.kt / Chat UI
+  - Renderizado de AuraActionCard en cada mensaje del asistente
+  - Botones interactivos según `action`
+  - Vista previa de Markdown y feedback de aplicación
+```
+
+### Detalle de Modificaciones:
+
+1. **`app/src/main/java/com/example/ui/AetherViewModel.kt`**:
+   - Crear el modelo de datos `AuraActionResponse(action, targetScope, explanation, content)`.
+   - Modificar `buildAgentSystemPrompt` con las directivas exactas proporcionadas por el usuario, estructura de contexto, reglas de comportamiento y ejemplos few-shot.
+   - En `sendUserMessageWithAttachments`:
+     - Empaquetar la nota activa en `<full_note>`.
+     - Empaquetar el texto enfocado en `<selected_text>`.
+     - Empaquetar la posición en `<cursor_position>`.
+     - Empaquetar el PDF o archivo en `<attached_file>`.
+   - Implementar `parseAuraJsonResponse(rawText: String): AuraActionResponse` con regex y fallback seguro.
+   - Implementar `applyAuraAction(action: AuraActionResponse)` para modificar o insertar en la nota según `target_scope`.
+
+2. **`app/src/main/java/com/example/MainActivity.kt`**:
+   - En el componente de mensaje del Chatbot, detectar si el mensaje contiene una propuesta de acción de Aura (`AuraActionResponse`).
+   - Mostrar la tarjeta con la explicación, vista previa del contenido y los botones interactivos:
+     - `insert_at_cursor`: "Insertar en la nota".
+     - `replace_selection`: "Reemplazar selección".
+     - `replace_full_note`: "Reemplazar toda la nota".
+   - Conectar los clics con `viewModel.applyAuraAction()`.
+
+---
+
+## 5. Verification Plan
+
+1. **Prueba de Continuación (`insert_at_cursor`):**
+   - Enviar a Aura: *"Continúa la nota con 2 ideas más"*.
+   - Comprobar que responda con JSON válido conteniendo `action: "insert_at_cursor"`.
+   - Verificar que en el chat aparezca la tarjeta con la explicación y el botón para insertar en la nota.
+   - Pulsar el botón y verificar que los nuevos bloques aparezcan al final de la nota en el editor.
+2. **Prueba de Corrección de Selección (`replace_selection`):**
+   - Seleccionar un párrafo con errores ortográficos y pedir *"Corrige la gramática de esta selección"*.
+   - Comprobar que responda con `action: "replace_selection"` y que al pulsar el botón se actualice dicho párrafo.
+3. **Prueba de Integración de Documento (`attached_file`):**
+   - Adjuntar un documento y pedir *"Pasa la información a una tabla"*.
+   - Verificar que Aura genere una tabla en Markdown y permita insertarla directamente.
+4. **Prueba de Pregunta General (`conversation`):**
+   - Preguntar algo casual como *"Hola Aura, ¿cómo estás?"*.
+   - Comprobar que responda como conversación en el chat sin botones erróneos de modificación.
+5. **Compilación y estabilidad:**
+   - Ejecutar `compile_applet` para certificar una compilación limpia.

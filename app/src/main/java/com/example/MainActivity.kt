@@ -8196,6 +8196,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
 
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var showHistoryBottomSheet by remember { mutableStateOf(false) }
+    var dismissedNoteCards by remember { mutableStateOf<Set<Int>>(emptySet()) }
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(messagesList.size, isSending) {
         val total = messagesList.size + (if (isSending) 1 else 0)
@@ -8421,14 +8422,40 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                             }
                         }
                     } else {
-                        // ASSISTANT MESSAGE
+                        // ASSISTANT MESSAGE (Aura Action or Conversation)
+                        val auraAction = remember(msg) { viewModel.parseAuraJsonResponse(msg) }
+                        val displayMarkdown = remember(auraAction) { auraAction.content.ifBlank { msg } }
+
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(end = 24.dp)
                         ) {
+                            if (auraAction.explanation.isNotBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFF907CFF).copy(alpha = 0.15f),
+                                    border = BorderStroke(1.dp, Color(0xFF907CFF).copy(alpha = 0.35f)),
+                                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = auraAction.explanation,
+                                            fontSize = 12.sp,
+                                            color = TextPrimary,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    }
+                                }
+                            }
+
                             MarkdownChatBubble(
-                                content = msg,
+                                content = displayMarkdown,
                                 notesList = allNotes,
                                 onNoteClick = { note ->
                                     viewModel.selectNote(note)
@@ -8449,7 +8476,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                     IconButton(
                                         onClick = {
                                             if (!isMuted) {
-                                                tts?.speak(msg, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null)
+                                                tts?.speak(displayMarkdown, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null)
                                                 Toast.makeText(context, "Leyendo mensaje...", Toast.LENGTH_SHORT).show()
                                             } else {
                                                 Toast.makeText(context, "Desactiva el silencio para escuchar", Toast.LENGTH_SHORT).show()
@@ -8468,8 +8495,8 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                     val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
                                     IconButton(
                                         onClick = {
-                                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(msg))
-                                            Toast.makeText(context, "Mensaje copiado", Toast.LENGTH_SHORT).show()
+                                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(displayMarkdown))
+                                            Toast.makeText(context, "Contenido copiado", Toast.LENGTH_SHORT).show()
                                         },
                                         modifier = Modifier.size(18.dp)
                                     ) {
@@ -8519,7 +8546,165 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                     }
                                 }
 
-                                                                 // Export to Note Actions (Pasar a Nota / Convertir en Bloques)
+                                // Acciones directas sobre la Nota
+                                val targetNote = selectedNote ?: attachedNoteFromScreen ?: (if (allNotes.isNotEmpty()) allNotes.firstOrNull() else null)
+                                if (targetNote != null && index !in dismissedNoteCards) {
+                                    val actionLabel = when (auraAction.action) {
+                                        "replace_selection" -> "Sugerencia para párrafo / selección"
+                                        "replace_full_note" -> "Reescritura completa sugerida"
+                                        "insert_at_cursor" -> "Continuación sugerida"
+                                        else -> "Propuesta para nota"
+                                    }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = CosmicSurface.copy(alpha = 0.85f),
+                                        border = BorderStroke(1.dp, Color(0xFF907CFF).copy(alpha = 0.5f)),
+                                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp)
+                                    ) {
+                                        Column(modifier = Modifier.padding(10.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                                    Icon(Icons.Default.EditNote, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(16.dp))
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text(
+                                                        text = "$actionLabel: \"${targetNote.title}\"",
+                                                        fontSize = 12.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = TextPrimary,
+                                                        maxLines = 1
+                                                    )
+                                                }
+                                                IconButton(
+                                                    onClick = { dismissedNoteCards = dismissedNoteCards + index },
+                                                    modifier = Modifier.size(20.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Close, contentDescription = "Descartar", tint = TextSecondary, modifier = Modifier.size(14.dp))
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                if (auraAction.action == "replace_selection") {
+                                                    Button(
+                                                        onClick = {
+                                                            viewModel.applyAuraAction(auraAction, targetNote = targetNote) { msgInfo ->
+                                                                Toast.makeText(context, "✅ $msgInfo", Toast.LENGTH_SHORT).show()
+                                                                dismissedNoteCards = dismissedNoteCards + index
+                                                            }
+                                                        },
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        colors = ButtonDefaults.buttonColors(containerColor = GeminiCyanAccent),
+                                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                        modifier = Modifier.weight(1f)
+                                                    ) {
+                                                        Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(13.dp))
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text("Reemplazar selección", fontSize = 11.sp, color = Color(0xFF090C15), fontWeight = FontWeight.Bold)
+                                                    }
+                                                    OutlinedButton(
+                                                        onClick = {
+                                                            viewModel.appendContentToActiveNote(displayMarkdown, targetNote = targetNote) { title ->
+                                                                Toast.makeText(context, "✅ Contenido añadido al final de \"$title\"", Toast.LENGTH_SHORT).show()
+                                                                dismissedNoteCards = dismissedNoteCards + index
+                                                            }
+                                                        },
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                        modifier = Modifier.weight(1f)
+                                                    ) {
+                                                        Text("Añadir al final", fontSize = 11.sp)
+                                                    }
+                                                } else if (auraAction.action == "replace_full_note") {
+                                                    Button(
+                                                        onClick = {
+                                                            viewModel.applyAuraAction(auraAction, targetNote = targetNote) { msgInfo ->
+                                                                Toast.makeText(context, "✅ $msgInfo", Toast.LENGTH_SHORT).show()
+                                                                dismissedNoteCards = dismissedNoteCards + index
+                                                            }
+                                                        },
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF897D)),
+                                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                        modifier = Modifier.weight(1f)
+                                                    ) {
+                                                        Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(13.dp))
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text("Reemplazar nota", fontSize = 11.sp, color = Color(0xFF090C15), fontWeight = FontWeight.Bold)
+                                                    }
+                                                    OutlinedButton(
+                                                        onClick = {
+                                                            viewModel.appendContentToActiveNote(displayMarkdown, targetNote = targetNote) { title ->
+                                                                Toast.makeText(context, "✅ Contenido añadido al final de \"$title\"", Toast.LENGTH_SHORT).show()
+                                                                dismissedNoteCards = dismissedNoteCards + index
+                                                            }
+                                                        },
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                        modifier = Modifier.weight(1f)
+                                                    ) {
+                                                        Text("Añadir al final", fontSize = 11.sp)
+                                                    }
+                                                } else {
+                                                    Button(
+                                                        onClick = {
+                                                            viewModel.appendContentToActiveNote(displayMarkdown, targetNote = targetNote) { title ->
+                                                                Toast.makeText(context, "✅ Contenido insertado en \"$title\"", Toast.LENGTH_SHORT).show()
+                                                                dismissedNoteCards = dismissedNoteCards + index
+                                                            }
+                                                        },
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        colors = ButtonDefaults.buttonColors(containerColor = GeminiCyanAccent),
+                                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                        modifier = Modifier.weight(1f)
+                                                    ) {
+                                                        Icon(Icons.Default.AddCircleOutline, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(13.dp))
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text("Insertar en nota", fontSize = 11.sp, color = Color(0xFF090C15), fontWeight = FontWeight.Bold)
+                                                    }
+
+                                                    OutlinedButton(
+                                                        onClick = {
+                                                            viewModel.replaceActiveNoteContent(displayMarkdown, targetNote = targetNote) { title ->
+                                                                Toast.makeText(context, "🔄 Nota \"$title\" reemplazada", Toast.LENGTH_SHORT).show()
+                                                                dismissedNoteCards = dismissedNoteCards + index
+                                                            }
+                                                        },
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        border = BorderStroke(1.dp, Color(0xFFFF897D)),
+                                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                        modifier = Modifier.weight(1f)
+                                                    ) {
+                                                        Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = Color(0xFFFF897D), modifier = Modifier.size(13.dp))
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text("Reemplazar", fontSize = 11.sp, color = Color(0xFFFF897D), fontWeight = FontWeight.Bold)
+                                                    }
+                                                }
+                                            }
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                                                horizontalArrangement = Arrangement.Center
+                                            ) {
+                                                TextButton(
+                                                    onClick = { dismissedNoteCards = dismissedNoteCards + index },
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                                ) {
+                                                    Text("Mantener solo en chat", fontSize = 11.sp, color = TextSecondary)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                 // Export to Note Actions (Pasar a Nueva Nota / Convertir en Bloques)
                                  Row(
                                      verticalAlignment = Alignment.CenterVertically,
                                      horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -8527,7 +8712,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                      TextButton(
                                          onClick = {
                                              viewModel.exportMessageToNote(msg, asBlocks = false) { note ->
-                                                 Toast.makeText(context, "✨ Nota \"${note.title}\" guardada en tu biblioteca", Toast.LENGTH_SHORT).show()
+                                                 Toast.makeText(context, "✨ Nueva nota \"${note.title}\" guardada en tu biblioteca", Toast.LENGTH_SHORT).show()
                                              }
                                          },
                                          contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
@@ -8535,7 +8720,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                      ) {
                                          Icon(Icons.Default.NoteAdd, contentDescription = null, modifier = Modifier.size(13.dp))
                                          Spacer(modifier = Modifier.width(3.dp))
-                                         Text("Pasar a Nota", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                         Text("Nueva Nota", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                      }
 
                                      TextButton(
@@ -8549,7 +8734,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                      ) {
                                          Icon(Icons.Default.Dashboard, contentDescription = null, modifier = Modifier.size(13.dp))
                                          Spacer(modifier = Modifier.width(3.dp))
-                                         Text("Convertir en Bloques", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                         Text("En Bloques", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                      }
                                  }
                             }
