@@ -1,6 +1,6 @@
 {
-  "summary":  "Plan de implementación para configurar el contexto estructurado de Aura con etiquetas de nota (<full_note>, <selected_text>, <cursor_position>, <attached_file>), reglas de comportamiento, ejemplos few-shot y salida estricta en JSON con acciones (insert_at_cursor, replace_selection, replace_full_note) y tarjetas interactivas de aplicación en la app.",
-  "updatedAt":  "2026-10-22T03:29:19.749040945Z",
+  "summary":  "Plan de implementación para corregir la respuesta de análisis de notas en Aura y asegurar que las respuestas largas nunca queden cortadas mediante la combinación de extensión automática en segundo plano y una ventana de tokens de 16,384.",
+  "updatedAt":  "2026-10-27T03:13:37.460966980Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

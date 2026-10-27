@@ -396,7 +396,18 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             // 6. <user_request>
-            val userRequestText = if (rawUserMsg.isNotBlank()) {
+            val isAnalysisRequest = rawUserMsg.contains("analiz", ignoreCase = true) ||
+                                    rawUserMsg.contains("análisis", ignoreCase = true) ||
+                                    rawUserMsg.contains("resum", ignoreCase = true) ||
+                                    rawUserMsg.contains("sinteti", ignoreCase = true) ||
+                                    rawUserMsg.contains("explica", ignoreCase = true) ||
+                                    rawUserMsg.contains("revisa", ignoreCase = true) ||
+                                    rawUserMsg.contains("qué opina", ignoreCase = true) ||
+                                    rawUserMsg.contains("que opina", ignoreCase = true) ||
+                                    rawUserMsg.contains("de qué trata", ignoreCase = true) ||
+                                    rawUserMsg.contains("de que trata", ignoreCase = true)
+
+            val baseRequest = if (rawUserMsg.isNotBlank()) {
                 rawUserMsg
             } else if (!actualFileContent.isNullOrBlank()) {
                 "Lee el documento adjunto y resume sus ideas clave integrándolas en un formato claro."
@@ -404,6 +415,12 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 "Analiza la imagen adjunta, transcribe su texto y describe sus elementos visuales."
             } else {
                 "¿En qué puedes ayudarme con mis notas?"
+            }
+
+            val userRequestText = if (isAnalysisRequest && !rawUserMsg.contains("reemplaza", ignoreCase = true) && !rawUserMsg.contains("modifica", ignoreCase = true)) {
+                "$baseRequest\n\n[INSTRUCCIÓN CLAVE: El usuario solicita un análisis explicativo y detallado en el chat. Utiliza action: \"conversation\" y target_scope: \"chat\". Desarrolla un análisis profundo, completo y multidimensional en Markdown sin resumir con viñetas cortadas ni intentar reemplazar la nota]."
+            } else {
+                baseRequest
             }
 
             sb.append("<user_request>\n")
@@ -1061,23 +1078,40 @@ El esquema JSON debe seguir estrictamente esta estructura:
 }
 
 ACCIONES PERMITIDAS:
-- "replace_selection": Reemplaza únicamente el <selected_text> con el Markdown mejorado, corregido o formateado.
-- "replace_full_note": Reemplaza toda la nota (útil para resúmenes completos, reescrituras globales o corrección gramatical de toda la nota).
+- "conversation": Úsalo para responder preguntas generales, saludos, y PRINCIPALMENTE cuando el usuario pida ANALIZAR, REVISAR, EXPLICAR, RESUMIR O COMENTAR la nota en el chat. (target_scope: "chat", explanation: breve resumen del análisis, content: análisis exhaustivo, enriquecido y profundo en Markdown con títulos ##, viñetas, citas y conclusiones). NUNCA uses "replace_selection" cuando te pidan un análisis o resumen explicativo.
+- "replace_selection": Reemplaza únicamente el <selected_text> con el Markdown mejorado, corregido o formateado. ÚSALO SÓLO SI EL USUARIO PIDE EXPLÍCITAMENTE corregir, editar o cambiar esa selección.
+- "replace_full_note": Reemplaza toda la nota (útil SÓLO cuando el usuario pide explícitamente reescribir la nota completa en el editor o cambiar su contenido global).
 - "insert_at_cursor": Inserta nuevo contenido en Markdown (sugerencias para continuar la nota, texto adicional o datos integrados de un PDF) justo donde está el cursor o al final de la nota.
 - "read_file": Solicita al backend que lea/extraiga texto de un archivo o PDF adjunto si aún no se ha proporcionado.
-- "conversation": Úsalo para responder preguntas generales, saludos o explicaciones cuando no se requiera modificar directamente una nota. (target_scope: "chat", explanation: breve resumen, content: respuesta conversacional completa en Markdown).
 </REGLAS_DE_SALIDA>
 
 <REGLAS_DE_COMPORTAMIENTO>
-1. CONTINUACIÓN DE ESCRITURA: Mantén el tono, idioma, estilo y contexto de <full_note>. Continúa de forma fluida a partir de <cursor_position> o del final de la nota.
-2. GRAMÁTICA Y REESCRITURA: Corrige gramática, puntuación y fluidez. Utiliza elementos enriquecidos de Markdown (tablas, destacados, listas, desplegables) cuando mejore la legibilidad.
-3. INTEGRACIÓN DE PDF/ARCHIVOS: Transforma el texto plano de archivos externos en secciones organizadas en Markdown que coincidan con el tema de la nota.
-4. SIN ALUCINACIONES: No inventes hechos al resumir o integrar documentos. Si falta información crítica, indícalo claramente en el campo "explanation".
+1. ANÁLISIS EXHAUSTIVO Y RESÚMENES EN CHAT: Cuando el usuario pida analizar, estudiar, resumir o explicar una nota o tema ("analiza mi nota", "qué opinas", "analizar", "resumen"), responde SIEMPRE con action: "conversation" y target_scope: "chat". Desarrolla un análisis exhaustivo, profundo, multidimensional y completo en el campo "content" usando Markdown enriquecido (introducción, tesis principal, desglose detallado punto por punto, implicaciones y conclusiones). NUNCA te limites a viñetas breves incompletas ni uses "replace_selection".
+2. CONTINUACIÓN DE ESCRITURA: Mantén el tono, idioma, estilo y contexto de <full_note>. Continúa de forma fluida a partir de <cursor_position> o del final de la nota.
+3. GRAMÁTICA Y REESCRITURA: Corrige gramática, puntuación y fluidez. Utiliza elementos enriquecidos de Markdown (tablas, destacados, listas, desplegables) cuando mejore la legibilidad.
+4. INTEGRACIÓN DE PDF/ARCHIVOS: Transforma el texto plano de archivos externos en secciones organizadas en Markdown que coincidan con el tema de la nota.
+5. SIN ALUCINACIONES: No inventes hechos al resumir o integrar documentos. Si falta información crítica, indícalo claramente en el campo "explanation".
 </REGLAS_DE_COMPORTAMIENTO>
 
 <EJEMPLOS_FEW_SHOT>
 
-Ejemplo 1: Continuar una nota en la posición del cursor
+Ejemplo 1: Analizar una nota en profundidad (Explicación en Chat)
+Entrada del usuario:
+<full_note>
+# Historia de los Elfos
+Los elfos son criaturas inteligentes con vitalidad superior. Llegaron a ser dominantes aunque se desconocen sus orígenes y a qué se debe su inteligencia. Se han enfrentado a plagas y han aprendido a usar artefactos refinados.
+</full_note>
+<user_request>Analiza esta nota en profundidad.</user_request>
+
+Respuesta de Aura:
+{
+  "action": "conversation",
+  "target_scope": "chat",
+  "explanation": "Análisis temático, narrativo e implicaciones históricas de la nota sobre los elfos.",
+  "content": "## Análisis Exhaustivo de la Nota: Civilización Élfica\n\n### 1. Premisa y Rasgos Fundamentales\nEl texto establece a los elfos como una civilización de alta resiliencia y ventaja biológica (inteligencia y vitalidad superior). Sin embargo, el relato plantea un misterio fundacional: el origen desconocido de sus facultades.\n\n### 2. Puntos Clave y Dinámica Histórica\n- **Adaptabilidad Tecnológica**: Han transitado del combate primario al uso de artefactos refinados.\n- **Aislamiento Estratégico**: Su retiro hacia grupos más silenciosos sugiere un declive poblacional o una doctrina de discreción frente a amenazas externas.\n- **Resiliencia ante Plagas**: La mención de enfermedades y plagas indica que, a pesar de su vitalidad, son vulnerables a crisis biológicas.\n\n### 3. Conclusiones y Sugerencias de Expansión\nLa nota posee un gran potencial para desarrollarse en un ensayo histórico o ficha de lore detallada. Se recomienda explorar el origen de su tecnología y la causa de su repliegue."
+}
+
+Ejemplo 2: Continuar una nota en la posición del cursor
 Entrada del usuario:
 <full_note>
 # Estrategias de Marketing 2026
@@ -1095,14 +1129,14 @@ Respuesta de Aura:
   "content": "- SEO y Blog: Publicar 2 artículos semanales enfocados en intenciones de búsqueda.\n- Colaboraciones: Crear alianzas con creadores de nicho."
 }
 
-Ejemplo 2: Corregir gramática de un párrafo seleccionado
+Ejemplo 3: Corregir gramática de un párrafo seleccionado
 Entrada del usuario:
 <full_note>
 ## Resumen
 Ayer fuemos al parque y no encontremos a nadie.
 </full_note>
 <selected_text>Ayer fuemos al parque y no encontremos a nadie.</selected_text>
-<user_request>Corrige la gramática.</user_request>
+<user_request>Corrige la gramática de este párrafo.</user_request>
 
 Respuesta de Aura:
 {
@@ -1112,12 +1146,12 @@ Respuesta de Aura:
   "content": "Ayer fuimos al parque y no encontramos a nadie."
 }
 
-Ejemplo 3: Resumir y reemplazar la nota completa
+Ejemplo 4: Resumir y reemplazar la nota completa
 Entrada del usuario:
 <full_note>
 ...[Reunión de 3 horas sobre nuevo producto]...
 </full_note>
-<user_request>Resume la nota en puntos clave.</user_request>
+<user_request>Reescribe la nota completa con un resumen ejecutivo.</user_request>
 
 Respuesta de Aura:
 {
@@ -1127,7 +1161,7 @@ Respuesta de Aura:
   "content": "## Resumen Ejecutivo de la Reunión\n- **Objetivo**: Lanzamiento versión 2.0.\n- **Fecha clave**: 15 de Noviembre.\n- **Responsables**: Equipo de producto y diseño."
 }
 
-Ejemplo 4: Saludo o conversación general
+Ejemplo 5: Saludo o conversación general
 Entrada del usuario:
 <user_request>Hola Aura, ¿cómo estás?</user_request>
 
@@ -1572,26 +1606,69 @@ Respuesta de Aura:
             if (s in 0 until e) unwrapped.substring(s, e + 1) else unwrapped
         } else unwrapped
 
-        return try {
+        // Intento 1: org.json.JSONObject estándar
+        try {
             val obj = org.json.JSONObject(jsonCandidate)
             val action = obj.optString("action", "conversation")
             val targetScope = obj.optString("target_scope", "chat")
             val explanation = obj.optString("explanation", "")
             val content = obj.optString("content", "")
-            AuraActionResponse(
-                action = action.ifBlank { "conversation" },
-                targetScope = targetScope.ifBlank { "chat" },
-                explanation = explanation,
-                content = content.ifBlank { jsonCandidate }
-            )
-        } catch (e: Exception) {
-            AuraActionResponse(
-                action = "conversation",
-                targetScope = "chat",
-                explanation = "",
-                content = trimmed
-            )
+            if (content.isNotBlank() || explanation.isNotBlank()) {
+                return AuraActionResponse(
+                    action = action.ifBlank { "conversation" },
+                    targetScope = targetScope.ifBlank { "chat" },
+                    explanation = explanation,
+                    content = content.ifBlank { jsonCandidate }
+                )
+            }
+        } catch (ignored: Exception) {
+            // Continuar con extracción resiliente
         }
+
+        // Intento 2: Extracción resiliente por Regex para tolerar saltos de línea sin escapar
+        try {
+            if (unwrapped.contains("\"action\"") || unwrapped.contains("\"content\"")) {
+                val actionMatch = Regex("\"action\"\\s*:\\s*\"([^\"]+)\"").find(unwrapped)?.groupValues?.get(1)
+                val targetScopeMatch = Regex("\"target_scope\"\\s*:\\s*\"([^\"]+)\"").find(unwrapped)?.groupValues?.get(1)
+                val explanationMatch = Regex("\"explanation\"\\s*:\\s*\"([^\"]+)\"").find(unwrapped)?.groupValues?.get(1)
+
+                // Extraer el cuerpo de "content": "..."
+                val contentStart = unwrapped.indexOf("\"content\"")
+                if (contentStart != -1) {
+                    val colonIdx = unwrapped.indexOf(':', contentStart)
+                    if (colonIdx != -1) {
+                        val firstQuote = unwrapped.indexOf('"', colonIdx)
+                        if (firstQuote != -1) {
+                            val contentSub = unwrapped.substring(firstQuote + 1)
+                            val cleanContent = if (contentSub.endsWith("\"}") || contentSub.endsWith("\"}\n")) {
+                                contentSub.removeSuffix("}").trim().removeSuffix("\"")
+                            } else if (contentSub.endsWith("}")) {
+                                contentSub.removeSuffix("}").trim().removeSuffix("\"")
+                            } else {
+                                contentSub.removeSuffix("\"")
+                            }.replace("\\n", "\n").replace("\\\"", "\"")
+
+                            return AuraActionResponse(
+                                action = actionMatch ?: "conversation",
+                                targetScope = targetScopeMatch ?: "chat",
+                                explanation = explanationMatch ?: "",
+                                content = cleanContent
+                            )
+                        }
+                    }
+                }
+            }
+        } catch (ignored: Exception) {
+            // Fallback a texto crudo
+        }
+
+        // Intento 3: Fallback seguro a texto conversacional
+        return AuraActionResponse(
+            action = "conversation",
+            targetScope = "chat",
+            explanation = "",
+            content = trimmed
+        )
     }
 
     /**
