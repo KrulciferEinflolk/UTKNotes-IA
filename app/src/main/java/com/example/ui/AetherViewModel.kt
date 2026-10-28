@@ -47,6 +47,34 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun selectAndLoadModel(model: com.example.data.local.llm.LlmModelItem) {
+        viewModelScope.launch {
+            modelVerifier.setActiveModel(model)
+            if (modelVerifier.isModelDownloaded(model)) {
+                localLlm.ensureModelLoaded(modelVerifier.getModelFile(model))
+            }
+        }
+    }
+
+    fun deleteModel(model: com.example.data.local.llm.LlmModelItem) {
+        viewModelScope.launch {
+            if (localLlm.modelState.value is com.example.data.local.llm.LlmModelState.Ready &&
+                localLlm.activeModelPath == modelVerifier.getModelFile(model).absolutePath) {
+                localLlm.unloadModel()
+            }
+            modelVerifier.deleteModelFile(model)
+        }
+    }
+
+    fun downloadModel(model: com.example.data.local.llm.LlmModelItem) {
+        viewModelScope.launch {
+            modelVerifier.startDownload(model)
+            if (modelVerifier.isModelDownloaded(model) && modelVerifier.activeModel.value.id == model.id) {
+                localLlm.ensureModelLoaded(modelVerifier.getModelFile(model))
+            }
+        }
+    }
+
 
     // --- SELECTION STATES ---
     private val _selectedBook = MutableStateFlow<BookEntity?>(null)
@@ -418,7 +446,30 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             val userRequestText = if (isAnalysisRequest && !rawUserMsg.contains("reemplaza", ignoreCase = true) && !rawUserMsg.contains("modifica", ignoreCase = true)) {
-                "$baseRequest\n\n[INSTRUCCIÓN CLAVE: El usuario solicita un análisis explicativo y detallado en el chat. Utiliza action: \"conversation\" y target_scope: \"chat\". Desarrolla un análisis profundo, completo y multidimensional en Markdown sin resumir con viñetas cortadas ni intentar reemplazar la nota]."
+                if (!actualFileContent.isNullOrBlank() && activeTargetNote != null) {
+                    """$baseRequest
+
+[INSTRUCCIÓN CRÍTICA DE SEPARACIÓN Y CONTRASTE]:
+1. Prioridad: Analiza el documento adjunto ('${fName ?: "documento"}') extrayendo sus PUNTOS CLAVE DIRECTOS en viñetas concretas con fidelidad estricta a su contenido.
+2. Cero alucinaciones: Básate ÚNICAMENTE en hechos explícitos del documento adjunto. PROHIBIDO desglosar párrafo por párrafo ('[Párrafo X]') y PROHIBIDO inventar interpretaciones narrativas extensas.
+3. Contraste de diferencias: En una sección separada al final titulada '### 🔍 Contraste con tu nota activa ("${activeTargetNote.title}")', señala puntualmente cómo se diferencia o relaciona con tu nota actual.
+4. Cero contaminación cruzada: No mezcles jamás los personajes, elementos o conceptos de la nota dentro del documento adjunto, ni viceversa.
+Utiliza action: "conversation" y target_scope: "chat"]."""
+                } else if (!actualFileContent.isNullOrBlank()) {
+                    """$baseRequest
+
+[INSTRUCCIÓN CRÍTICA]:
+Analiza el documento adjunto ('${fName ?: "documento"}') extrayendo sus PUNTOS CLAVE DIRECTOS en viñetas concretas con fidelidad estricta al texto.
+PROHIBIDO desglosar párrafo por párrafo ('[Párrafo X]') y PROHIBIDO inventar interpretaciones narrativas extensas.
+Utiliza action: "conversation" y target_scope: "chat"]."""
+                } else {
+                    """$baseRequest
+
+[INSTRUCCIÓN CRÍTICA]:
+Analiza la nota activa extrayendo sus PUNTOS CLAVE DIRECTOS en viñetas concretas con fidelidad estricta a su contenido.
+PROHIBIDO desglosar párrafo por párrafo ('[Párrafo X]') y PROHIBIDO alucinar hechos no presentes.
+Utiliza action: "conversation" y target_scope: "chat"]."""
+                }
             } else {
                 baseRequest
             }
@@ -1078,7 +1129,7 @@ El esquema JSON debe seguir estrictamente esta estructura:
 }
 
 ACCIONES PERMITIDAS:
-- "conversation": Úsalo para responder preguntas generales, saludos, y PRINCIPALMENTE cuando el usuario pida ANALIZAR, REVISAR, EXPLICAR, RESUMIR O COMENTAR la nota en el chat. (target_scope: "chat", explanation: breve resumen del análisis, content: análisis exhaustivo, enriquecido y profundo en Markdown con títulos ##, viñetas, citas y conclusiones). NUNCA uses "replace_selection" cuando te pidan un análisis o resumen explicativo.
+- "conversation": Úsalo para responder preguntas generales, saludos, y PRINCIPALMENTE cuando el usuario pida ANALIZAR, REVISAR, RESUMIR O CONTRASTAR información en el chat. (target_scope: "chat", explanation: breve resumen del análisis, content: puntos clave directos y viñetas factuales en Markdown). NUNCA uses "replace_selection" cuando te pidan un análisis o resumen explicativo.
 - "replace_selection": Reemplaza únicamente el <selected_text> con el Markdown mejorado, corregido o formateado. ÚSALO SÓLO SI EL USUARIO PIDE EXPLÍCITAMENTE corregir, editar o cambiar esa selección.
 - "replace_full_note": Reemplaza toda la nota (útil SÓLO cuando el usuario pide explícitamente reescribir la nota completa en el editor o cambiar su contenido global).
 - "insert_at_cursor": Inserta nuevo contenido en Markdown (sugerencias para continuar la nota, texto adicional o datos integrados de un PDF) justo donde está el cursor o al final de la nota.
@@ -1086,29 +1137,32 @@ ACCIONES PERMITIDAS:
 </REGLAS_DE_SALIDA>
 
 <REGLAS_DE_COMPORTAMIENTO>
-1. ANÁLISIS EXHAUSTIVO Y RESÚMENES EN CHAT: Cuando el usuario pida analizar, estudiar, resumir o explicar una nota o tema ("analiza mi nota", "qué opinas", "analizar", "resumen"), responde SIEMPRE con action: "conversation" y target_scope: "chat". Desarrolla un análisis exhaustivo, profundo, multidimensional y completo en el campo "content" usando Markdown enriquecido (introducción, tesis principal, desglose detallado punto por punto, implicaciones y conclusiones). NUNCA te limites a viñetas breves incompletas ni uses "replace_selection".
+1. PUNTOS CLAVE DIRECTOS EN ANÁLISIS Y RESÚMENES: Cuando el usuario pida analizar, estudiar, resumir o explicar ("analiza", "qué opinas", "analizar", "resumen"), responde SIEMPRE con action: "conversation" y target_scope: "chat". Estructura tu respuesta mediante PUNTOS CLAVE DIRECTOS en viñetas concretas y factuales. PROHIBIDO desglosar párrafo por párrafo (NO uses "[Párrafo 1]", "[Párrafo 2]") y PROHIBIDO inventar interpretaciones narrativas extensas.
 2. CONTINUACIÓN DE ESCRITURA: Mantén el tono, idioma, estilo y contexto de <full_note>. Continúa de forma fluida a partir de <cursor_position> o del final de la nota.
-3. GRAMÁTICA Y REESCRITURA: Corrige gramática, puntuación y fluidez. Utiliza elementos enriquecidos de Markdown (tablas, destacados, listas, desplegables) cuando mejore la legibilidad.
-4. INTEGRACIÓN DE PDF/ARCHIVOS: Transforma el texto plano de archivos externos en secciones organizadas en Markdown que coincidan con el tema de la nota.
-5. SIN ALUCINACIONES: No inventes hechos al resumir o integrar documentos. Si falta información crítica, indícalo claramente en el campo "explanation".
+3. ANÁLISIS DE ARCHIVOS Y CONTRASTE CON LA NOTA: Si el usuario adjunta un archivo (<attached_file>) teniendo una nota abierta (<full_note>), analiza de forma prioritaria y aislada el archivo adjunto basándote EXCLUSIVAMENTE en los hechos explícitos del documento. Posteriormente, en una sección separada ('### 🔍 Contraste con tu nota activa'), explica puntualmente cómo difiere o conecta con la nota. NUNCA mezcles personajes, temas o conceptos de una fuente en la otra.
+4. GRAMÁTICA Y REESCRITURA: Corrige gramática, puntuación y fluidez. Utiliza elementos enriquecidos de Markdown (tablas, destacados, listas, desplegables) cuando mejore la legibilidad.
+5. SIN ALUCINACIONES NI CONTAMINACIÓN CRUZADA: Prohibido inventar hechos, atribuir conceptos de la nota al documento adjunto o viceversa, o alargar respuestas con especulaciones ficticias. Si un dato no está en el texto provisto, no lo infieras ni lo inventes.
 </REGLAS_DE_COMPORTAMIENTO>
 
 <EJEMPLOS_FEW_SHOT>
 
-Ejemplo 1: Analizar una nota en profundidad (Explicación en Chat)
+Ejemplo 1: Analizar un documento adjunto y contrastar con la nota activa
 Entrada del usuario:
-<full_note>
-# Historia de los Elfos
-Los elfos son criaturas inteligentes con vitalidad superior. Llegaron a ser dominantes aunque se desconocen sus orígenes y a qué se debe su inteligencia. Se han enfrentado a plagas y han aprendido a usar artefactos refinados.
+<full_note title="Plan de Trabajo">
+- Objetivo: Optimizar la aplicación móvil.
+- Plazo: Q4.
 </full_note>
-<user_request>Analiza esta nota en profundidad.</user_request>
+<attached_file filename="manual_tecnico.txt">
+El manual describe la arquitectura del backend en servidores Linux y la configuración de puertos 8080 y 443.
+</attached_file>
+<user_request>Analiza el documento adjunto y compáralo con mi nota.</user_request>
 
 Respuesta de Aura:
 {
   "action": "conversation",
   "target_scope": "chat",
-  "explanation": "Análisis temático, narrativo e implicaciones históricas de la nota sobre los elfos.",
-  "content": "## Análisis Exhaustivo de la Nota: Civilización Élfica\n\n### 1. Premisa y Rasgos Fundamentales\nEl texto establece a los elfos como una civilización de alta resiliencia y ventaja biológica (inteligencia y vitalidad superior). Sin embargo, el relato plantea un misterio fundacional: el origen desconocido de sus facultades.\n\n### 2. Puntos Clave y Dinámica Histórica\n- **Adaptabilidad Tecnológica**: Han transitado del combate primario al uso de artefactos refinados.\n- **Aislamiento Estratégico**: Su retiro hacia grupos más silenciosos sugiere un declive poblacional o una doctrina de discreción frente a amenazas externas.\n- **Resiliencia ante Plagas**: La mención de enfermedades y plagas indica que, a pesar de su vitalidad, son vulnerables a crisis biológicas.\n\n### 3. Conclusiones y Sugerencias de Expansión\nLa nota posee un gran potencial para desarrollarse en un ensayo histórico o ficha de lore detallada. Se recomienda explorar el origen de su tecnología y la causa de su repliegue."
+  "explanation": "Puntos clave del manual adjunto y contraste con la nota activa.",
+  "content": "## Puntos Clave del Documento Adjunto (manual_tecnico.txt)\n- **Arquitectura de Servidor:** Describe la infraestructura técnica para despliegues en servidores Linux.\n- **Conectividad:** Especifica la apertura y administración de los puertos de red 8080 y 443.\n\n### 🔍 Contraste con tu nota activa (\"Plan de Trabajo\")\n- **Diferencia temática:** El documento adjunto es un manual técnico de servidores, mientras que tu nota activa es una planificación operativa enfocada en optimización móvil para Q4.\n- **Conexión:** Pertenecen al mismo ecosistema técnico pero abordan componentes distintos (backend vs frontend móvil)."
 }
 
 Ejemplo 2: Continuar una nota en la posición del cursor

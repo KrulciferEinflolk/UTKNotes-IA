@@ -50,7 +50,8 @@ class LocalLlmManager(
     private var llamaHelper: LlamaHelper? = null
     private var isGenerating = false
 
-    private var activeModelPath: String? = null
+    var activeModelPath: String? = null
+        private set
 
     init {
         // Escucha eventos del motor nativo llama.cpp
@@ -76,7 +77,13 @@ class LocalLlmManager(
                     }
                     is LlamaHelper.LLMEvent.Error -> {
                         Log.e(TAG, "Error en el motor LLM: ${event.message}")
-                        _modelState.value = LlmModelState.Error(event.message)
+                        // Si el modelo ya está cargado y listo en memoria, un error durante una predicción individual no debe corromper el estado general
+                        if (llamaHelper == null || activeModelPath == null) {
+                            _modelState.value = LlmModelState.Error(event.message)
+                        } else {
+                            val path = activeModelPath ?: ""
+                            _modelState.value = LlmModelState.Ready(path, DEFAULT_CONTEXT_SIZE)
+                        }
                     }
                 }
             }
@@ -162,6 +169,29 @@ class LocalLlmManager(
                 _modelState.value = LlmModelState.Error(e.localizedMessage ?: "Error cargando modelo")
                 false
             }
+        }
+    }
+
+    fun formatPrompt(
+        userMessage: String,
+        systemPrompt: String? = null,
+        history: List<Pair<String, String>> = emptyList()
+    ): String {
+        val isLlama = activeModelPath?.contains("llama", ignoreCase = true) == true
+        return if (isLlama) {
+            val sb = StringBuilder()
+            sb.append("<|begin_of_text|>")
+            val sys = systemPrompt ?: "Eres un asistente inteligente para tomar notas, analizar documentos y responder preguntas con precisión."
+            sb.append("<|start_header_id|>system<|end_header_id|>\n\n").append(sys.trim()).append("<|eot_id|>")
+            for ((role, text) in history) {
+                val r = if (role.equals("user", ignoreCase = true)) "user" else "assistant"
+                sb.append("<|start_header_id|>").append(r).append("<|end_header_id|>\n\n").append(text.trim()).append("<|eot_id|>")
+            }
+            sb.append("<|start_header_id|>user<|end_header_id|>\n\n").append(userMessage.trim()).append("<|eot_id|>")
+            sb.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+            sb.toString()
+        } else {
+            formatQwenPrompt(userMessage, systemPrompt, history)
         }
     }
 
@@ -290,21 +320,32 @@ class LocalLlmManager(
         val maxPasses = 2
         while (pass < maxPasses && isResponseIncomplete(result)) {
             pass++
+            // Pausa preventiva para dar tiempo al recolector y al hilo C++ nativo entre pasadas
+            kotlinx.coroutines.delay(350L)
             onStatusUpdate?.invoke("Aura está completando la respuesta detallada...")
-            val continuationPrompt = "Continúa exactamente desde donde se interrumpió el texto anterior sin repetir nada, completando las oraciones pendientes y cerrando adecuadamente el formato:"
+            val continuationPrompt = "Cierra puntualmente la última oración o elemento pendiente sin repetir nada, sin inventar interpretaciones narrativas y cerrando el formato adecuadamente:"
             val continuationHistory = history + listOf(
                 "user" to prompt.take(1500),
                 "assistant" to result.takeLast(2500)
             )
-            val chunk = generateSinglePass(
-                prompt = continuationPrompt,
-                systemPrompt = systemPrompt,
-                history = continuationHistory,
-                imageUri = null,
-                onStatusUpdate = onStatusUpdate,
-                onTokenUpdate = null
-            )
-            if (chunk.isNotBlank() && !chunk.startsWith("Error", ignoreCase = true) && chunk != result) {
+            val chunk = try {
+                generateSinglePass(
+                    prompt = continuationPrompt,
+                    systemPrompt = systemPrompt,
+                    history = continuationHistory,
+                    imageUri = null,
+                    onStatusUpdate = onStatusUpdate,
+                    onTokenUpdate = null
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Error durante la pasada de continuación: ${e.message}")
+                break
+            }
+            if (chunk.isNotBlank() &&
+                !chunk.startsWith("Error", ignoreCase = true) &&
+                !chunk.contains("busy", ignoreCase = true) &&
+                chunk != result
+            ) {
                 result = stitchContinuation(result, chunk)
             } else {
                 break
@@ -334,7 +375,7 @@ class LocalLlmManager(
     }
 
     private fun stitchContinuation(base: String, continuation: String): String {
-        val cleanCont = continuation.replace("<|im_end|>", "").replace("<|endoftext|>", "").trim()
+        val cleanCont = continuation.replace("<|im_end|>", "").replace("<|endoftext|>", "").replace("<|eot_id|>", "").trim()
         if (cleanCont.isEmpty()) return base
         val baseTrimmed = base.trimEnd()
         return "$baseTrimmed $cleanCont"
@@ -377,7 +418,7 @@ class LocalLlmManager(
 
             onStatusUpdate?.invoke("Aura está pensando...")
 
-            val formattedPrompt = formatQwenPrompt(prompt, systemPrompt, history)
+            val formattedPrompt = formatPrompt(prompt, systemPrompt, history)
             val accumulatedText = StringBuilder()
             val doneSignal = kotlinx.coroutines.CompletableDeferred<String>()
             var hasStarted = false
@@ -426,15 +467,33 @@ class LocalLlmManager(
                 formattedPrompt
             }
 
+            var completedNormally = false
             try {
                 isGenerating = true
-                helper.predict(safePrompt, imageUri, true)
+                // Pausa defensiva previa para asegurar que el hilo nativo esté inactivo
+                kotlinx.coroutines.delay(100L)
+                try {
+                    helper.predict(safePrompt, imageUri, true)
+                } catch (e: Exception) {
+                    if (e.message?.contains("busy", ignoreCase = true) == true) {
+                        Log.w(TAG, "Contexto nativo reportó ocupado, esperando 400ms para reintentar...")
+                        kotlinx.coroutines.delay(400L)
+                        helper.predict(safePrompt, imageUri, true)
+                    } else {
+                        throw e
+                    }
+                }
+
                 val result = kotlinx.coroutines.withTimeoutOrNull(240_000L) {
                     doneSignal.await()
-                } ?: accumulatedText.toString().trim().ifEmpty {
+                }
+                if (result != null) {
+                    completedNormally = true
+                }
+                val rawResult = result ?: accumulatedText.toString().trim().ifEmpty {
                     "Aura tardó más de lo esperado debido a la carga del procesador. Puedes intentar con una pregunta más concisa."
                 }
-                val cleanResult = result.replace("<|im_end|>", "").replace("<|endoftext|>", "").trim()
+                val cleanResult = rawResult.replace("<|im_end|>", "").replace("<|endoftext|>", "").replace("<|eot_id|>", "").trim()
                 if (cleanResult.isBlank()) {
                     val fallbackText = accumulatedText.toString().trim()
                     if (fallbackText.isNotBlank()) {
@@ -457,11 +516,15 @@ class LocalLlmManager(
             } finally {
                 isGenerating = false
                 job.cancel()
-                try {
-                    helper.stopPrediction()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error limpiando predicción en finally", e)
+                if (!completedNormally) {
+                    try {
+                        helper.stopPrediction()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error limpiando predicción no finalizada en finally", e)
+                    }
                 }
+                // Pausa para asegurar que la biblioteca nativa C++ libere totalmente el contexto JNI
+                kotlinx.coroutines.delay(200L)
             }
         }
     }

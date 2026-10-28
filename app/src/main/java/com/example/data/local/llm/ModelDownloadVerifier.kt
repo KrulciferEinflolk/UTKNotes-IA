@@ -17,38 +17,40 @@ import java.util.concurrent.TimeUnit
 
 sealed interface ModelDownloadStatus {
     object NotDownloaded : ModelDownloadStatus
-    data class Downloading(val progress: Float, val downloadedBytes: Long, val totalBytes: Long) : ModelDownloadStatus
+    data class Downloading(val progress: Float, val downloadedBytes: Long, val totalBytes: Long, val modelId: String) : ModelDownloadStatus
     data class Ready(val modelFile: File, val sizeInMb: Double) : ModelDownloadStatus
     data class Error(val message: String) : ModelDownloadStatus
 }
 
 /**
- * Verificador inteligente de descarga del modelo GGUF (Qwen2.5-1.5B).
- * Previene descargas duplicadas al abrir/reinstalar la app, comprueba integridad
- * de archivos existentes y gestiona la descarga resiliente con progreso.
+ * Gestor y verificador multi-modelo de descarga GGUF (Qwen2.5-3B, Qwen2.5-1.5B, Llama-3.2-3B).
+ * Permite seleccionar el modelo activo, descargarlo con barra de progreso, verificar integridad
+ * y liberar espacio en disco eliminando archivos no utilizados.
  */
 class ModelDownloadVerifier(private val context: Context) {
 
     companion object {
         private const val TAG = "ModelDownloadVerifier"
-        const val DEFAULT_MODEL_NAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
-        // URL oficial de HuggingFace para la versión cuantizada Q4_K_M de Qwen2.5-1.5B
-        const val DEFAULT_DOWNLOAD_URL = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
-        // Tamaño aproximado mínimo para validar que el archivo no está cortado (~900 MB)
-        const val MIN_EXPECTED_BYTES = 900_000_000L
+        private const val PREFS_NAME = "aura_model_prefs"
+        private const val KEY_ACTIVE_MODEL_ID = "active_model_id"
     }
 
-    private val modelsDir: File
+    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    val modelsDir: File
         get() = File(context.filesDir, "models").apply { if (!exists()) mkdirs() }
 
-    val modelFile: File
-        get() = File(modelsDir, DEFAULT_MODEL_NAME)
+    private val _activeModel = MutableStateFlow(determineInitialModel())
+    val activeModel: StateFlow<LlmModelItem> = _activeModel.asStateFlow()
 
-    private val tempDownloadFile: File
-        get() = File(modelsDir, "$DEFAULT_MODEL_NAME.downloading")
+    val modelFile: File
+        get() = getModelFile(_activeModel.value)
 
     private val _status = MutableStateFlow<ModelDownloadStatus>(ModelDownloadStatus.NotDownloaded)
     val status: StateFlow<ModelDownloadStatus> = _status.asStateFlow()
+
+    private val _downloadingModelId = MutableStateFlow<String?>(null)
+    val downloadingModelId: StateFlow<String?> = _downloadingModelId.asStateFlow()
 
     private val downloadMutex = Mutex()
     @Volatile private var isDownloading = false
@@ -56,15 +58,60 @@ class ModelDownloadVerifier(private val context: Context) {
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(180, TimeUnit.SECONDS)
         .build()
 
     init {
         checkCurrentStatus()
     }
 
+    private fun determineInitialModel(): LlmModelItem {
+        val savedId = prefs.getString(KEY_ACTIVE_MODEL_ID, null)
+        if (savedId != null) {
+            return LlmModelCatalog.getById(savedId)
+        }
+        // Si ya existía el modelo 1.5B descargado previamente en disco, conservarlo por defecto
+        val file15 = File(modelsDir, LlmModelCatalog.QWEN_1_5B.fileName)
+        return if (file15.exists() && file15.length() >= LlmModelCatalog.QWEN_1_5B.minExpectedBytes) {
+            LlmModelCatalog.QWEN_1_5B
+        } else {
+            LlmModelCatalog.QWEN_3B
+        }
+    }
+
+    fun getModelFile(model: LlmModelItem): File {
+        return File(modelsDir, model.fileName)
+    }
+
+    private fun getTempFile(model: LlmModelItem): File {
+        return File(modelsDir, "${model.fileName}.downloading")
+    }
+
+    fun isModelDownloaded(model: LlmModelItem): Boolean {
+        val f = getModelFile(model)
+        return f.exists() && f.length() >= model.minExpectedBytes
+    }
+
+    fun setActiveModel(model: LlmModelItem) {
+        prefs.edit().putString(KEY_ACTIVE_MODEL_ID, model.id).apply()
+        _activeModel.value = model
+        checkCurrentStatus()
+    }
+
+    fun deleteModelFile(model: LlmModelItem): Boolean {
+        if (_downloadingModelId.value == model.id) {
+            cancelDownload()
+        }
+        val target = getModelFile(model)
+        val temp = getTempFile(model)
+        if (temp.exists()) temp.delete()
+        val deleted = if (target.exists()) target.delete() else true
+        checkCurrentStatus()
+        return deleted
+    }
+
     /**
-     * Verifica si el modelo ya está descargado y en buen estado en el dispositivo.
+     * Verifica si el modelo activo actual está descargado y en buen estado.
      */
     fun checkCurrentStatus(): ModelDownloadStatus {
         if (isDownloading) {
@@ -72,16 +119,16 @@ class ModelDownloadVerifier(private val context: Context) {
         }
 
         val target = modelFile
-        if (target.exists() && target.length() >= MIN_EXPECTED_BYTES) {
+        val active = _activeModel.value
+        if (target.exists() && target.length() >= active.minExpectedBytes) {
             val sizeMb = target.length() / (1024.0 * 1024.0)
             val readyStatus = ModelDownloadStatus.Ready(target, sizeMb)
             _status.value = readyStatus
             return readyStatus
         }
 
-        // Si existe un archivo parcial residual de una descarga interrumpida
-        if (target.exists() && target.length() < MIN_EXPECTED_BYTES) {
-            Log.w(TAG, "Archivo de modelo incompleto detectado (${target.length()} bytes). Limpiando...")
+        if (target.exists() && target.length() < active.minExpectedBytes) {
+            Log.w(TAG, "Archivo incompleto detectado para ${active.name} (${target.length()} bytes). Limpiando...")
             target.delete()
         }
 
@@ -90,30 +137,32 @@ class ModelDownloadVerifier(private val context: Context) {
     }
 
     /**
-     * Inicia o se conecta a la descarga del modelo.
-     * Si ya se está descargando, no duplica la petición.
+     * Inicia la descarga del modelo especificado (por defecto el activo).
      */
-    suspend fun startDownload(downloadUrl: String = DEFAULT_DOWNLOAD_URL) = withContext(Dispatchers.IO) {
+    suspend fun startDownload(model: LlmModelItem = _activeModel.value) = withContext(Dispatchers.IO) {
         downloadMutex.withLock {
             if (isDownloading) {
-                Log.d(TAG, "Descarga ya en curso. No se duplicará la petición.")
+                Log.d(TAG, "Descarga ya en curso.")
                 return@withContext
             }
 
-            // Verificar si ya existe antes de descargar
-            if (checkCurrentStatus() is ModelDownloadStatus.Ready) {
-                Log.d(TAG, "El modelo ya está disponible y verificado.")
+            if (isModelDownloaded(model)) {
+                Log.d(TAG, "El modelo ${model.name} ya está disponible.")
+                if (_activeModel.value.id == model.id) {
+                    checkCurrentStatus()
+                }
                 return@withContext
             }
 
             isDownloading = true
             cancelRequested = false
+            _downloadingModelId.value = model.id
         }
 
         try {
-            Log.i(TAG, "Iniciando descarga de $DEFAULT_MODEL_NAME desde $downloadUrl")
+            Log.i(TAG, "Iniciando descarga de ${model.name} desde ${model.downloadUrl}")
             val request = Request.Builder()
-                .url(downloadUrl)
+                .url(model.downloadUrl)
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
@@ -122,6 +171,7 @@ class ModelDownloadVerifier(private val context: Context) {
                     Log.e(TAG, err)
                     _status.value = ModelDownloadStatus.Error(err)
                     isDownloading = false
+                    _downloadingModelId.value = null
                     return@withContext
                 }
 
@@ -129,15 +179,17 @@ class ModelDownloadVerifier(private val context: Context) {
                 if (body == null) {
                     _status.value = ModelDownloadStatus.Error("Respuesta vacía del servidor")
                     isDownloading = false
+                    _downloadingModelId.value = null
                     return@withContext
                 }
 
                 val totalBytes = body.contentLength()
-                val tempFile = tempDownloadFile
+                val tempFile = getTempFile(model)
+                val targetFile = getModelFile(model)
                 if (tempFile.exists()) tempFile.delete()
 
                 var downloadedBytes = 0L
-                val buffer = ByteArray(64 * 1024)
+                val buffer = ByteArray(128 * 1024)
 
                 body.byteStream().use { input ->
                     FileOutputStream(tempFile).use { output ->
@@ -149,6 +201,7 @@ class ModelDownloadVerifier(private val context: Context) {
                                 tempFile.delete()
                                 _status.value = ModelDownloadStatus.NotDownloaded
                                 isDownloading = false
+                                _downloadingModelId.value = null
                                 return@withContext
                             }
 
@@ -162,7 +215,8 @@ class ModelDownloadVerifier(private val context: Context) {
                                 _status.value = ModelDownloadStatus.Downloading(
                                     progress = progress,
                                     downloadedBytes = downloadedBytes,
-                                    totalBytes = totalBytes
+                                    totalBytes = totalBytes,
+                                    modelId = model.id
                                 )
                             }
                         }
@@ -171,13 +225,14 @@ class ModelDownloadVerifier(private val context: Context) {
                 }
 
                 // Validar e intercambiar archivo temporal al definitivo
-                if (tempFile.length() >= MIN_EXPECTED_BYTES || (totalBytes > 0 && tempFile.length() >= totalBytes)) {
-                    if (modelFile.exists()) modelFile.delete()
-                    val renamed = tempFile.renameTo(modelFile)
+                if (tempFile.length() >= model.minExpectedBytes || (totalBytes > 0 && tempFile.length() >= totalBytes)) {
+                    if (targetFile.exists()) targetFile.delete()
+                    val renamed = tempFile.renameTo(targetFile)
                     if (renamed) {
-                        val sizeMb = modelFile.length() / (1024.0 * 1024.0)
-                        Log.i(TAG, "Modelo descargado e instalado exitosamente ($sizeMb MB)")
-                        _status.value = ModelDownloadStatus.Ready(modelFile, sizeMb)
+                        val sizeMb = targetFile.length() / (1024.0 * 1024.0)
+                        Log.i(TAG, "Modelo ${model.name} descargado e instalado exitosamente ($sizeMb MB)")
+                        setActiveModel(model)
+                        _status.value = ModelDownloadStatus.Ready(targetFile, sizeMb)
                     } else {
                         _status.value = ModelDownloadStatus.Error("Error al mover archivo temporal al destino")
                     }
@@ -188,10 +243,11 @@ class ModelDownloadVerifier(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Excepción durante la descarga del modelo", e)
-            tempDownloadFile.delete()
+            getTempFile(model).delete()
             _status.value = ModelDownloadStatus.Error(e.localizedMessage ?: "Error desconocido")
         } finally {
             isDownloading = false
+            _downloadingModelId.value = null
         }
     }
 
@@ -199,15 +255,13 @@ class ModelDownloadVerifier(private val context: Context) {
         cancelRequested = true
     }
 
-    /**
-     * Permite asociar un modelo GGUF importado manualmente por el usuario.
-     */
-    suspend fun importLocalModel(sourceFile: File): Boolean = withContext(Dispatchers.IO) {
+    suspend fun importLocalModel(sourceFile: File, targetModel: LlmModelItem = _activeModel.value): Boolean = withContext(Dispatchers.IO) {
         try {
             if (!sourceFile.exists()) return@withContext false
-            if (modelFile.exists()) modelFile.delete()
-            sourceFile.copyTo(modelFile, overwrite = true)
-            checkCurrentStatus()
+            val dest = getModelFile(targetModel)
+            if (dest.exists()) dest.delete()
+            sourceFile.copyTo(dest, overwrite = true)
+            setActiveModel(targetModel)
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error importando modelo local", e)

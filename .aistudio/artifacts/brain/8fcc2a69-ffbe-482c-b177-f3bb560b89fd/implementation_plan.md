@@ -1,74 +1,46 @@
-# Plan de Implementación: Análisis Profundo en Chat y Garantía de Respuestas Completas sin Cortes
+# Plan de Implementación: Selector y Gestor de Modelos de IA en Ajustes
 
-Este plan aborda las dos causas identificadas por el usuario:
-1. **Comportamiento al pedir analizar/resumir una nota:** Aura devolvía erróneamente un `replace_selection` con viñetas cortas en lugar de un análisis explicativo y exhaustivo en el chat.
-2. **Corte a media oración:** Las respuestas largas se truncaban por falta de margen de contexto y ausencia de auto-continuación cuando el modelo agotaba su búfer de generación.
-
----
-
-## User Review & Critical Decisions
-
-> [!IMPORTANT]
-> **Decisiones confirmadas con el usuario:**
-> 1. **Modo de Respuesta para Análisis y Resumen:**
->    - Al pedir *"analizar la nota"*, *"resumen"*, *"revisa mi nota"* o *"qué opinas"*, Aura generará una **explicación y análisis profundo en el chat** (`action: "conversation"` / `target_scope: "chat"`), con desglose estructurado en Markdown (temas clave, fortalezas, vacíos y conclusiones).
->    - No sustituirá bloques ni forzará `replace_selection` a menos que el usuario pida explícitamente *"reemplaza este párrafo"* o *"modifica la nota"*.
-> 2. **Garantía Absoluta contra Respuestas Cortadas:**
->    - **Máximo margen de tokens:** Elevar la ventana de contexto a **16,384 tokens** (nativa en Qwen2.5-1.5B).
->    - **Extensión automática en segundo plano (Auto-Continuation):** Si una respuesta se interrumpe a media oración o el JSON queda incompleto, el sistema solicitará automáticamente a Qwen en segundo plano que continúe desde el punto exacto donde se quedó, concatenando el resultado hasta cerrarlo por completo antes de mostrárselo al usuario.
+## Objetivo
+Implementar un catálogo interactivo en la sección de **Ajustes** que permita al usuario seleccionar, descargar, activar o eliminar distintos modelos locales de IA para Aura, adaptados a la capacidad de hardware del dispositivo (6 GB de RAM):
+- **Qwen2.5-1.5B (Base ligera):** ~1.1 GB en disco, ~1.5 GB RAM (Ultra rápido y bajo consumo).
+- **Qwen2.5-3B (Recomendado para 6 GB):** ~2.0 GB en disco, ~2.6 GB RAM (Gran salto en comprensión, análisis y español sin riesgo de cierre).
+- **Llama-3.2-3B (Alternativa estructurada):** ~2.0 GB en disco, ~2.5 GB RAM (Excelente precisión en seguimiento de instrucciones).
 
 ---
 
-## 1. Arquitectura de Análisis y Detección de Intención
+## Componentes a Modificar / Crear
 
-### System Prompt Refinado
-- Incorporar en el System Prompt de Aura una regla explícita para solicitudes de análisis documental y de notas:
-  - Cuando el usuario solicite analizar, revisar, resumir, explicar o comentar la nota, la acción DEBE ser `"conversation"`.
-  - El campo `"content"` debe ser un desarrollo analítico completo con encabezados (`##`, `###`), viñetas, explicaciones de fondo y conclusiones sólidas.
-  - Añadir el ejemplo *Few-Shot* de análisis de nota (usando el caso de estudio de notas fantásticas/documentales).
+### 1. Definición del Catálogo de Modelos (`ModelCatalog.kt` / `ModelDownloadVerifier.kt`)
+- Crear la estructura `LlmModelInfo`:
+  - `id`: Identificador único (ej. `qwen_1_5b`, `qwen_3b`, `llama_3_2_3b`).
+  - `displayName`: Nombre amigable (ej. *Qwen2.5 3B Instruct*).
+  - `fileSizeMb`: Tamaño de descarga en MB.
+  - `ramRecommended`: Estimación de RAM requerida (ej. "2.6 GB").
+  - `tag`: Etiqueta distintiva (*Recomendado para 6 GB*, *Ultraligero*, etc.).
+  - `downloadUrl`: Enlace directo de descarga HuggingFace GGUF oficial (cuantización Q4_K_M).
+  - `fileName`: Nombre del archivo GGUF en almacenamiento local.
+- Persistir la selección del modelo activo en preferencias locales (`AuraPreferences`).
 
-### Detección de Intención en `AetherViewModel.kt`
-- En `sendUserMessageWithAttachments`:
-  - Detectar intenciones analíticas (`analiz`, `análisis`, `resum`, `explica`, `revisa`, `opinión`, `qué trata`).
-  - Añadir una directiva de apoyo dentro de `<user_request>` para que Aura no asuma que debe reescribir la nota, sino realizar una exégesis/análisis completo en el chat.
+### 2. Gestión de Descarga y Cambio Dinámico (`LocalLlmManager.kt` & `ModelDownloadVerifier.kt`)
+- Permitir verificar el estado independiente de cada modelo:
+  - *No descargado*, *Descargando (con porcentaje)*, *Listo en almacenamiento*, *Cargado en memoria RAM*.
+- Función para cambiar de modelo:
+  1. Descarga del modelo seleccionado con barra de progreso en segundo plano.
+  2. Descarga de la memoria RAM del modelo previo (`unloadModel()`).
+  3. Carga en memoria nativa del nuevo modelo (`loadModel()`).
+- Función para eliminar modelos no usados y recuperar espacio de almacenamiento (1 a 2 GB).
 
----
-
-## 2. Motor Anti-Cortes: Máximo Margen de Tokens + Auto-Extensión
-
-### A. Ventana de Contexto Ampliada a 16,384 Tokens
-En `LocalLlmManager.kt`:
-- Actualizar `DEFAULT_CONTEXT_SIZE = 16384` (el motor llama.cpp de Qwen2.5 gestiona 16k con un costo de memoria muy bajo gracias a GQA - Grouped Query Attention).
-- En `ensureModelLoaded`: Validar que si el modelo cargado actualmente tiene un `contextSize < 16384`, se recargue con la nueva ventana para que el cambio tenga efecto inmediato sin requerir reinstalación.
-
-### B. Bucle de Extensión Automática en Segundo Plano (`generateResponseWithAutoContinuation`)
-En `LocalLlmManager.kt`:
-- Al recibir la generación de Qwen, verificar si la salida está incompleta:
-  - Criterio 1: El JSON inició con `{` pero no cerró con `}`.
-  - Criterio 2: La última línea termina abruptamente (sin signo de puntuación `.`, `!`, `?` o comilla de cierre `"`).
-- Si está incompleta, el motor ejecuta una continuación interna (hasta 3 iteraciones):
-  - Inyecta al modelo el rol asistente con el texto ya generado y un trigger `"continúa exactamente aquí..."`.
-  - Empalma los nuevos tokens con los anteriores sin duplicaciones.
-  - Repite hasta que el JSON y las oraciones queden perfectamente sellados.
+### 3. Interfaz de Usuario en Ajustes (`MainActivity.kt` / `SettingsDialog`)
+- Añadir sección dedicada: **"Motor de Inteligencia Artificial (Aura)"**.
+- Selector con tarjetas visuales para cada modelo:
+  - Indicadores de peso, consumo de RAM y compatibilidad con 6 GB.
+  - Estado actual: Botón *Descargar*, *Activar / Cargar en RAM*, o *Eliminar archivo*.
+  - Progreso de descarga en vivo en la tarjeta del modelo.
+- Alerta visual preventiva si se seleccionan modelos pesados.
 
 ---
 
-## 3. UI y Experiencia de Usuario
-
-- **Feedback en Tiempo Real:** Mientras el motor realiza la auto-extensión en segundo plano, la barra de estado indicará: *"Aura está completando la respuesta..."*.
-- **Visualización Limpia:** El usuario recibirá el análisis completo sin que falte una sola palabra ni se muestre sintaxis rota.
-- **Acciones Opcionales:** Debajo del análisis en el chat se mantendrán las opciones secundarias ("Pasar a nueva nota" o "Añadir al final") si el usuario decide guardar el análisis generado.
-
----
-
-## 4. Verification Plan
-
-1. **Prueba de Análisis de Nota:**
-   - Abrir una nota con contenido extenso (por ejemplo, notas de criaturas, elfos o apuntes de estudio).
-   - Escribir en Aura: *"Analiza esta nota"*.
-   - Verificar que Aura responda con un análisis analítico profundo en Markdown en el chat (no `replace_selection`).
-2. **Prueba de Longitud y No-Cortes:**
-   - Solicitar: *"Analiza detalladamente todos los puntos de la nota y desglosa sus implicaciones históricas"*.
-   - Verificar que la respuesta se genere completa, de principio a fin, con conclusiones y sin cortarse a media frase.
-3. **Verificación de Compilación:**
-   - Ejecutar `compile_applet` para confirmar la ausencia de errores.
+## Verificación
+1. Validar que la descarga y descompresión/verificación del archivo GGUF funcione correctamente.
+2. Confirmar que al cambiar de modelo se libere la RAM del modelo anterior y se monte el nuevo sin fallos `Context is busy` ni fugas de memoria.
+3. Verificar compilación completa con `compile_applet`.

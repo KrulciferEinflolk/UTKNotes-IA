@@ -12,6 +12,8 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -1544,86 +1546,13 @@ fun AppSettingsDialog(
             }
         },
         text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
                 Text("Cuenta actual:", color = TextSecondary, fontSize = 13.sp)
                 Text(currentEmail ?: "No has iniciado sesión", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                Surface(
-                    color = CosmicSurface,
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, CosmicBorder),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Memory, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("IA Local Qwen2.5-1.5B", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        when (val status = modelDownloadStatus) {
-                            is ModelDownloadStatus.Ready -> {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF4CAF50), modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Modelo descargado (~1.0 GB)", color = Color(0xFF81C784), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                }
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text("Inferencia 100% offline y privada en tu dispositivo vía llama.cpp.", color = TextSecondary, fontSize = 12.sp)
-
-                                if (llmModelState !is LlmModelState.Ready) {
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    OutlinedButton(
-                                        onClick = {
-                                            scope.launch { viewModel.localLlm.ensureModelLoaded(viewModel.modelVerifier.modelFile) }
-                                        },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = GeminiBlue),
-                                        border = BorderStroke(1.dp, GeminiBlue)
-                                    ) {
-                                        Text("Cargar en Memoria RAM", fontSize = 12.sp)
-                                    }
-                                } else {
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text("Estado: Cargado en memoria RAM listo para responder.", color = GeminiCyanAccent, fontSize = 11.sp)
-                                }
-                            }
-                            is ModelDownloadStatus.Downloading -> {
-                                Text("Descargando Qwen: ${(status.progress * 100).toInt()}%", color = GeminiBlue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                Spacer(modifier = Modifier.height(6.dp))
-                                LinearProgressIndicator(
-                                    progress = { status.progress },
-                                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
-                                    color = GeminiBlue,
-                                    trackColor = CosmicBorder
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                TextButton(onClick = { viewModel.modelVerifier.cancelDownload() }) {
-                                    Text("Cancelar Descarga", color = Color.Red, fontSize = 12.sp)
-                                }
-                            }
-                            else -> {
-                                Text("Descarga el modelo Qwen2.5-1.5B para ejecutar la IA de forma local y privada sin conexión a internet.", color = TextSecondary, fontSize = 12.sp)
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Button(
-                                    onClick = {
-                                        scope.launch { viewModel.modelVerifier.startDownload() }
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
-                                ) {
-                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Descargar Modelo Qwen (1.5B)", color = GeminiOnPrimary, fontSize = 13.sp)
-                                }
-                            }
-                        }
-                    }
-                }
+                AuraModelSelectorCard(viewModel = viewModel)
 
                 if (currentEmail != null && currentEmail != "offline") {
                     Spacer(modifier = Modifier.height(14.dp))
