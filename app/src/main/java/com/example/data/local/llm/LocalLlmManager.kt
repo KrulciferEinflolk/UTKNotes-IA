@@ -37,8 +37,10 @@ class LocalLlmManager(
 
     companion object {
         private const val TAG = "LocalLlmManager"
-        // Contexto ampliado al máximo de 16384 tokens para permitir respuestas completas, extensas y sin cortes
-        const val DEFAULT_CONTEXT_SIZE = 16384
+        // Contexto elástico continuo: mínimo de 512 tokens para saludos instantáneos y escala hasta 65536 (64k)
+        const val MIN_CONTEXT_SIZE = 512
+        const val MAX_CONTEXT_CEILING = 65536
+        const val DEFAULT_CONTEXT_SIZE = MIN_CONTEXT_SIZE
     }
 
     private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Unloaded)
@@ -52,6 +54,43 @@ class LocalLlmManager(
 
     var activeModelPath: String? = null
         private set
+
+    var currentContextSize: Int = MIN_CONTEXT_SIZE
+        private set
+
+    /**
+     * Calcula de forma elástica y exacta el contexto necesario según la longitud del prompt
+     * y los tokens de respuesta esperados, redondeando al múltiplo superior seguro.
+     */
+    fun calculateElasticContext(
+        promptChars: Int,
+        expectedOutputTokens: Int = 512
+    ): Int {
+        val estimatedPromptTokens = (promptChars / 3.2).toInt() + 60
+        val targetTokens = estimatedPromptTokens + expectedOutputTokens
+
+        val cleanSteps = intArrayOf(512, 1024, 2048, 4096, 8192, 12288, 16384, 24576, 32768, 49152, 65536)
+        val selected = cleanSteps.firstOrNull { it >= targetTokens } ?: MAX_CONTEXT_CEILING
+
+        val safeCeiling = getSafeMaxContextCeiling()
+        return selected.coerceIn(MIN_CONTEXT_SIZE, safeCeiling)
+    }
+
+    private fun getSafeMaxContextCeiling(): Int {
+        return try {
+            val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+            val memInfo = android.app.ActivityManager.MemoryInfo()
+            activityManager?.getMemoryInfo(memInfo)
+            val availMb = memInfo.availMem / (1024 * 1024)
+            when {
+                availMb < 350 -> 16384
+                availMb < 700 -> 32768
+                else -> MAX_CONTEXT_CEILING
+            }
+        } catch (_: Exception) {
+            MAX_CONTEXT_CEILING
+        }
+    }
 
     init {
         // Escucha eventos del motor nativo llama.cpp
@@ -68,12 +107,12 @@ class LocalLlmManager(
                     is LlamaHelper.LLMEvent.Done -> {
                         Log.d(TAG, "Inferencia finalizada (${event.tokenCount} tokens en ${event.duration}ms)")
                         val currentPath = activeModelPath ?: ""
-                        _modelState.value = LlmModelState.Ready(currentPath, DEFAULT_CONTEXT_SIZE)
+                        _modelState.value = LlmModelState.Ready(currentPath, currentContextSize)
                     }
                     is LlamaHelper.LLMEvent.Loaded -> {
-                        Log.i(TAG, "Modelo cargado en memoria nativa: ${event.path}")
+                        Log.i(TAG, "Modelo cargado en memoria nativa: ${event.path} con context_size=$currentContextSize")
                         activeModelPath = event.path
-                        _modelState.value = LlmModelState.Ready(event.path, DEFAULT_CONTEXT_SIZE)
+                        _modelState.value = LlmModelState.Ready(event.path, currentContextSize)
                     }
                     is LlamaHelper.LLMEvent.Error -> {
                         Log.e(TAG, "Error en el motor LLM: ${event.message}")
@@ -82,7 +121,7 @@ class LocalLlmManager(
                             _modelState.value = LlmModelState.Error(event.message)
                         } else {
                             val path = activeModelPath ?: ""
-                            _modelState.value = LlmModelState.Ready(path, DEFAULT_CONTEXT_SIZE)
+                            _modelState.value = LlmModelState.Ready(path, currentContextSize)
                         }
                     }
                 }
@@ -98,7 +137,8 @@ class LocalLlmManager(
         contextSize: Int = DEFAULT_CONTEXT_SIZE
     ): Boolean = loadMutex.withLock {
         withContext(Dispatchers.IO) {
-            if (_modelState.value is LlmModelState.Ready && activeModelPath == modelFile.absolutePath && llamaHelper != null) {
+            val current = _modelState.value
+            if (current is LlmModelState.Ready && activeModelPath == modelFile.absolutePath && current.contextSize == contextSize && llamaHelper != null) {
                 return@withContext true
             }
             if (!modelFile.exists()) {
@@ -110,6 +150,7 @@ class LocalLlmManager(
                 _modelState.value = LlmModelState.Loading(0)
                 unloadModel() // Liberar cualquier instancia previa
 
+                currentContextSize = contextSize
                 val helper = LlamaHelper(
                     contentResolver = context.contentResolver,
                     scope = scope,
@@ -155,6 +196,7 @@ class LocalLlmManager(
 
                     if (loadedSuccess) {
                         activeModelPath = modelFile.absolutePath
+                        currentContextSize = contextSize
                         _modelState.value = LlmModelState.Ready(modelFile.absolutePath, contextSize)
                         true
                     } else {
@@ -288,18 +330,23 @@ class LocalLlmManager(
     }
 
     /**
-     * Asegura que el modelo esté cargado en memoria si el archivo existe.
+     * Asegura que el modelo esté cargado en memoria con al menos el tamaño de contexto solicitado.
+     * Escala elásticamente desde 512 tokens hasta 65,536 (64k) según la demanda del contenido.
      */
-    /**
-     * Asegura que el modelo esté cargado en memoria si el archivo existe con la ventana de contexto de 16384 tokens.
-     */
-    suspend fun ensureModelLoaded(modelFile: File): Boolean {
+    suspend fun ensureModelLoaded(
+        modelFile: File,
+        requiredContextSize: Int = DEFAULT_CONTEXT_SIZE
+    ): Boolean {
         val current = _modelState.value
-        if (current is LlmModelState.Ready && activeModelPath == modelFile.absolutePath && current.contextSize >= DEFAULT_CONTEXT_SIZE && llamaHelper != null) {
+        if (current is LlmModelState.Ready &&
+            activeModelPath == modelFile.absolutePath &&
+            current.contextSize >= requiredContextSize &&
+            llamaHelper != null
+        ) {
             return true
         }
         if (!modelFile.exists() || modelFile.length() < 100_000_000L) return false
-        return loadModel(modelFile, DEFAULT_CONTEXT_SIZE)
+        return loadModel(modelFile, requiredContextSize)
     }
 
     /**
@@ -454,8 +501,8 @@ class LocalLlmManager(
                 }
             }
 
-            // Proteger el tamaño del prompt formateado dentro de la ventana ampliada de 16384 tokens
-            val maxPromptChars = 18000
+            // Proteger el tamaño del prompt formateado dentro de la ventana elástica asignada (hasta 64k tokens)
+            val maxPromptChars = ((currentContextSize - 180) * 3.2).toInt().coerceAtLeast(1000)
             val safePrompt = if (formattedPrompt.length > maxPromptChars) {
                 val sysStart = formattedPrompt.indexOf("<|im_start|>system")
                 val sysEnd = if (sysStart != -1) formattedPrompt.indexOf("<|im_end|>", sysStart) else -1
@@ -471,17 +518,27 @@ class LocalLlmManager(
             try {
                 isGenerating = true
                 // Pausa defensiva previa para asegurar que el hilo nativo esté inactivo
-                kotlinx.coroutines.delay(100L)
-                try {
-                    helper.predict(safePrompt, imageUri, true)
-                } catch (e: Exception) {
-                    if (e.message?.contains("busy", ignoreCase = true) == true) {
-                        Log.w(TAG, "Contexto nativo reportó ocupado, esperando 400ms para reintentar...")
-                        kotlinx.coroutines.delay(400L)
+                var predictAttempts = 0
+                var predictSuccess = false
+                var lastError: Exception? = null
+                while (predictAttempts < 3 && !predictSuccess) {
+                    predictAttempts++
+                    try {
                         helper.predict(safePrompt, imageUri, true)
-                    } else {
-                        throw e
+                        predictSuccess = true
+                    } catch (e: Exception) {
+                        lastError = e
+                        if (e.message?.contains("busy", ignoreCase = true) == true) {
+                            Log.w(TAG, "Contexto nativo reportó ocupado (intento $predictAttempts), deteniendo y esperando...")
+                            try { helper.stopPrediction() } catch (_: Exception) {}
+                            kotlinx.coroutines.delay(200L * predictAttempts)
+                        } else {
+                            throw e
+                        }
                     }
+                }
+                if (!predictSuccess && lastError != null) {
+                    throw lastError
                 }
 
                 val result = kotlinx.coroutines.withTimeoutOrNull(240_000L) {

@@ -8351,14 +8351,20 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     } else {
                         // ASSISTANT MESSAGE (Aura Action or Conversation)
                         val auraAction = remember(msg) { viewModel.parseAuraJsonResponse(msg) }
-                        val displayMarkdown = remember(auraAction) { auraAction.content.ifBlank { msg } }
+                        val displayMarkdown = remember(auraAction) {
+                            auraAction.content.ifBlank {
+                                auraAction.explanation.ifBlank {
+                                    viewModel.cleanRawJsonForDisplay(msg)
+                                }
+                            }
+                        }
 
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(end = 24.dp)
                         ) {
-                            if (auraAction.explanation.isNotBlank()) {
+                            if (auraAction.explanation.isNotBlank() && auraAction.explanation.trim() != displayMarkdown.trim() && auraAction.explanation.length < 80) {
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
                                     color = Color(0xFF907CFF).copy(alpha = 0.15f),
@@ -8473,15 +8479,17 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                     }
                                 }
 
-                                // Acciones directas sobre la Nota
+                                // Acciones directas sobre la Nota: Solo se muestran si Aura propone modificaciones concretas
                                 val targetNote = selectedNote ?: attachedNoteFromScreen ?: (if (allNotes.isNotEmpty()) allNotes.firstOrNull() else null)
-                                if (targetNote != null && index !in dismissedNoteCards) {
+                                val isActionForNote = auraAction.action in setOf("replace_selection", "replace_full_note", "insert_at_cursor") && auraAction.content.isNotBlank()
+                                if (targetNote != null && isActionForNote && index !in dismissedNoteCards) {
                                     val actionLabel = when (auraAction.action) {
                                         "replace_selection" -> "Sugerencia para párrafo / selección"
                                         "replace_full_note" -> "Reescritura completa sugerida"
                                         "insert_at_cursor" -> "Continuación sugerida"
                                         else -> "Propuesta para nota"
                                     }
+                                    val noteTitle = targetNote.title.ifBlank { "Nota activa" }
 
                                     Surface(
                                         shape = RoundedCornerShape(12.dp),
@@ -8499,7 +8507,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                                     Icon(Icons.Default.EditNote, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(16.dp))
                                                     Spacer(modifier = Modifier.width(6.dp))
                                                     Text(
-                                                        text = "$actionLabel: \"${targetNote.title}\"",
+                                                        text = "$actionLabel: \"$noteTitle\"",
                                                         fontSize = 12.sp,
                                                         fontWeight = FontWeight.SemiBold,
                                                         color = TextPrimary,

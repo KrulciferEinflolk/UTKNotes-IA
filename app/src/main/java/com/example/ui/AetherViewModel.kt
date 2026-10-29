@@ -42,7 +42,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     init {
         viewModelScope.launch {
             if (modelVerifier.checkCurrentStatus() is ModelDownloadStatus.Ready) {
-                localLlm.ensureModelLoaded(modelVerifier.modelFile)
+                localLlm.ensureModelLoaded(modelVerifier.modelFile, com.example.data.local.llm.LocalLlmManager.MIN_CONTEXT_SIZE)
             }
         }
     }
@@ -320,6 +320,20 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun isGreetingOrGeneralQuery(msg: String): Boolean {
+        val clean = msg.trim().lowercase().replace(Regex("[!?,.¡¿]"), "").trim()
+        if (clean.isEmpty()) return true
+        val greetings = setOf(
+            "hola", "hola aura", "hola buenas", "buenas", "buenos dias", "buenos días", "buenas tardes", "buenas noches",
+            "hey", "hi", "hello", "que tal", "qué tal", "como estas", "cómo estás", "que haces", "qué haces",
+            "saludos", "ayuda", "que puedes hacer", "qué puedes hacer", "quien eres", "quién eres"
+        )
+        if (clean in greetings) return true
+        if (clean.matches(Regex("^(hola|buenas|saludos|hey|hi)(\\s+(aura|amigo|asistente|que tal|como estas))?$"))) return true
+        if (clean.startsWith("hola") && clean.length <= 15) return true
+        return false
+    }
+
     /**
      * Envía un mensaje del usuario asegurando ejecución en segundo plano (viewModelScope),
      * de modo que aunque el usuario cierre el Chatbot o cambie de pantalla,
@@ -370,84 +384,126 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             // Estructura XML de contexto para Aura
             val sb = StringBuilder()
 
-            // 1. <full_note>
+            // Detección de saludos o consultas generales para optimizar velocidad y memoria RAM
+            val isGreeting = isGreetingOrGeneralQuery(rawUserMsg) && actualFileContent.isNullOrBlank() && imgUri == null
             val activeTargetNote = pNote ?: _selectedNote.value
-            if (activeTargetNote != null) {
-                val formattedNote = formatNoteBlocksForLlm(activeTargetNote.content, maxChars = 3500)
-                sb.append("<full_note>\n")
-                sb.append(formattedNote)
-                sb.append("\n</full_note>\n\n")
-            } else if (allNotes.isNotEmpty() && rawUserMsg.contains("nota", ignoreCase = true)) {
-                val matched = allNotes.find { rawUserMsg.contains(it.title, ignoreCase = true) } ?: allNotes.first()
-                val formattedNote = formatNoteBlocksForLlm(matched.content, maxChars = 3000)
-                sb.append("<full_note>\n")
-                sb.append(formattedNote)
-                sb.append("\n</full_note>\n\n")
-            }
 
-            // 2. <selected_text>
-            if (!pText.isNullOrBlank()) {
-                sb.append("<selected_text>\n")
-                sb.append(pText.take(2000))
-                sb.append("\n</selected_text>\n\n")
-            }
+            if (isGreeting) {
+                // Caso Saludo / Consulta General: Evitar inyectar miles de caracteres de nota que ralentizan la CPU
+                if (activeTargetNote != null) {
+                    val snippet = formatNoteBlocksForLlm(activeTargetNote.content, maxChars = 200).replace("\n", " ").take(140)
+                    sb.append("<active_note_preview title=\"${activeTargetNote.title}\">\n")
+                    sb.append("Título: ${activeTargetNote.title}\n")
+                    if (snippet.isNotBlank() && !snippet.contains("sin contenido", ignoreCase = true)) {
+                        sb.append("Extracto inicial: $snippet...\n")
+                    }
+                    sb.append("</active_note_preview>\n\n")
 
-            // 3. <cursor_position>
-            if (activeTargetNote != null) {
-                sb.append("<cursor_position>\n")
-                sb.append("Al final de la nota activa (\"${activeTargetNote.title}\")")
-                sb.append("\n</cursor_position>\n\n")
-            }
+                    val userRequestText = """El usuario saluda o hace una consulta general: "$rawUserMsg".
+Tienes a la vista la nota activa titulada "${activeTargetNote.title}".
 
-            // 4. <attached_file>
-            if (!actualFileContent.isNullOrBlank()) {
-                val safeFile = if (actualFileContent.length > 5000) actualFileContent.take(5000) + "\n...[Documento extenso condensado]" else actualFileContent
-                sb.append("<attached_file>\n")
-                sb.append(safeFile)
-                sb.append("\n</attached_file>\n\n")
-            }
+INSTRUCCIONES DE RESPUESTA:
+1. Responde con calidez y simpatía al saludo o consulta del usuario en 1-2 oraciones breves.
+2. Menciona con naturalidad que tienes abierta su nota activa "${activeTargetNote.title}".
+3. Ofrécele 2 o 3 sugerencias breves y útiles de lo que puedes hacer en ella (por ejemplo: resumirla, continuarla con nuevas ideas, corregir su redacción o extraer tareas clave).
+Responde SIEMPRE en formato JSON: {"action":"conversation","target_scope":"chat","explanation":"","content":"tu respuesta completa aquí"}."""
 
-            // Contexto de imagen OCR si aplica
-            if (imageOcrText.isNotBlank()) {
-                sb.append("<attached_image_ocr>\n")
-                sb.append(imageOcrText)
-                sb.append("\n</attached_image_ocr>\n\n")
-            }
+                    sb.append("<user_request>\n")
+                    sb.append(userRequestText)
+                    sb.append("\n</user_request>")
+                } else {
+                    val userRequestText = """El usuario saluda o hace una consulta general: "$rawUserMsg".
 
-            // 5. Notas adicionales mencionadas con @
-            allNotes.forEach { note ->
-                if (rawUserMsg.contains("@${note.title}", ignoreCase = true) && note.id != activeTargetNote?.id) {
-                    val mdContent = com.example.convertBlocksToMarkdown(note.content)
-                    val safeMd = if (mdContent.length > 2000) mdContent.take(2000) + "..." else mdContent
-                    sb.append("<referenced_note title=\"${note.title}\">\n$safeMd\n</referenced_note>\n\n")
+INSTRUCCIONES DE RESPUESTA:
+1. Responde con calidez y cercanía al saludo del usuario en 1-2 oraciones amables.
+2. Explica brevemente que eres Aura, su asistente inteligente de notas.
+3. Menciona 2 o 3 cosas útiles en las que puedes colaborar (crear notas, analizar archivos o PDFs, o estructurar apuntes).
+Responde SIEMPRE en formato JSON: {"action":"conversation","target_scope":"chat","explanation":"","content":"tu respuesta completa aquí"}."""
+
+                    sb.append("<user_request>\n")
+                    sb.append(userRequestText)
+                    sb.append("\n</user_request>")
                 }
-            }
-
-            // 6. <user_request>
-            val isAnalysisRequest = rawUserMsg.contains("analiz", ignoreCase = true) ||
-                                    rawUserMsg.contains("análisis", ignoreCase = true) ||
-                                    rawUserMsg.contains("resum", ignoreCase = true) ||
-                                    rawUserMsg.contains("sinteti", ignoreCase = true) ||
-                                    rawUserMsg.contains("explica", ignoreCase = true) ||
-                                    rawUserMsg.contains("revisa", ignoreCase = true) ||
-                                    rawUserMsg.contains("qué opina", ignoreCase = true) ||
-                                    rawUserMsg.contains("que opina", ignoreCase = true) ||
-                                    rawUserMsg.contains("de qué trata", ignoreCase = true) ||
-                                    rawUserMsg.contains("de que trata", ignoreCase = true)
-
-            val baseRequest = if (rawUserMsg.isNotBlank()) {
-                rawUserMsg
-            } else if (!actualFileContent.isNullOrBlank()) {
-                "Lee el documento adjunto y resume sus ideas clave integrándolas en un formato claro."
-            } else if (imgUri != null) {
-                "Analiza la imagen adjunta, transcribe su texto y describe sus elementos visuales."
             } else {
-                "¿En qué puedes ayudarme con mis notas?"
-            }
+                // Caso Estándar: Análisis profundo, edición o integración de notas y documentos
 
-            val userRequestText = if (isAnalysisRequest && !rawUserMsg.contains("reemplaza", ignoreCase = true) && !rawUserMsg.contains("modifica", ignoreCase = true)) {
-                if (!actualFileContent.isNullOrBlank() && activeTargetNote != null) {
-                    """$baseRequest
+                // 1. <full_note>
+                if (activeTargetNote != null) {
+                    val formattedNote = formatNoteBlocksForLlm(activeTargetNote.content, maxChars = 3500)
+                    sb.append("<full_note>\n")
+                    sb.append(formattedNote)
+                    sb.append("\n</full_note>\n\n")
+                } else if (allNotes.isNotEmpty() && rawUserMsg.contains("nota", ignoreCase = true)) {
+                    val matched = allNotes.find { rawUserMsg.contains(it.title, ignoreCase = true) } ?: allNotes.first()
+                    val formattedNote = formatNoteBlocksForLlm(matched.content, maxChars = 3000)
+                    sb.append("<full_note>\n")
+                    sb.append(formattedNote)
+                    sb.append("\n</full_note>\n\n")
+                }
+
+                // 2. <selected_text>
+                if (!pText.isNullOrBlank()) {
+                    sb.append("<selected_text>\n")
+                    sb.append(pText.take(2000))
+                    sb.append("\n</selected_text>\n\n")
+                }
+
+                // 3. <cursor_position>
+                if (activeTargetNote != null) {
+                    sb.append("<cursor_position>\n")
+                    sb.append("Al final de la nota activa (\"${activeTargetNote.title}\")")
+                    sb.append("\n</cursor_position>\n\n")
+                }
+
+                // 4. <attached_file>
+                if (!actualFileContent.isNullOrBlank()) {
+                    val safeFile = if (actualFileContent.length > 5000) actualFileContent.take(5000) + "\n...[Documento extenso condensado]" else actualFileContent
+                    sb.append("<attached_file>\n")
+                    sb.append(safeFile)
+                    sb.append("\n</attached_file>\n\n")
+                }
+
+                // Contexto de imagen OCR si aplica
+                if (imageOcrText.isNotBlank()) {
+                    sb.append("<attached_image_ocr>\n")
+                    sb.append(imageOcrText)
+                    sb.append("\n</attached_image_ocr>\n\n")
+                }
+
+                // 5. Notas adicionales mencionadas con @
+                allNotes.forEach { note ->
+                    if (rawUserMsg.contains("@${note.title}", ignoreCase = true) && note.id != activeTargetNote?.id) {
+                        val mdContent = com.example.convertBlocksToMarkdown(note.content)
+                        val safeMd = if (mdContent.length > 2000) mdContent.take(2000) + "..." else mdContent
+                        sb.append("<referenced_note title=\"${note.title}\">\n$safeMd\n</referenced_note>\n\n")
+                    }
+                }
+
+                // 6. <user_request>
+                val isAnalysisRequest = rawUserMsg.contains("analiz", ignoreCase = true) ||
+                                        rawUserMsg.contains("análisis", ignoreCase = true) ||
+                                        rawUserMsg.contains("resum", ignoreCase = true) ||
+                                        rawUserMsg.contains("sinteti", ignoreCase = true) ||
+                                        rawUserMsg.contains("explica", ignoreCase = true) ||
+                                        rawUserMsg.contains("revisa", ignoreCase = true) ||
+                                        rawUserMsg.contains("qué opina", ignoreCase = true) ||
+                                        rawUserMsg.contains("que opina", ignoreCase = true) ||
+                                        rawUserMsg.contains("de qué trata", ignoreCase = true) ||
+                                        rawUserMsg.contains("de que trata", ignoreCase = true)
+
+                val baseRequest = if (rawUserMsg.isNotBlank()) {
+                    rawUserMsg
+                } else if (!actualFileContent.isNullOrBlank()) {
+                    "Lee el documento adjunto y resume sus ideas clave integrándolas en un formato claro."
+                } else if (imgUri != null) {
+                    "Analiza la imagen adjunta, transcribe su texto y describe sus elementos visuales."
+                } else {
+                    "¿En qué puedes ayudarme con mis notas?"
+                }
+
+                val userRequestText = if (isAnalysisRequest && !rawUserMsg.contains("reemplaza", ignoreCase = true) && !rawUserMsg.contains("modifica", ignoreCase = true)) {
+                    if (!actualFileContent.isNullOrBlank() && activeTargetNote != null) {
+                        """$baseRequest
 
 [INSTRUCCIÓN CRÍTICA DE SEPARACIÓN Y CONTRASTE]:
 1. Prioridad: Analiza el documento adjunto ('${fName ?: "documento"}') extrayendo sus PUNTOS CLAVE DIRECTOS en viñetas concretas con fidelidad estricta a su contenido.
@@ -455,28 +511,29 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
 3. Contraste de diferencias: En una sección separada al final titulada '### 🔍 Contraste con tu nota activa ("${activeTargetNote.title}")', señala puntualmente cómo se diferencia o relaciona con tu nota actual.
 4. Cero contaminación cruzada: No mezcles jamás los personajes, elementos o conceptos de la nota dentro del documento adjunto, ni viceversa.
 Utiliza action: "conversation" y target_scope: "chat"]."""
-                } else if (!actualFileContent.isNullOrBlank()) {
-                    """$baseRequest
+                    } else if (!actualFileContent.isNullOrBlank()) {
+                        """$baseRequest
 
 [INSTRUCCIÓN CRÍTICA]:
 Analiza el documento adjunto ('${fName ?: "documento"}') extrayendo sus PUNTOS CLAVE DIRECTOS en viñetas concretas con fidelidad estricta al texto.
 PROHIBIDO desglosar párrafo por párrafo ('[Párrafo X]') y PROHIBIDO inventar interpretaciones narrativas extensas.
 Utiliza action: "conversation" y target_scope: "chat"]."""
-                } else {
-                    """$baseRequest
+                    } else {
+                        """$baseRequest
 
 [INSTRUCCIÓN CRÍTICA]:
 Analiza la nota activa extrayendo sus PUNTOS CLAVE DIRECTOS en viñetas concretas con fidelidad estricta a su contenido.
 PROHIBIDO desglosar párrafo por párrafo ('[Párrafo X]') y PROHIBIDO alucinar hechos no presentes.
 Utiliza action: "conversation" y target_scope: "chat"]."""
+                    }
+                } else {
+                    baseRequest
                 }
-            } else {
-                baseRequest
-            }
 
-            sb.append("<user_request>\n")
-            sb.append(userRequestText)
-            sb.append("\n</user_request>")
+                sb.append("<user_request>\n")
+                sb.append(userRequestText)
+                sb.append("\n</user_request>")
+            }
 
             val finalMsgForApi = sb.toString()
 
@@ -898,8 +955,9 @@ Utiliza action: "conversation" y target_scope: "chat"]."""
             }
 
             if (modelVerifier.checkCurrentStatus() is ModelDownloadStatus.Ready) {
-                localLlm.ensureModelLoaded(modelVerifier.modelFile)
                 val summary = currentNotes.take(5).joinToString("\n") { "• ${it.title}: ${it.content.take(80)}" }
+                val reqContext = localLlm.calculateElasticContext(summary.length + 200, 300)
+                localLlm.ensureModelLoaded(modelVerifier.modelFile, reqContext)
                 val suggestions = localLlm.generateSuggestions(summary)
                 _aiSuggestions.value = suggestions
             } else {
@@ -928,7 +986,6 @@ Utiliza action: "conversation" y target_scope: "chat"]."""
                 _aiLoading.value = false
                 return@launch
             }
-            localLlm.ensureModelLoaded(modelVerifier.modelFile)
             val prompt = """
                 Párrafo original:
                 $originalText
@@ -942,6 +999,8 @@ Utiliza action: "conversation" y target_scope: "chat"]."""
                 1. Devuelve ÚNICAMENTE el texto final generado, sin introducciones, sin saludos, sin explicaciones ni comillas envolventes.
                 2. Si la instrucción pide corregir, devuelve el párrafo corregido. Si pide expandir, devuelve el párrafo expandido. Si pide resumir, devuelve la síntesis en un párrafo o lista concisa.
             """.trimIndent()
+            val reqContext = localLlm.calculateElasticContext(prompt.length + sysPrompt.length, 512)
+            localLlm.ensureModelLoaded(modelVerifier.modelFile, reqContext)
             val response = localLlm.generateResponse(prompt, sysPrompt)
             val clean = response.trim().removeSurrounding("\"").removeSurrounding("```").trim()
             if (clean.isNotBlank()) {
@@ -963,7 +1022,8 @@ Utiliza action: "conversation" y target_scope: "chat"]."""
                 _aiLoading.value = false
                 return@launch
             }
-            localLlm.ensureModelLoaded(modelVerifier.modelFile)
+            val reqContext = localLlm.calculateElasticContext(note.title.length + note.content.length + instruction.length + 500, 1024)
+            localLlm.ensureModelLoaded(modelVerifier.modelFile, reqContext)
             val result = localLlm.modifyNote(
                 title = note.title,
                 content = note.content,
@@ -996,7 +1056,8 @@ Utiliza action: "conversation" y target_scope: "chat"]."""
                 _aiLoading.value = false
                 return@launch
             }
-            localLlm.ensureModelLoaded(modelVerifier.modelFile)
+            val reqContext = localLlm.calculateElasticContext(instruction.length + 500, 1024)
+            localLlm.ensureModelLoaded(modelVerifier.modelFile, reqContext)
             val result = localLlm.modifyNote(
                 title = "Idea Generada",
                 content = "",
@@ -1105,129 +1166,32 @@ Utiliza action: "conversation" y target_scope: "chat"]."""
 
     fun buildAgentSystemPrompt(userQuery: String = ""): String {
         return """
-Eres Aura, un asistente de escritura con inteligencia artificial integrado en una aplicación de notas modular. Tu tarea es analizar, dar formato, reescribir, editar, continuar, resumir o integrar documentos dentro de la nota del usuario.
+Eres Aura, un asistente de notas y escritura con inteligencia artificial. Tu misión es ayudar al usuario con sus notas, responder consultas, analizar documentos o redactar contenido.
 
-<ESTRUCTURA_DEL_CONTEXTO>
-El usuario te enviará el estado de la nota en formato Markdown limpio, incluyendo títulos (##), listas (-), casillas de verificación ([x]), tablas, citas (>), formato (negrita, etiquetas de color, tamaño), desplegables (toggles), separadores (---), etc.
-Recibirás los siguientes campos dentro del mensaje:
-1. <full_note>: El contenido completo de la nota actual.
-2. <selected_text>: (Opcional) El texto, párrafo o bloque específico en el que el usuario está enfocado o que ha seleccionado.
-3. <cursor_position>: (Opcional) El lugar exacto donde el usuario dejó de escribir.
-4. <attached_file>: (Opcional) El texto extraído de un archivo de texto o PDF adjunto que debe ser integrado.
-5. <user_request>: La instrucción, petición o pregunta directa del usuario.
-</ESTRUCTURA_DEL_CONTEXTO>
-
-<REGLAS_DE_SALIDA>
-DEBES responder SIEMPRE con un ÚNICO objeto JSON válido y NADA MÁS. No incluyas texto de introducción, ni delimitadores de código (NO uses ```json), ni comentarios finales.
-
-El esquema JSON debe seguir estrictamente esta estructura:
+REGLAS DE FORMATO (CRÍTICO):
+Responde SIEMPRE con un ÚNICO objeto JSON válido, sin delimitadores ```json y sin texto fuera del JSON:
 {
-  "action": "<NOMBRE_DE_LA_ACCION>",
-  "target_scope": "selected_text" | "full_note" | "cursor_position" | "chat",
-  "explanation": "<Resumen breve y claro sobre el cambio o sugerencia realizado para el usuario>",
-  "content": "<El resultado en Markdown sugerido para ser insertado en la app o respuesta conversacional>"
+  "action": "conversation" | "insert_at_cursor" | "replace_selection" | "replace_full_note",
+  "target_scope": "chat" | "cursor_position" | "selected_text" | "full_note",
+  "explanation": "<Breve titular de 1 a 3 palabras, o vacío \"\">",
+  "content": "<Mensaje conversacional o texto Markdown completo para el usuario>"
 }
 
-ACCIONES PERMITIDAS:
-- "conversation": Úsalo para responder preguntas generales, saludos, y PRINCIPALMENTE cuando el usuario pida ANALIZAR, REVISAR, RESUMIR O CONTRASTAR información en el chat. (target_scope: "chat", explanation: breve resumen del análisis, content: puntos clave directos y viñetas factuales en Markdown). NUNCA uses "replace_selection" cuando te pidan un análisis o resumen explicativo.
-- "replace_selection": Reemplaza únicamente el <selected_text> con el Markdown mejorado, corregido o formateado. ÚSALO SÓLO SI EL USUARIO PIDE EXPLÍCITAMENTE corregir, editar o cambiar esa selección.
-- "replace_full_note": Reemplaza toda la nota (útil SÓLO cuando el usuario pide explícitamente reescribir la nota completa en el editor o cambiar su contenido global).
-- "insert_at_cursor": Inserta nuevo contenido en Markdown (sugerencias para continuar la nota, texto adicional o datos integrados de un PDF) justo donde está el cursor o al final de la nota.
-- "read_file": Solicita al backend que lea/extraiga texto de un archivo o PDF adjunto si aún no se ha proporcionado.
-</REGLAS_DE_SALIDA>
+REGLA DE ORO DE TOKENS (CERO DUPLICACIÓN):
+- En "conversation" (saludos, charlas, resúmenes, explicaciones): TODO tu mensaje debe colocarse dentro de "content". NUNCA pongas tu mensaje en "explanation". "explanation" debe quedar vacío "" o tener máximo 3 palabras (ej.: "Saludo", "Análisis").
+- En "insert_at_cursor", "replace_selection", "replace_full_note": "explanation" describe el cambio en 1 frase muy corta, y "content" contiene el texto exacto a insertar en la nota.
 
-<REGLAS_DE_COMPORTAMIENTO>
-1. PUNTOS CLAVE DIRECTOS EN ANÁLISIS Y RESÚMENES: Cuando el usuario pida analizar, estudiar, resumir o explicar ("analiza", "qué opinas", "analizar", "resumen"), responde SIEMPRE con action: "conversation" y target_scope: "chat". Estructura tu respuesta mediante PUNTOS CLAVE DIRECTOS en viñetas concretas y factuales. PROHIBIDO desglosar párrafo por párrafo (NO uses "[Párrafo 1]", "[Párrafo 2]") y PROHIBIDO inventar interpretaciones narrativas extensas.
-2. CONTINUACIÓN DE ESCRITURA: Mantén el tono, idioma, estilo y contexto de <full_note>. Continúa de forma fluida a partir de <cursor_position> o del final de la nota.
-3. ANÁLISIS DE ARCHIVOS Y CONTRASTE CON LA NOTA: Si el usuario adjunta un archivo (<attached_file>) teniendo una nota abierta (<full_note>), analiza de forma prioritaria y aislada el archivo adjunto basándote EXCLUSIVAMENTE en los hechos explícitos del documento. Posteriormente, en una sección separada ('### 🔍 Contraste con tu nota activa'), explica puntualmente cómo difiere o conecta con la nota. NUNCA mezcles personajes, temas o conceptos de una fuente en la otra.
-4. GRAMÁTICA Y REESCRITURA: Corrige gramática, puntuación y fluidez. Utiliza elementos enriquecidos de Markdown (tablas, destacados, listas, desplegables) cuando mejore la legibilidad.
-5. SIN ALUCINACIONES NI CONTAMINACIÓN CRUZADA: Prohibido inventar hechos, atribuir conceptos de la nota al documento adjunto o viceversa, o alargar respuestas con especulaciones ficticias. Si un dato no está en el texto provisto, no lo infieras ni lo inventes.
-</REGLAS_DE_COMPORTAMIENTO>
+ACCIONES:
+- "conversation": (target_scope: "chat") Saludos, preguntas generales, y PRINCIPALMENTE cuando el usuario pida analizar, estudiar, resumir o comparar notas y documentos.
+- "insert_at_cursor": (target_scope: "cursor_position") Agregar contenido o continuar la nota al final o en el cursor.
+- "replace_selection": (target_scope: "selected_text") Corregir o reescribir solo el texto seleccionado.
+- "replace_full_note": (target_scope: "full_note") Reemplazar toda la nota (solo si se pide explícitamente).
 
-<EJEMPLOS_FEW_SHOT>
-
-Ejemplo 1: Analizar un documento adjunto y contrastar con la nota activa
-Entrada del usuario:
-<full_note title="Plan de Trabajo">
-- Objetivo: Optimizar la aplicación móvil.
-- Plazo: Q4.
-</full_note>
-<attached_file filename="manual_tecnico.txt">
-El manual describe la arquitectura del backend en servidores Linux y la configuración de puertos 8080 y 443.
-</attached_file>
-<user_request>Analiza el documento adjunto y compáralo con mi nota.</user_request>
-
-Respuesta de Aura:
-{
-  "action": "conversation",
-  "target_scope": "chat",
-  "explanation": "Puntos clave del manual adjunto y contraste con la nota activa.",
-  "content": "## Puntos Clave del Documento Adjunto (manual_tecnico.txt)\n- **Arquitectura de Servidor:** Describe la infraestructura técnica para despliegues en servidores Linux.\n- **Conectividad:** Especifica la apertura y administración de los puertos de red 8080 y 443.\n\n### 🔍 Contraste con tu nota activa (\"Plan de Trabajo\")\n- **Diferencia temática:** El documento adjunto es un manual técnico de servidores, mientras que tu nota activa es una planificación operativa enfocada en optimización móvil para Q4.\n- **Conexión:** Pertenecen al mismo ecosistema técnico pero abordan componentes distintos (backend vs frontend móvil)."
-}
-
-Ejemplo 2: Continuar una nota en la posición del cursor
-Entrada del usuario:
-<full_note>
-# Estrategias de Marketing 2026
-- Redes sociales: Enfocar en video corto.
-- Emailing: Lanzar campaña mensual.
-</full_note>
-<cursor_position>Al final de la lista</cursor_position>
-<user_request>Continúa la nota con 2 ideas más.</user_request>
-
-Respuesta de Aura:
-{
-  "action": "insert_at_cursor",
-  "target_scope": "cursor_position",
-  "explanation": "Se añadieron dos estrategias adicionales de marketing manteniendo el estilo de la lista.",
-  "content": "- SEO y Blog: Publicar 2 artículos semanales enfocados en intenciones de búsqueda.\n- Colaboraciones: Crear alianzas con creadores de nicho."
-}
-
-Ejemplo 3: Corregir gramática de un párrafo seleccionado
-Entrada del usuario:
-<full_note>
-## Resumen
-Ayer fuemos al parque y no encontremos a nadie.
-</full_note>
-<selected_text>Ayer fuemos al parque y no encontremos a nadie.</selected_text>
-<user_request>Corrige la gramática de este párrafo.</user_request>
-
-Respuesta de Aura:
-{
-  "action": "replace_selection",
-  "target_scope": "selected_text",
-  "explanation": "Se corrigieron los errores verbales 'fuemos' y 'encontremos'.",
-  "content": "Ayer fuimos al parque y no encontramos a nadie."
-}
-
-Ejemplo 4: Resumir y reemplazar la nota completa
-Entrada del usuario:
-<full_note>
-...[Reunión de 3 horas sobre nuevo producto]...
-</full_note>
-<user_request>Reescribe la nota completa con un resumen ejecutivo.</user_request>
-
-Respuesta de Aura:
-{
-  "action": "replace_full_note",
-  "target_scope": "full_note",
-  "explanation": "Se estructuró un resumen ejecutivo con los puntos de acción clave.",
-  "content": "## Resumen Ejecutivo de la Reunión\n- **Objetivo**: Lanzamiento versión 2.0.\n- **Fecha clave**: 15 de Noviembre.\n- **Responsables**: Equipo de producto y diseño."
-}
-
-Ejemplo 5: Saludo o conversación general
-Entrada del usuario:
-<user_request>Hola Aura, ¿cómo estás?</user_request>
-
-Respuesta de Aura:
-{
-  "action": "conversation",
-  "target_scope": "chat",
-  "explanation": "Saludo inicial y puesta a disposición.",
-  "content": "¡Hola! Estoy muy bien y lista para ayudarte con tus notas. ¿En qué estás trabajando hoy?"
-}
-</EJEMPLOS_FEW_SHOT>
-        """.trimIndent()
+DIRECTRICES:
+1. Saludos o consultas generales: Responde con calidez y simpatía en 1-2 oraciones. Si hay una nota activa, menciona su título y ofrece 2-3 sugerencias concretas de lo que puedes hacer en ella.
+2. Análisis de documentos o notas: Usa action: "conversation", target_scope: "chat". Extrae PUNTOS CLAVE DIRECTOS en viñetas factuales. Prohibido desglosar por '[Párrafo X]' y prohibido inventar o alucinar historias. Si hay nota activa y documento adjunto, incluye al final una sección '### 🔍 Contraste con tu nota activa'.
+3. Concisión y naturalidad: Sé directo y estructurado en Markdown.
+""".trimIndent()
     }
 
     fun parseAndApplyChatbotUpdates(response: String, userPrompt: String = ""): String {
@@ -1567,21 +1531,35 @@ Respuesta de Aura:
         history: List<Pair<String, String>> = emptyList()
     ): String? {
         val noteId = _selectedNote.value?.id
+        val isGreeting = message.contains("<active_note_preview") || (message.length < 350 && !message.contains("<full_note>") && !message.contains("<attached_file>"))
         val agentPrompt = buildAgentSystemPrompt(message)
-        val memoryContext = if (noteId != null) {
+        val memoryContext = if (noteId != null && !isGreeting) {
             val bank = memoryVault.getMemoryBank(noteId)
             if (bank.summary.isNotBlank()) "\n\n=== RESUMEN DE LA NOTA ACTUAL ===\n${bank.summary.take(400)}" else ""
         } else ""
 
         val finalSystemPrompt = agentPrompt + memoryContext
         
-        // --- 100% LOCAL IA (Qwen) ---
+        // --- 100% LOCAL IA ---
         val status = modelVerifier.checkCurrentStatus()
         if (status !is ModelDownloadStatus.Ready) {
-            return "El modelo local Aura (Qwen2.5) aún no está descargado.\n\nVe a Ajustes de IA y pulsa 'Descargar Modelo' para habilitar las funciones de inteligencia artificial 100% privada y local."
+            return "El modelo local Aura aún no está descargado.\n\nVe a Ajustes de IA y pulsa 'Descargar Modelo' para habilitar las funciones de inteligencia artificial 100% privada y local."
         }
 
-        val isLoaded = localLlm.ensureModelLoaded(modelVerifier.modelFile)
+        // Cálculo elástico continuo: desde 512 tokens (saludos) hasta 65,536 (64k para documentos gigantes)
+        val expectedOutputTokens = when {
+            isGreeting -> 256
+            message.contains("INSTRUCCIÓN CRÍTICA DE SEPARACIÓN Y CONTRASTE") || message.contains("<attached_file>") -> 1500
+            message.contains("resum", ignoreCase = true) || message.contains("analiz", ignoreCase = true) -> 1024
+            else -> 512
+        }
+
+        val requiredContext = localLlm.calculateElasticContext(
+            promptChars = message.length + finalSystemPrompt.length,
+            expectedOutputTokens = expectedOutputTokens
+        )
+
+        val isLoaded = localLlm.ensureModelLoaded(modelVerifier.modelFile, requiredContext)
         if (!isLoaded) {
             return "Cargando el cerebro de Aura en la memoria local... Por favor, intenta de nuevo en unos segundos."
         }
@@ -1591,30 +1569,18 @@ Respuesta de Aura:
             "\n\n[Nota: Aura procesará el contexto y texto asociado a tu imagen]."
         } else ""
 
-        val hasContinuation = message.contains("INSTRUCCIÓN CRÍTICA DE CONTINUACIÓN") ||
-                              message.contains("continú", ignoreCase = true) ||
-                              message.contains("continu", ignoreCase = true) ||
-                              message.contains("complet", ignoreCase = true) ||
-                              message.contains("dónde me qued", ignoreCase = true) ||
-                              message.contains("donde me qued", ignoreCase = true) ||
-                              message.contains("mantén el formato", ignoreCase = true) ||
-                              message.contains("manten el formato", ignoreCase = true) ||
-                              message.contains("en mi nota", ignoreCase = true) ||
-                              message.contains("de mi nota", ignoreCase = true) ||
-                              message.contains("para mi nota", ignoreCase = true) ||
-                              message.contains("a mi nota", ignoreCase = true) ||
-                              message.contains("la nota", ignoreCase = true)
-
         val effectiveSystemPrompt = finalSystemPrompt
 
-        // Límite seguro optimizado para la ventana de contexto de 8192 tokens
-        val maxLen = 8000
+        val maxLen = ((requiredContext - expectedOutputTokens) * 3.2).toInt().coerceAtLeast(1200)
         val safeMessage = if (message.length > maxLen) message.take(maxLen) + "\n...[Contenido condensado para análisis global]" else message
+
+        // Para saludos, no pasar historial previo innecesario que ralentice la evaluación del prompt en la CPU móvil
+        val effectiveHistory = if (isGreeting) emptyList() else history
 
         val rawResponse = localLlm.generateResponse(
             prompt = safeMessage + imageDisclaimer,
             systemPrompt = effectiveSystemPrompt,
-            history = history,
+            history = effectiveHistory,
             onStatusUpdate = { status ->
                 _chatbotStatusText.value = status
             }
@@ -1641,8 +1607,31 @@ Respuesta de Aura:
     }
 
     /**
+     * Sanitiza cadenas JSON residuales para garantizar que el usuario nunca vea llaves ni comillas técnicas en el chat.
+     */
+    fun cleanRawJsonForDisplay(text: String): String {
+        val trimmed = text.trim()
+        if (!trimmed.startsWith("{") && !trimmed.contains("\"action\"")) {
+            return trimmed
+        }
+        val contentRegex = Regex("\"content\"\\s*:\\s*\"([^\"]*)\"")
+        val content = contentRegex.find(trimmed)?.groupValues?.get(1)?.trim()
+        if (!content.isNullOrBlank()) return content.replace("\\n", "\n").replace("\\\"", "\"")
+
+        val explanationRegex = Regex("\"explanation\"\\s*:\\s*\"([^\"]*)\"")
+        val explanation = explanationRegex.find(trimmed)?.groupValues?.get(1)?.trim()
+        if (!explanation.isNullOrBlank()) return explanation.replace("\\n", "\n").replace("\\\"", "\"")
+
+        return trimmed.replace(Regex("\"(action|target_scope|explanation|content)\"\\s*:\\s*"), "")
+            .replace("{", "")
+            .replace("}", "")
+            .replace("\"", "")
+            .trim()
+    }
+
+    /**
      * Parsea de forma resiliente la respuesta estructurada en JSON de Aura,
-     * extrayendo action, target_scope, explanation y content.
+     * extrayendo action, target_scope, explanation y content sin duplicación ni código expuesto.
      */
     fun parseAuraJsonResponse(raw: String): AuraActionResponse {
         val trimmed = raw.trim()
@@ -1665,14 +1654,23 @@ Respuesta de Aura:
             val obj = org.json.JSONObject(jsonCandidate)
             val action = obj.optString("action", "conversation")
             val targetScope = obj.optString("target_scope", "chat")
-            val explanation = obj.optString("explanation", "")
-            val content = obj.optString("content", "")
+            var explanation = obj.optString("explanation", "").trim()
+            var content = obj.optString("content", "").trim()
+
+            // Si el modelo colocó el saludo/mensaje en explanation dejando content vacío:
+            if (content.isBlank() && explanation.isNotBlank()) {
+                content = explanation
+                explanation = ""
+            } else if (content.isNotBlank() && (explanation.isBlank() || explanation.equals(content, ignoreCase = true))) {
+                explanation = ""
+            }
+
             if (content.isNotBlank() || explanation.isNotBlank()) {
                 return AuraActionResponse(
                     action = action.ifBlank { "conversation" },
                     targetScope = targetScope.ifBlank { "chat" },
                     explanation = explanation,
-                    content = content.ifBlank { jsonCandidate }
+                    content = content
                 )
             }
         } catch (ignored: Exception) {
@@ -1681,47 +1679,57 @@ Respuesta de Aura:
 
         // Intento 2: Extracción resiliente por Regex para tolerar saltos de línea sin escapar
         try {
-            if (unwrapped.contains("\"action\"") || unwrapped.contains("\"content\"")) {
+            if (unwrapped.contains("\"action\"") || unwrapped.contains("\"content\"") || unwrapped.contains("\"explanation\"")) {
                 val actionMatch = Regex("\"action\"\\s*:\\s*\"([^\"]+)\"").find(unwrapped)?.groupValues?.get(1)
                 val targetScopeMatch = Regex("\"target_scope\"\\s*:\\s*\"([^\"]+)\"").find(unwrapped)?.groupValues?.get(1)
-                val explanationMatch = Regex("\"explanation\"\\s*:\\s*\"([^\"]+)\"").find(unwrapped)?.groupValues?.get(1)
+                var explanationMatch = Regex("\"explanation\"\\s*:\\s*\"([^\"]*)\"").find(unwrapped)?.groupValues?.get(1)?.trim() ?: ""
 
                 // Extraer el cuerpo de "content": "..."
                 val contentStart = unwrapped.indexOf("\"content\"")
+                var cleanContent = ""
                 if (contentStart != -1) {
                     val colonIdx = unwrapped.indexOf(':', contentStart)
                     if (colonIdx != -1) {
                         val firstQuote = unwrapped.indexOf('"', colonIdx)
                         if (firstQuote != -1) {
                             val contentSub = unwrapped.substring(firstQuote + 1)
-                            val cleanContent = if (contentSub.endsWith("\"}") || contentSub.endsWith("\"}\n")) {
+                            cleanContent = if (contentSub.endsWith("\"}") || contentSub.endsWith("\"}\n")) {
                                 contentSub.removeSuffix("}").trim().removeSuffix("\"")
                             } else if (contentSub.endsWith("}")) {
                                 contentSub.removeSuffix("}").trim().removeSuffix("\"")
                             } else {
                                 contentSub.removeSuffix("\"")
-                            }.replace("\\n", "\n").replace("\\\"", "\"")
-
-                            return AuraActionResponse(
-                                action = actionMatch ?: "conversation",
-                                targetScope = targetScopeMatch ?: "chat",
-                                explanation = explanationMatch ?: "",
-                                content = cleanContent
-                            )
+                            }.replace("\\n", "\n").replace("\\\"", "\"").trim()
                         }
                     }
                 }
+
+                if (cleanContent.isBlank() && explanationMatch.isNotBlank()) {
+                    cleanContent = explanationMatch
+                    explanationMatch = ""
+                } else if (cleanContent.isNotBlank() && cleanContent.equals(explanationMatch, ignoreCase = true)) {
+                    explanationMatch = ""
+                }
+
+                if (cleanContent.isNotBlank() || explanationMatch.isNotBlank()) {
+                    return AuraActionResponse(
+                        action = actionMatch ?: "conversation",
+                        targetScope = targetScopeMatch ?: "chat",
+                        explanation = explanationMatch,
+                        content = cleanContent
+                    )
+                }
             }
         } catch (ignored: Exception) {
-            // Fallback a texto crudo
+            // Fallback a texto limpio
         }
 
-        // Intento 3: Fallback seguro a texto conversacional
+        // Intento 3: Fallback seguro a texto conversacional totalmente libre de sintaxis JSON
         return AuraActionResponse(
             action = "conversation",
             targetScope = "chat",
             explanation = "",
-            content = trimmed
+            content = cleanRawJsonForDisplay(trimmed)
         )
     }
 
