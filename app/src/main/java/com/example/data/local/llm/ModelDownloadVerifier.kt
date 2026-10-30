@@ -62,21 +62,64 @@ class ModelDownloadVerifier(private val context: Context) {
         .build()
 
     init {
+        purgeLegacyModels()
+        sanitizeDownloadedModels()
         checkCurrentStatus()
+    }
+
+    /**
+     * Sanitiza los archivos GGUF existentes para garantizar que su plantilla sea segura para JNI.
+     */
+    fun sanitizeDownloadedModels() {
+        try {
+            for (model in LlmModelCatalog.ALL_MODELS) {
+                val f = getModelFile(model)
+                if (f.exists() && f.length() >= model.minExpectedBytes) {
+                    GgufMetadataSanitizer.sanitizeChatTemplate(f)
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Error sanitizando modelos descargados", e)
+        }
+    }
+
+    /**
+     * Elimina automáticamente modelos obsoletos en disco que no correspondan
+     * al nuevo catálogo por capacidad de RAM (2 GB, 3 GB y 4 GB).
+     */
+    fun purgeLegacyModels() {
+        try {
+            val validFileNames = LlmModelCatalog.ALL_MODELS.map { it.fileName }.toSet()
+            val files = modelsDir.listFiles() ?: return
+            for (file in files) {
+                val name = file.name
+                val baseName = name.removeSuffix(".downloading")
+                if (LlmModelCatalog.LEGACY_MODEL_FILENAMES.contains(baseName) || 
+                    (!validFileNames.contains(baseName) && (name.endsWith(".gguf") || name.endsWith(".downloading")))) {
+                    android.util.Log.i(TAG, "Purgando modelo obsoleto de disco: ${file.name}")
+                    file.delete()
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Error purgando modelos obsoletos", e)
+        }
     }
 
     private fun determineInitialModel(): LlmModelItem {
         val savedId = prefs.getString(KEY_ACTIVE_MODEL_ID, null)
         if (savedId != null) {
-            return LlmModelCatalog.getById(savedId)
+            val found = LlmModelCatalog.ALL_MODELS.find { it.id == savedId }
+            if (found != null) return found
         }
-        // Si ya existía el modelo 1.5B descargado previamente en disco, conservarlo por defecto
-        val file15 = File(modelsDir, LlmModelCatalog.QWEN_1_5B.fileName)
-        return if (file15.exists() && file15.length() >= LlmModelCatalog.QWEN_1_5B.minExpectedBytes) {
-            LlmModelCatalog.QWEN_1_5B
-        } else {
-            LlmModelCatalog.QWEN_3B
+        // Si el usuario ya tiene alguno de los nuevos modelos descargado, activarlo
+        for (model in LlmModelCatalog.ALL_MODELS) {
+            val f = File(modelsDir, model.fileName)
+            if (f.exists() && f.length() >= model.minExpectedBytes) {
+                return model
+            }
         }
+        // Por defecto, sugerir el nivel equilibrado de 3 GB RAM
+        return LlmModelCatalog.SMALLTHINKER_3B_Q4
     }
 
     fun getModelFile(model: LlmModelItem): File {
@@ -229,6 +272,7 @@ class ModelDownloadVerifier(private val context: Context) {
                     if (targetFile.exists()) targetFile.delete()
                     val renamed = tempFile.renameTo(targetFile)
                     if (renamed) {
+                        GgufMetadataSanitizer.sanitizeChatTemplate(targetFile)
                         val sizeMb = targetFile.length() / (1024.0 * 1024.0)
                         Log.i(TAG, "Modelo ${model.name} descargado e instalado exitosamente ($sizeMb MB)")
                         setActiveModel(model)

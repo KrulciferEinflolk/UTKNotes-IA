@@ -180,6 +180,9 @@ class LocalLlmManager(
                 }
 
                 try {
+                    // Sanitizar la plantilla para evitar fallo SIGABRT de JNI en Android ART
+                    GgufMetadataSanitizer.sanitizeChatTemplate(modelFile)
+
                     helper.load(
                         fileUri,
                         contextSize,

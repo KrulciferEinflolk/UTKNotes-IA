@@ -66,7 +66,7 @@ fun AuraModelSelectorCard(
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Text(
-                    text = "6 GB RAM",
+                    text = "Según tu teléfono",
                     color = GeminiCyanAccent,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
@@ -112,31 +112,27 @@ fun AuraModelSelectorCard(
                                     fontSize = 14.sp
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                if (model.isRecommendedFor6Gb) {
-                                    Surface(
-                                        color = Color(0xFF7C4DFF).copy(alpha = 0.25f),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Text(
-                                            text = "Recomendado",
-                                            color = Color(0xFFB388FF),
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                } else {
-                                    Surface(
-                                        color = CosmicBorder,
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Text(
-                                            text = model.tag,
-                                            color = TextSecondary,
-                                            fontSize = 10.sp,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
+                                Surface(
+                                    color = when (model.tag) {
+                                        "2 GB RAM" -> Color(0xFF00E676).copy(alpha = 0.2f)
+                                        "3 GB RAM" -> Color(0xFFFFD54F).copy(alpha = 0.2f)
+                                        "4 GB RAM" -> Color(0xFFB388FF).copy(alpha = 0.25f)
+                                        else -> CosmicBorder
+                                    },
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(
+                                        text = model.tag,
+                                        color = when (model.tag) {
+                                            "2 GB RAM" -> Color(0xFF69F0AE)
+                                            "3 GB RAM" -> Color(0xFFFFE082)
+                                            "4 GB RAM" -> Color(0xFFD1C4E9)
+                                            else -> TextSecondary
+                                        },
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
                                 }
                             }
 

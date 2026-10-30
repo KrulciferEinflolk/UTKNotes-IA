@@ -1,6 +1,6 @@
 {
-  "summary":  "Plan de integración completado para DeepSeek-R1-Distill-Qwen-7B (Q4_K_M) y visualización colapsable de la cadena de pensamiento en Aura.",
-  "updatedAt":  "2026-10-29T15:37:38.250266505Z",
+  "summary":  "Reemplazo completo del catálogo de modelos por 3 categorías según la RAM del teléfono (2 GB, 3 GB y 4 GB) y purga automática de descargas obsoletas completada exitosamente.",
+  "updatedAt":  "2026-10-30T04:03:28.595591159Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

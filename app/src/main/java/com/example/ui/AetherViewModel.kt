@@ -42,8 +42,14 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         viewModelScope.launch {
-            if (modelVerifier.checkCurrentStatus() is ModelDownloadStatus.Ready) {
-                localLlm.ensureModelLoaded(modelVerifier.modelFile, com.example.data.local.llm.LocalLlmManager.MIN_CONTEXT_SIZE)
+            try {
+                if (modelVerifier.checkCurrentStatus() is ModelDownloadStatus.Ready) {
+                    val file = modelVerifier.modelFile
+                    com.example.data.local.llm.GgufMetadataSanitizer.sanitizeChatTemplate(file)
+                    localLlm.ensureModelLoaded(file, com.example.data.local.llm.LocalLlmManager.MIN_CONTEXT_SIZE)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("AetherViewModel", "Error al inicializar modelo local", e)
             }
         }
     }
