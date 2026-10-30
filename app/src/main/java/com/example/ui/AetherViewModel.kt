@@ -27,7 +27,8 @@ data class AuraActionResponse(
     val action: String = "conversation",
     val targetScope: String = "chat",
     val explanation: String = "",
-    val content: String = ""
+    val content: String = "",
+    val thought: String = ""
 )
 
 class AetherViewModel(application: Application) : AndroidViewModel(application) {
@@ -1634,7 +1635,21 @@ DIRECTRICES:
      * extrayendo action, target_scope, explanation y content sin duplicación ni código expuesto.
      */
     fun parseAuraJsonResponse(raw: String): AuraActionResponse {
-        val trimmed = raw.trim()
+        var extractedThought = ""
+        var workingRaw = raw.trim()
+        if (workingRaw.contains("<think>")) {
+            val startIdx = workingRaw.indexOf("<think>")
+            val endIdx = workingRaw.indexOf("</think>", startIdx)
+            if (endIdx != -1) {
+                extractedThought = workingRaw.substring(startIdx + "<think>".length, endIdx).trim()
+                workingRaw = (workingRaw.substring(0, startIdx) + workingRaw.substring(endIdx + "</think>".length)).trim()
+            } else {
+                extractedThought = workingRaw.substring(startIdx + "<think>".length).trim()
+                workingRaw = workingRaw.substring(0, startIdx).trim()
+            }
+        }
+
+        val trimmed = workingRaw
         val unwrapped = if (trimmed.startsWith("```json") && trimmed.endsWith("```")) {
             trimmed.removePrefix("```json").removeSuffix("```").trim()
         } else if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
@@ -1670,7 +1685,8 @@ DIRECTRICES:
                     action = action.ifBlank { "conversation" },
                     targetScope = targetScope.ifBlank { "chat" },
                     explanation = explanation,
-                    content = content
+                    content = content,
+                    thought = extractedThought
                 )
             }
         } catch (ignored: Exception) {
@@ -1716,7 +1732,8 @@ DIRECTRICES:
                         action = actionMatch ?: "conversation",
                         targetScope = targetScopeMatch ?: "chat",
                         explanation = explanationMatch,
-                        content = cleanContent
+                        content = cleanContent,
+                        thought = extractedThought
                     )
                 }
             }
@@ -1729,7 +1746,8 @@ DIRECTRICES:
             action = "conversation",
             targetScope = "chat",
             explanation = "",
-            content = cleanRawJsonForDisplay(trimmed)
+            content = cleanRawJsonForDisplay(trimmed),
+            thought = extractedThought
         )
     }
 

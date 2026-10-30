@@ -66,7 +66,22 @@ object LlmModelCatalog {
         chatTemplateType = ChatTemplateType.LLAMA3
     )
 
-    val ALL_MODELS = listOf(QWEN_3B, QWEN_1_5B, LLAMA_3B)
+    val DEEPSEEK_R1_7B = LlmModelItem(
+        id = "deepseek_r1_distill_qwen_7b",
+        name = "DeepSeek-R1 Distill Qwen 7B",
+        parameterCount = "7.61B",
+        fileName = "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
+        downloadUrl = "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
+        minExpectedBytes = 4_400_000_000L,
+        downloadSizeDisplay = "~4.7 GB",
+        ramRequiredDisplay = "~5.2 GB",
+        tag = "Razonamiento R1",
+        isRecommendedFor6Gb = false,
+        description = "Modelo de razonamiento profundo con cadena de pensamiento (<think>). Máximo análisis lógico y matemático.",
+        chatTemplateType = ChatTemplateType.CHATML
+    )
+
+    val ALL_MODELS = listOf(QWEN_3B, QWEN_1_5B, LLAMA_3B, DEEPSEEK_R1_7B)
 
     fun getById(id: String): LlmModelItem {
         return ALL_MODELS.find { it.id == id } ?: QWEN_3B

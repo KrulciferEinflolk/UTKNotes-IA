@@ -1,39 +1,86 @@
-# Limpieza de Respuestas JSON y Condicionamiento de Tarjetas de Nota en Aura [COMPLETADO]
+# Integración de DeepSeek-R1-Distill-Qwen-7B (Q4_K_M) y Razonamiento Desplegable en Aura [COMPLETADO]
 
-Se ha resuelto la exposición de código JSON técnico en el chat, la duplicación de texto en tokens de respuesta y la aparición injustificada de la tarjeta de propuesta para la nota en mensajes conversacionales.
-
----
-
-## 1. Correcciones de Parseo y Formato Limpio [COMPLETADO]
-
-- **Promoción de Contenido:** En `AetherViewModel.kt` (`parseAuraJsonResponse`), si el modelo ubica el texto en `explanation` y deja `content` vacío, el parser promueve el mensaje a `content` y vacía `explanation`, evitando mostrar una burbuja duplicada.
-- **Supresión de Duplicados:** Si `explanation` y `content` son idénticos o redundantes, la interfaz oculta la píldora superior y muestra únicamente la burbuja de conversación en Markdown.
-- **Sanitización de Respaldo (`cleanRawJsonForDisplay`):** Si una respuesta no logra parsearse como objeto estricto, se eliminan todas las llaves `{ ... }`, etiquetas `"action":`, `"content":` y comillas de escape, asegurando que el usuario jamás vea código técnico ni JSON crudo.
-- **Ahorro de Tokens en el Prompt:** Se especificó en `buildAgentSystemPrompt` y en las directivas de saludos que para acciones conversacionales (`action = "conversation"`), todo el mensaje debe ir en `content` y `explanation` debe mantenerse vacío `""`, ahorrando tokens de inferencia en cada respuesta.
+Plan para incorporar el modelo de razonamiento profundo `DeepSeek-R1-Distill-Qwen-7B (Q4_K_M)` al catálogo de IA local de Aura, permitiendo su descarga, gestión de memoria nativa y visualización de la cadena de pensamiento (`<think> ... </think>`) mediante un bloque colapsable interactivo en la interfaz.
 
 ---
 
-## 2. Condicionamiento de la Tarjeta de Propuesta de Nota [COMPLETADO]
+## Decisiones Críticas y Preferencias del Usuario
 
-- **Visibilidad Contextual en `MainActivity.kt`:**
-  - La tarjeta *"Propuesta para nota"* con los botones `[Insertar en nota]` y `[Reemplazar]` ahora se muestra **exclusivamente** si Aura propone una modificación concreta para la nota (`action in ["replace_selection", "replace_full_note", "insert_at_cursor"]`) y `content` no está vacío.
-  - En saludos, preguntas generales o conversaciones (`"conversation"`), la tarjeta permanece totalmente oculta.
-  - Si la nota activa aún no tiene título asignado, se muestra el texto legible `"Nota activa"` en lugar de comillas vacías `""`.
-
----
-
-## 3. Archivos Modificados
-
-1. **`app/src/main/java/com/example/ui/AetherViewModel.kt`**:
-   - `cleanRawJsonForDisplay`: Sanitizador para remover sintaxis JSON cruda.
-   - `parseAuraJsonResponse`: Manejo de campos invertidos/vacíos y desduplicación.
-   - `buildAgentSystemPrompt` y `userRequestText`: Directivas para ubicar la respuesta en `content` con `explanation=""`.
-2. **`app/src/main/java/com/example/MainActivity.kt`**:
-   - `displayMarkdown`: Fallback limpio con desduplicación de texto.
-   - `isActionForNote`: Condición para que la tarjeta de propuesta aparezca únicamente cuando existan cambios accionables para la nota.
+> [!IMPORTANT]
+> Confirmadas por el usuario en la fase de clarificación:
+> 1. **Modelo y Cuantización:** Añadir directamente `DeepSeek-R1-Distill-Qwen-7B` cuantizado en `Q4_K_M` (~4.7 GB) sin restricciones.
+> 2. **Visualización de Razonamiento:** Mostrar las trazas de pensamiento de DeepSeek (`<think>`) en un **bloque desplegable colapsable** dentro de la burbuja de respuesta en el chat.
 
 ---
 
-## 4. Estado de Verificación
+## 1. Arquitectura y Flujo de Procesamiento
 
-- Compilación con `compile_applet`: **Éxito (Build succeeded)**.
+```
+┌────────────────────────────────────────────────────────┐
+│             Catálogo de Modelos (Ajustes)              │
+│  • Qwen2.5 3B (Recomendado 6 GB)                       │
+│  • Qwen2.5 1.5B (Ultraligero)                          │
+│  • Llama-3.2 3B (Instrucciones)                        │
+│  • DeepSeek-R1 Distill Qwen 7B (Razonamiento R1) [OK]  │
+└───────────────────────────┬────────────────────────────┘
+                            │
+                            ▼
+┌────────────────────────────────────────────────────────┐
+│       Descarga y Verificación (Hugging Face GGUF)      │
+│  • URL directa a CDN bartowski GGUF Q4_K_M             │
+│  • Validación de integridad (> 4.4 GB)                 │
+└───────────────────────────┬────────────────────────────┘
+                            │
+                            ▼
+┌────────────────────────────────────────────────────────┐
+│          Inferencia llama.cpp con DeepSeek-R1          │
+│  • Generación de tokens de pensamiento: <think> ...    │
+│  • Generación de respuesta final y acciones JSON       │
+└───────────────────────────┬────────────────────────────┘
+                            │
+                            ▼
+┌────────────────────────────────────────────────────────┐
+│            Visualización en Chat (Compose)             │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ ✨ Proceso de razonamiento (R1) (Desplegable ▼)  │  │
+│  │ [Pensamiento paso a paso, análisis crítico]     │  │
+│  └──────────────────────────────────────────────────┘  │
+│  [Respuesta final formateada en Markdown limpio]       │
+└────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 2. Especificación del Modelo Implementado
+
+- **Identificador:** `deepseek_r1_distill_qwen_7b`
+- **Nombre comercial:** `DeepSeek-R1 Distill Qwen 7B`
+- **Parámetros:** `7.61B`
+- **Archivo GGUF:** `DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf`
+- **Tamaño de descarga:** `~4.7 GB`
+- **Memoria RAM estimada:** `~5.2 GB`
+- **Etiqueta UI:** `Razonamiento R1`
+- **Formato de plantilla:** ChatML (`<|im_start|>` / `<|im_end|>`)
+- **Fuente de descarga:** `https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf`
+
+---
+
+## 3. Cambios Implementados
+
+### A. Catálogo (`LlmModelCatalog.kt`)
+- Agregado `DEEPSEEK_R1_7B` a `LlmModelCatalog` con URL oficial de bartowski, umbral mínimo de 4.4 GB y `ChatTemplateType.CHATML`.
+- Incorporado a la lista `ALL_MODELS` para que aparezca en el panel de descarga de modelos de Aura.
+
+### B. Extracción de Pensamiento (`AetherViewModel.kt`)
+- Agregado el campo `val thought: String = ""` a la estructura `AuraActionResponse`.
+- Actualizado `parseAuraJsonResponse`:
+  - Detecta y extrae el bloque `<think> ... </think>`.
+  - Si la etiqueta de cierre aún no llega (por streaming o truncamiento), extrae de forma resiliente el contenido generado.
+  - Elimina los tags `<think>` del texto restante antes de procesar el JSON o Markdown para que la respuesta conversacional final quede limpia y sin sintaxis rota.
+
+### C. Componente Visual de Razonamiento (`MainActivity.kt`)
+- Creado `ThinkingAccordionCard`:
+  - Cabecera estilizada con borde sutil, icono de chispa/IA, etiqueta "Proceso de razonamiento (R1)" y chevron de alternancia expandir/contraer.
+  - Animación suave `expandVertically() + fadeIn()` / `shrinkVertically() + fadeOut()`.
+  - Muestra el texto de pensamiento con estilo distintivo (itálica, color secundario, divisor).
+  - Integrado en el contenedor de mensajes del asistente justo antes de la respuesta Markdown.

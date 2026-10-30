@@ -7509,6 +7509,70 @@ class MarkdownVisualTransformation(
 }
 
 @Composable
+fun ThinkingAccordionCard(
+    thought: String,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = Color(0xFF1E1B2E).copy(alpha = 0.7f),
+        border = BorderStroke(1.dp, Color(0xFF907CFF).copy(alpha = 0.35f)),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(bottom = 6.dp)
+            .clickable { expanded = !expanded }
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = GeminiCyanAccent,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Proceso de razonamiento (R1)",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFFD4C8FF)
+                    )
+                }
+                Icon(
+                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Contraer" else "Expandir",
+                    tint = TextSecondary,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(modifier = Modifier.padding(top = 8.dp)) {
+                    HorizontalDivider(color = Color(0xFF907CFF).copy(alpha = 0.2f), thickness = 1.dp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = thought,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                        color = TextSecondary,
+                        fontStyle = FontStyle.Italic
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun MarkdownChatBubble(
     content: String,
     notesList: List<NoteEntity>,
@@ -8364,6 +8428,10 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                 .fillMaxWidth()
                                 .padding(end = 24.dp)
                         ) {
+                            if (auraAction.thought.isNotBlank()) {
+                                ThinkingAccordionCard(thought = auraAction.thought)
+                            }
+
                             if (auraAction.explanation.isNotBlank() && auraAction.explanation.trim() != displayMarkdown.trim() && auraAction.explanation.length < 80) {
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
