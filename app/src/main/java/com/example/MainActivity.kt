@@ -105,6 +105,12 @@ import kotlin.math.roundToInt
 class MainActivity : ComponentActivity() {
     private val viewModel: AetherViewModel by viewModels()
 
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        configureAppCheck(this, intent)
+    }
+
     @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -113,6 +119,15 @@ class MainActivity : ComponentActivity() {
         setContent {
             MyApplicationTheme {
                 val showChatbotGlobal by viewModel.showChatbot.collectAsStateWithLifecycle()
+                val aiMessageGlobal by viewModel.aiMessage.collectAsStateWithLifecycle()
+                val rootContext = LocalContext.current
+
+                LaunchedEffect(aiMessageGlobal) {
+                    aiMessageGlobal?.let { msg ->
+                        Toast.makeText(rootContext, msg, Toast.LENGTH_LONG).show()
+                        viewModel.clearAiMessage()
+                    }
+                }
 
                 val recoveryIntent by viewModel.syncManager.recoveryIntent.collectAsStateWithLifecycle()
                 val recoveryLauncher = rememberLauncherForActivityResult(
@@ -240,7 +255,6 @@ fun AetherAppScreen(
 
     val aiLoading by viewModel.aiLoading.collectAsStateWithLifecycle()
     val aiSuggestions by viewModel.aiSuggestions.collectAsStateWithLifecycle()
-    val aiMessage by viewModel.aiMessage.collectAsStateWithLifecycle()
 
     // Drawer state
     val scope = rememberCoroutineScope()
@@ -748,15 +762,6 @@ fun AetherAppScreen(
             }
         )
     }
-
-    // Toast-like message for AI
-    LaunchedEffect(aiMessage) {
-        aiMessage?.let {
-            Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
-            viewModel.clearAiMessage()
-        }
-    }
-
 
         // Main Screen Scaffold Content
         Scaffold(
@@ -8243,7 +8248,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
         AlertDialog(
             onDismissRequest = { showSettingsDialog = false },
             containerColor = CosmicSurfaceVariant,
-            title = { Text("Ajustes de IA Local (Qwen)", color = TextPrimary, fontWeight = FontWeight.Bold) },
+            title = { Text("Ajustes de IA", color = TextPrimary, fontWeight = FontWeight.Bold) },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     Text("Cuenta actual:", color = TextSecondary, fontSize = 14.sp)

@@ -44,7 +44,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     val localLlm = LocalLlmManager(application)
     val modelVerifier = ModelDownloadVerifier(application)
     val memoryVault = NoteMemoryVaultManager(application)
-    val cloudGemini = com.example.data.remote.gemini.CloudGeminiManager()
+    val cloudGemini = com.example.data.remote.gemini.CloudGeminiManager { getApplication<Application>() }
 
     private val _selectedAiEngine = MutableStateFlow(AiEngineType.GEMINI_CLOUD)
     val selectedAiEngine: StateFlow<AiEngineType> = _selectedAiEngine.asStateFlow()
@@ -884,7 +884,11 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     val prompt = "En base a estas notas del usuario:\n$summary\nGenera 3 sugerencias breves de qué nota escribir o investigar a continuación. Devuelve exactamente 3 líneas separadas por salto de línea sin viñetas."
                     val resp = cloudGemini.generateContent(prompt)
                     resp.lines().map { it.trim().removePrefix("•").removePrefix("-").trim() }.filter { it.isNotBlank() }.take(3)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
+                    android.util.Log.e("AetherViewModel", "Error generando sugerencias con Gemini", e)
+                    _aiMessage.value = e.localizedMessage ?: "No se pudo conectar con Gemini 3.5 Flash-Lite."
                     emptyList()
                 }
                 _aiSuggestions.value = if (suggestions.isNotEmpty()) suggestions else listOf(
@@ -938,16 +942,22 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             """.trimIndent()
 
             if (_selectedAiEngine.value == AiEngineType.GEMINI_CLOUD) {
+                var errorHandled = false
                 val response = try {
                     cloudGemini.generateContent(prompt = prompt, systemInstruction = sysPrompt)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
+                    android.util.Log.e("AetherViewModel", "Error mejorando párrafo con Gemini", e)
+                    _aiMessage.value = e.localizedMessage ?: "Error al mejorar el párrafo con Gemini."
+                    errorHandled = true
                     null
                 }
                 val clean = response?.trim()?.removeSurrounding("\"")?.removeSurrounding("```")?.trim()
                 if (!clean.isNullOrBlank()) {
                     onSuccess(clean)
                     _aiMessage.value = "Párrafo actualizado con Gemini"
-                } else {
+                } else if (!errorHandled) {
                     _aiMessage.value = "No se pudieron aplicar cambios al párrafo."
                 }
                 _aiLoading.value = false
@@ -980,12 +990,18 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
 
             if (_selectedAiEngine.value == AiEngineType.GEMINI_CLOUD) {
                 val prompt = "Título actual: ${note.title}\nContenido actual:\n${note.content}\n\nInstrucción:\n$instruction\n\nDevuelve la nota actualizada en formato:\nTITULO: <nuevo o mismo titulo>\nCONTENIDO: <nuevo contenido en prosa o bloques>"
+                var errorHandled = false
                 val response = try {
                     cloudGemini.generateContent(
                         prompt = prompt,
                         systemInstruction = "Eres un asistente editorial experto. Modifica la nota siguiendo rigurosamente las instrucciones del usuario."
                     )
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
+                    android.util.Log.e("AetherViewModel", "Error modificando nota con Gemini", e)
+                    _aiMessage.value = e.localizedMessage ?: "Error al modificar la nota con Gemini."
+                    errorHandled = true
                     null
                 }
                 if (!response.isNullOrBlank()) {
@@ -1005,7 +1021,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     repository.updateNote(updatedNote)
                     _selectedNote.value = updatedNote
                     _aiMessage.value = "Nota modificada exitosamente con Gemini!"
-                } else {
+                } else if (!errorHandled) {
                     _aiMessage.value = "No se pudieron aplicar cambios con Gemini."
                 }
                 _aiLoading.value = false
@@ -1049,12 +1065,18 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
 
             if (_selectedAiEngine.value == AiEngineType.GEMINI_CLOUD) {
                 val prompt = "Crea una nota completa, bien estructurada y detallada en español sobre: $instruction\nFormato de salida:\nTITULO: <titulo breve y representativo>\nCONTENIDO: <contenido completo estructurado en prosa y subtitulos>"
+                var errorHandled = false
                 val response = try {
                     cloudGemini.generateContent(
                         prompt = prompt,
                         systemInstruction = "Eres Aura impulsada por Gemini 3.5 Flash-Lite. Redacta notas informativas, claras y útiles en prosa estructurada."
                     )
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
+                    android.util.Log.e("AetherViewModel", "Error creando nota con Gemini", e)
+                    _aiMessage.value = e.localizedMessage ?: "Error al crear la nota con Gemini."
+                    errorHandled = true
                     null
                 }
                 if (!response.isNullOrBlank()) {
@@ -1073,7 +1095,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     )
                     _selectedNote.value = newNote
                     _aiMessage.value = "Nota creada con Gemini 3.5 Flash-Lite!"
-                } else {
+                } else if (!errorHandled) {
                     _aiMessage.value = "No se pudo generar la nota con Gemini."
                 }
                 _aiLoading.value = false
@@ -1753,12 +1775,17 @@ RESPUESTA FINAL (Markdown directo en español):
                     systemInstruction = effectiveSystemPrompt,
                     imageBase64 = imageBase64
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 android.util.Log.e("AetherViewModel", "Error en Gemini 3.5 Flash-Lite", e)
                 val errorMsg = e.localizedMessage ?: "Error de conexión"
-                val isAppCheck = errorMsg.contains("App Check", ignoreCase = true) || errorMsg.contains("token is invalid", ignoreCase = true) || errorMsg.contains("403", ignoreCase = true)
-                if (isAppCheck) {
-                    "Error de seguridad App Check con Gemini 3.5 Flash-Lite: $errorMsg.\n\nRecomendaciones:\n1. Comprueba tu conexión a Internet y que la fecha y hora del sistema en tu móvil sean automáticas.\n2. Si instalaste el APK generado por GitHub Actions, reinstala la versión más reciente que incluye el certificado de depuración sincronizado con Firebase.\n3. Puedes alternar al motor 'Aura Local' en Ajustes de IA para trabajar de forma 100% privada y offline."
+                if (errorMsg.contains("verificación de seguridad", ignoreCase = true) ||
+                    errorMsg.contains("App Check", ignoreCase = true) ||
+                    errorMsg.contains("token is invalid", ignoreCase = true) ||
+                    errorMsg.contains("403", ignoreCase = true)
+                ) {
+                    "No se pudo verificar la conexión segura con Gemini 3.5 Flash-Lite.\n\nComprueba tu conexión a Internet o alterna al motor 'Aura Local' en Ajustes de IA para trabajar 100% sin conexión."
                 } else {
                     "Error al conectar con Gemini 3.5 Flash-Lite: $errorMsg.\n\nPuedes alternar al motor Aura Local en Ajustes de IA si deseas operar sin conexión."
                 }

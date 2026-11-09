@@ -1,20 +1,28 @@
 package com.example.data.remote.gemini
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
 import android.util.Log
+import com.example.util.logAppCheckStatusOnFailure
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.content
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
-class CloudGeminiManager {
+class CloudGeminiManager(
+    private val contextProvider: () -> Context? = {
+        runCatching { FirebaseApp.getInstance().applicationContext }.getOrNull()
+    }
+) {
 
     companion object {
         private const val TAG = "CloudGeminiManager"
@@ -23,6 +31,27 @@ class CloudGeminiManager {
 
     private val model by lazy {
         Firebase.ai.generativeModel(DEFAULT_MODEL)
+    }
+
+    private suspend fun toSafeUserException(e: Exception): Exception {
+        val raw = e.localizedMessage.orEmpty()
+        val isAppCheckOrAuth = raw.contains("App Check", ignoreCase = true) ||
+            raw.contains("token is invalid", ignoreCase = true) ||
+            raw.contains("attestation", ignoreCase = true) ||
+            raw.contains("403", ignoreCase = true) ||
+            raw.contains("401", ignoreCase = true)
+
+        if (isAppCheckOrAuth) {
+            contextProvider()?.let { ctx ->
+                logAppCheckStatusOnFailure(ctx)
+            }
+            return IllegalStateException(
+                "No se pudo completar la verificación de seguridad con Gemini 3.5 Flash-Lite. " +
+                    "Verifica tu conexión a Internet o cambia al motor Aura Local en Ajustes de IA para trabajar sin conexión.",
+                e
+            )
+        }
+        return e
     }
 
     /**
@@ -63,9 +92,12 @@ class CloudGeminiManager {
             }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Timeout invocando Firebase AI Gemini", e)
+            throw IllegalStateException("Tiempo de espera agotado (60s) conectando con Gemini.", e)
         } catch (e: Exception) {
             Log.e(TAG, "Error invocando Firebase AI Gemini", e)
-            throw e
+            throw toSafeUserException(e)
         }
     }
 
@@ -106,9 +138,12 @@ class CloudGeminiManager {
             }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Timeout en streaming de Firebase AI Gemini", e)
+            throw IllegalStateException("Tiempo de espera agotado (60s) conectando con Gemini.", e)
         } catch (e: Exception) {
             Log.e(TAG, "Error en streaming de Firebase AI Gemini", e)
-            throw e
+            throw toSafeUserException(e)
         }
     }
 
