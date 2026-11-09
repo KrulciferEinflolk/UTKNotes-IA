@@ -36,27 +36,51 @@ jobs:
 
           dummy_json = {
             "project_info": {
-              "project_number": "1234567890",
-              "project_id": "mock-project-id",
-              "storage_bucket": "mock-project-id.appspot.com"
+              "project_number": "854876463054",
+              "project_id": "gen-lang-client-0399724194",
+              "storage_bucket": "gen-lang-client-0399724194.firebasestorage.app"
             },
             "client": [
               {
                 "client_info": {
-                  "mobilesdk_app_id": "1:1234567890:android:mockappid",
+                  "mobilesdk_app_id": "1:854876463054:android:698b6068187074bad4959f",
+                  "android_client_info": {
+                    "package_name": "utk.notes.gemini"
+                  }
+                },
+                "oauth_client": [
+                  {
+                    "client_id": "854876463054-06pc7gofcrao1f15d85b6jii2o61ts9f.apps.googleusercontent.com",
+                    "client_type": 3
+                  }
+                ],
+                "api_key": [
+                  {
+                    "current_key": "AIzaSyAzTkw3mIyzJAfHsULWOCVOlLgbZv32z9g"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
+              },
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:854876463054:android:mockappid",
                   "android_client_info": {
                     "package_name": "utk.notes.ia"
                   }
                 },
                 "oauth_client": [
                   {
-                    "client_id": "mock-client-id.apps.googleusercontent.com",
+                    "client_id": "854876463054-mock-client-id.apps.googleusercontent.com",
                     "client_type": 3
                   }
                 ],
                 "api_key": [
                   {
-                    "current_key": "mock-api-key"
+                    "current_key": "AIzaSyAzTkw3mIyzJAfHsULWOCVOlLgbZv32z9g"
                   }
                 ],
                 "services": {
@@ -90,7 +114,22 @@ jobs:
                       pass
 
           if parsed is None:
-              print("WARNING: GOOGLE_SERVICES_JSON secret is not set, or is invalid/malformed. Using fallback placeholder JSON.")
+              if os.path.exists(out_path):
+                  try:
+                      with open(out_path, "r") as f:
+                          existing = json.load(f)
+                      clients = existing.get("client", [])
+                      packages = [c.get("client_info", {}).get("android_client_info", {}).get("package_name") for c in clients]
+                      if "utk.notes.gemini" in packages:
+                          print(f"Found valid existing {out_path} with client for utk.notes.gemini. Keeping existing file.")
+                          parsed = existing
+                      else:
+                          print("Existing google-services.json does not contain utk.notes.gemini.")
+                  except Exception as e:
+                      print(f"Could not parse existing {out_path}: {e}")
+
+          if parsed is None:
+              print("WARNING: GOOGLE_SERVICES_JSON secret not set. Using fallback placeholder JSON configured for utk.notes.gemini.")
               parsed = dummy_json
 
           with open(out_path, "w") as f:
@@ -104,6 +143,11 @@ jobs:
           import os, base64
 
           res_files = {
+              "app/src/main/res/values/firebase_applet_config.xml": """<?xml version="1.0" encoding="utf-8" standalone="no"?>
+          <resources>
+              <string name="recaptcha_site_key" translatable="false">6Lf8uhYuAAAAAP2dv9-EUmYH_37EgrJOeMmEK3GF</string>
+          </resources>""",
+
               "app/src/main/res/xml/data_extraction_rules.xml": """<?xml version="1.0" encoding="utf-8"?>
           <data-extraction-rules>
               <cloud-backup>
