@@ -22,6 +22,9 @@ import com.example.data.local.llm.LlmModelCatalog
 import com.example.data.local.llm.LlmModelItem
 import com.example.data.local.llm.LlmModelState
 import com.example.data.local.llm.ModelDownloadStatus
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 
@@ -116,6 +119,26 @@ fun AuraModelSelectorCard(
                         color = TextSecondary,
                         fontSize = 12.sp
                     )
+                    if (isGeminiActive) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Shield,
+                                contentDescription = null,
+                                tint = GeminiCyanAccent,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Firebase App Check: reCAPTCHA Enterprise",
+                                color = GeminiCyanAccent,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
                 }
             }
         }

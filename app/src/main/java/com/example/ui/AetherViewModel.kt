@@ -1755,7 +1755,13 @@ RESPUESTA FINAL (Markdown directo en español):
                 )
             } catch (e: Exception) {
                 android.util.Log.e("AetherViewModel", "Error en Gemini 3.5 Flash-Lite", e)
-                "Error al conectar con Gemini 3.5 Flash-Lite: ${e.localizedMessage ?: "Error de conexión"}.\n\nPuedes alternar al motor Aura Local en Ajustes de IA si deseas operar sin conexión."
+                val errorMsg = e.localizedMessage ?: "Error de conexión"
+                val isAppCheck = errorMsg.contains("App Check", ignoreCase = true) || errorMsg.contains("token is invalid", ignoreCase = true) || errorMsg.contains("403", ignoreCase = true)
+                if (isAppCheck) {
+                    "Error de seguridad App Check con Gemini 3.5 Flash-Lite: $errorMsg.\n\nRecomendaciones:\n1. Comprueba tu conexión a Internet y que la fecha y hora del sistema en tu móvil sean automáticas.\n2. Si instalaste el APK generado por GitHub Actions, reinstala la versión más reciente que incluye el certificado de depuración sincronizado con Firebase.\n3. Puedes alternar al motor 'Aura Local' en Ajustes de IA para trabajar de forma 100% privada y offline."
+                } else {
+                    "Error al conectar con Gemini 3.5 Flash-Lite: $errorMsg.\n\nPuedes alternar al motor Aura Local en Ajustes de IA si deseas operar sin conexión."
+                }
             } finally {
                 _chatbotStatusText.value = null
                 _liveThinkingText.value = null
