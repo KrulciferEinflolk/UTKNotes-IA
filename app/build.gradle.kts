@@ -14,7 +14,7 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "utk.notes.ia"
+    applicationId = "utk.notes.gemini"
     minSdk = 24
     targetSdk = 36
     versionCode = 18
@@ -113,6 +113,7 @@ dependencies {
   implementation(libs.googleid)
   // implementation(libs.googleid)
   implementation(libs.firebase.appcheck.recaptcha)
+  implementation(libs.firebase.appcheck.debug)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.logging.interceptor)

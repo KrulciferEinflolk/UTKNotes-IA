@@ -1,82 +1,51 @@
-# Reestructuración del Catálogo de Modelos IA por Niveles de RAM (2 GB, 3 GB y 4 GB) [COMPLETADO]
+# Plan de Implementación: Integración de Gemini API (Firebase AI Logic) [COMPLETADO]
 
-Reemplazo integral del catálogo de modelos de Aura por tres modelos de razonamiento profundo escalonados según la capacidad de memoria RAM del teléfono inteligente, con selección abierta por el usuario y purga automática de modelos obsoletos para liberar almacenamiento.
-
----
-
-## Decisiones Críticas y Preferencias del Usuario
-
-> [!IMPORTANT]
-> Decisiones confirmadas directamente por el usuario en la fase de clarificación:
-> 1. **Selección del Modelo:** No se fuerza un modelo predeterminado rígido; la app presenta la lista categorizada de las 3 opciones (2 GB, 3 GB y 4 GB de RAM) y el usuario escoge la que mejor se adapta a su dispositivo.
-> 2. **Gestión de Modelos Anteriores:** Los archivos GGUF de modelos descargados de versiones anteriores que ya no pertenezcan al catálogo se eliminan automáticamente del almacenamiento interno al actualizar la lista para recuperar valiosos gigabytes de espacio.
+## 1. Contexto y Objetivos
+- [x] **Resolución del Conflicto OAuth**: Actualizado el `applicationId` a `utk.notes.gemini` en `app/build.gradle.kts` para permitir el registro limpio en el nuevo proyecto de Google Cloud `gen-lang-client-0399724194`.
+- [x] **Aprovisionamiento de Firebase AI Logic**: Invocado el RPC `ProvisionFirebase` con `ai_logic`, registrando el certificado de depuración y generando el nuevo `google-services.json` con hash de certificado verificado.
+- [x] **Configuración de App Check**: Implementado el helper `configureAppCheck` y conectado en `MainActivity.onCreate()` antes de Compose y ViewModels, pasando el `intent` con `FIREBASE_APPCHECK_DEBUG_TOKEN`.
+- [x] **Integración del Modelo Gemini**: Habilitado `gemini-3.5-flash-lite` mediante `Firebase.ai`, permitiendo que el usuario pueda utilizar tanto la IA local offline como la potencia y ultra-velocidad de Gemini en la nube.
 
 ---
 
-## 1. Nuevo Catálogo de Modelos por Capacidad de RAM
+## 2. Pasos de Ejecución Completados
 
-| Categoría | Nombre del Modelo | Parámetros | Archivo GGUF | Peso (Descarga) | RAM Utilizada | Plantilla / Razonamiento |
-|---|---|---|---|---|---|---|
-| **2 GB RAM** | **DeepSeek-R1-Distill-Qwen-1.5B (Q4_K_M)** | 1.54B | `DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf` | ~1.1 GB | ~1.5 GB | ChatML / `<think>` |
-| **3 GB RAM** | **SmallThinker-3B-Preview (Q4_K_M)** | 3.00B | `SmallThinker-3B-Preview-Q4_K_M.gguf` | ~2.0 GB | ~2.5 GB | ChatML / `<think>` |
-| **4 GB RAM** | **DeepSeek-R1-Distill-Qwen-7B (Q3_K_M)** | 7.61B | `DeepSeek-R1-Distill-Qwen-7B-Q3_K_M.gguf` | ~3.6 GB | ~3.9 GB | ChatML / `<think>` |
+### Paso 1: Actualización de `applicationId`
+- [x] En `app/build.gradle.kts`:
+  Cambiado `applicationId = "utk.notes.ia"` por `applicationId = "utk.notes.gemini"`.
 
----
+### Paso 2: Aprovisionamiento de Firebase AI Logic (`ProvisionFirebase`)
+- [x] Invocado `fax.ProvisionFirebase` con:
+  - `platform`: `"android"`
+  - `package_name`: `"utk.notes.gemini"`
+  - `project_id`: `"gen-lang-client-0399724194"`
+  - `sha1_certificate`: `"0C:CF:C0:5E:AC:EC:49:FA:CC:1F:2F:2D:8B:98:B2:55:A0:69:7E:3C"`
+  - `sha256_certificate`: `"F4:FE:5E:05:59:B8:D1:EA:6D:97:97:D9:D9:48:D7:FE:D2:DC:2B:9A:C4:49:CC:68:98:52:BB:D6:74:F1:18:A8"`
+  - `requested_products`: `["ai_logic"]`
+- [x] Verificado que `0ccfc05eacec49facc1f2f2d8b98b255a0697e3c` está registrado en `app/google-services.json`.
 
-## 2. Arquitectura de Selección y Limpieza Automática
+### Paso 3: Dependencias de Gradle
+- [x] En `app/build.gradle.kts`, dependencias activas:
+  ```kotlin
+  implementation(platform(libs.firebase.bom))
+  implementation(libs.firebase.ai)
+  implementation(libs.firebase.appcheck.recaptcha)
+  implementation(libs.firebase.appcheck.debug)
+  ```
 
-```
-┌────────────────────────────────────────────────────────┐
-│             Ajustes de IA / Selector de Modelos        │
-│                                                        │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │ 🟢 2 GB RAM: DeepSeek-R1 1.5B (Q4_K_M)           │  │
-│  │    Ultraligero • 1.54B • ~1.1 GB GGUF            │  │
-│  ├──────────────────────────────────────────────────┤  │
-│  │ 🟡 3 GB RAM: SmallThinker 3B Preview (Q4_K_M)    │  │
-│  │    Razonamiento CoT • 3.00B • ~2.0 GB GGUF       │  │
-│  ├──────────────────────────────────────────────────┤  │
-│  │ 🟣 4 GB RAM: DeepSeek-R1 7B (Q3_K_M)             │  │
-│  │    Máximo Razonamiento • 7.61B • ~3.6 GB GGUF    │  │
-│  └──────────────────────────────────────────────────┘  │
-│                                                        │
-│    [El usuario elige según la memoria de su teléfono]  │
-└───────────────────────────┬────────────────────────────┘
-                            │
-                            ▼
-┌────────────────────────────────────────────────────────┐
-│     Purga Automática de Modelos Obsoletos en Disco     │
-│  • Detecta archivos en Download/Models o data/local    │
-│  • Si el archivo no pertenece al nuevo trío:           │
-│      - qwen2.5-3b-instruct-q4_k_m.gguf      -> ELIMINAR│
-│      - qwen2.5-1.5b-instruct-q4_k_m.gguf    -> ELIMINAR│
-│      - llama-3.2-3b-instruct-q4_k_m.gguf    -> ELIMINAR│
-│      - DeepSeek-R1-Distill-Qwen-7B-Q4_K_M   -> ELIMINAR│
-│  • Libera de 2 GB a 8 GB de almacenamiento local       │
-└───────────────────────────┬────────────────────────────┘
-                            │
-                            ▼
-┌────────────────────────────────────────────────────────┐
-│        Motor de Inferencia Unificado (llama.cpp)       │
-│  • Los 3 modelos son variantes de razonamiento ChatML  │
-│  • Las etiquetas <think> se canalizan automáticamente  │
-│    al componente ThinkingAccordionCard en el chat      │
-└────────────────────────────────────────────────────────┘
-```
+### Paso 4: Implementación de App Check y Cableado en `MainActivity`
+- [x] Creado `com.example.util.AppCheckConfig.kt` con persistencia síncrona mediante `.commit()` y soporte reCAPTCHA Enterprise.
+- [x] Conectado `configureAppCheck(this, intent)` al inicio de `MainActivity.onCreate()`.
+
+### Paso 5: Implementación de Servicio Gemini Cloud (`gemini-3.5-flash-lite`)
+- [x] Creado `CloudGeminiManager.kt` con inicialización `by lazy` de `Firebase.ai.generativeModel("gemini-3.5-flash-lite")`.
+- [x] Soporte unario y de streaming con timeouts de 60 segundos y manejo multimodal (imágenes y documentos).
+- [x] Integrado en `AetherViewModel.kt` como motor activo por defecto (`AiEngineType.GEMINI_CLOUD`), conservando `AURA_LOCAL` como respaldo sin conexión.
+- [x] Conmutador interactivo añadido en el encabezado de `ChatbotUI` y en `AuraModelSelectorCard.kt`.
 
 ---
 
-## 3. Cambios Implementados
-
-### A. Catálogo de Modelos (`LlmModelCatalog.kt`)
-- Sustituido el catálogo anterior con la terna oficial de 2 GB, 3 GB y 4 GB de RAM.
-- Agregada la lista `LEGACY_MODEL_FILENAMES` con los nombres de modelos anteriores.
-
-### B. Purga Automática de Modelos Obsoletos (`ModelDownloadVerifier.kt`)
-- Agregada la función `purgeLegacyModels()`, que se ejecuta al arrancar el verificador:
-  - Detecta archivos `.gguf` o `.downloading` obsoletos y los elimina de disco de inmediato.
-- Actualizada la lógica de selección inicial (`determineInitialModel()`) para resolver preferentemente sobre los modelos descargados vigentes o el tier de 3 GB por defecto.
-
-### C. Selector de Modelos Mejorado (`AuraModelSelectorCard.kt`)
-- Actualizado el encabezado con la insignia "Según tu teléfono".
-- Etiquetas cromáticas distintivas para cada nivel de RAM (Verde para 2 GB, Ámbar para 3 GB, Violeta para 4 GB).
+## 3. Verificación
+1. [x] **Huella Digital Verificada**: `certificate_hash` presente en `google-services.json`.
+2. [x] **Compilación Exitosa**: `compile_applet` ejecutado exitosamente sin errores de compilación ni dependencias.
+3. [x] **App lista para ejecución en Streaming Emulator**.

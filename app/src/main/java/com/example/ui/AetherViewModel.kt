@@ -31,6 +31,11 @@ data class AuraActionResponse(
     val thought: String = ""
 )
 
+enum class AiEngineType {
+    GEMINI_CLOUD,
+    AURA_LOCAL
+}
+
 class AetherViewModel(application: Application) : AndroidViewModel(application) {
 
     private val database = AppDatabase.getDatabase(application)
@@ -39,6 +44,14 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     val localLlm = LocalLlmManager(application)
     val modelVerifier = ModelDownloadVerifier(application)
     val memoryVault = NoteMemoryVaultManager(application)
+    val cloudGemini = com.example.data.remote.gemini.CloudGeminiManager()
+
+    private val _selectedAiEngine = MutableStateFlow(AiEngineType.GEMINI_CLOUD)
+    val selectedAiEngine: StateFlow<AiEngineType> = _selectedAiEngine.asStateFlow()
+
+    fun setAiEngine(engine: AiEngineType) {
+        _selectedAiEngine.value = engine
+    }
 
     init {
         viewModelScope.launch {
@@ -129,6 +142,9 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     private val _chatbotStatusText = MutableStateFlow<String?>(null)
     val chatbotStatusText: StateFlow<String?> = _chatbotStatusText.asStateFlow()
 
+    private val _liveThinkingText = MutableStateFlow<String?>(null)
+    val liveThinkingText: StateFlow<String?> = _liveThinkingText.asStateFlow()
+
     // --- DOCUMENT IMPORT PROGRESS STATES (GOOGLE ML KIT) ---
     private val _isImportingDocument = MutableStateFlow(false)
     val isImportingDocument: StateFlow<Boolean> = _isImportingDocument.asStateFlow()
@@ -172,6 +188,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         _chatMessages.value = messages
         _isChatbotSending.value = false
         _chatbotStatusText.value = null
+        _liveThinkingText.value = null
     }
 
     fun clearChat() {
@@ -184,6 +201,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         _chatbotPreAttachedText.value = null
         _isChatbotSending.value = false
         _chatbotStatusText.value = null
+        _liveThinkingText.value = null
     }
 
     fun sendChatbotMessage(
@@ -196,8 +214,9 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         val updatedList = if (alreadyAddedToChat) _chatMessages.value else (_chatMessages.value + (userDisplayMsg to true))
         _chatMessages.value = updatedList
         _isChatbotSending.value = true
+        _liveThinkingText.value = null
         if (_chatbotStatusText.value.isNullOrBlank()) {
-            _chatbotStatusText.value = "🧠 Aura está pensando..."
+            _chatbotStatusText.value = "Aura está pensando..."
         }
 
         if (_currentChatSessionId.value == null) {
@@ -371,20 +390,21 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         // Add user message to chat immediately for instantaneous feedback
         _chatMessages.value = _chatMessages.value + (displayMsg to true)
         _isChatbotSending.value = true
-        _chatbotStatusText.value = if (fUri != null || fName != null) "📄 Leyendo \"${fName ?: "documento"}\"..." else "🧠 Aura está pensando..."
+        _liveThinkingText.value = null
+        _chatbotStatusText.value = if (fUri != null || fName != null) "Leyendo \"${fName ?: "documento"}\"..." else "Aura está pensando..."
 
         viewModelScope.launch {
             // Extract document text if URI is provided and content is not already extracted
             var actualFileContent = fContent
             if (fUri != null && actualFileContent.isNullOrBlank()) {
-                _chatbotStatusText.value = "📄 Leyendo \"${fName ?: "documento"}\"..."
+                _chatbotStatusText.value = "Leyendo \"${fName ?: "documento"}\"..."
                 actualFileContent = com.example.util.LocalMediaAnalyzer.extractDocumentText(context, fUri, fName)
             }
 
             // Local On-Device Image Analysis & OCR via ML Kit if image is provided
             var imageOcrText = ""
             if (imgUri != null) {
-                _chatbotStatusText.value = "📷 Analizando imagen con OCR..."
+                _chatbotStatusText.value = "Analizando imagen con OCR..."
                 imageOcrText = com.example.util.LocalMediaAnalyzer.analyzeImage(context, imgUri)
             }
 
@@ -395,151 +415,48 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             val isGreeting = isGreetingOrGeneralQuery(rawUserMsg) && actualFileContent.isNullOrBlank() && imgUri == null
             val activeTargetNote = pNote ?: _selectedNote.value
 
-            if (isGreeting) {
-                // Caso Saludo / Consulta General: Evitar inyectar miles de caracteres de nota que ralentizan la CPU
-                if (activeTargetNote != null) {
-                    val snippet = formatNoteBlocksForLlm(activeTargetNote.content, maxChars = 200).replace("\n", " ").take(140)
-                    sb.append("<active_note_preview title=\"${activeTargetNote.title}\">\n")
-                    sb.append("Título: ${activeTargetNote.title}\n")
-                    if (snippet.isNotBlank() && !snippet.contains("sin contenido", ignoreCase = true)) {
-                        sb.append("Extracto inicial: $snippet...\n")
-                    }
-                    sb.append("</active_note_preview>\n\n")
-
-                    val userRequestText = """El usuario saluda o hace una consulta general: "$rawUserMsg".
-Tienes a la vista la nota activa titulada "${activeTargetNote.title}".
-
-INSTRUCCIONES DE RESPUESTA:
-1. Responde con calidez y simpatía al saludo o consulta del usuario en 1-2 oraciones breves.
-2. Menciona con naturalidad que tienes abierta su nota activa "${activeTargetNote.title}".
-3. Ofrécele 2 o 3 sugerencias breves y útiles de lo que puedes hacer en ella (por ejemplo: resumirla, continuarla con nuevas ideas, corregir su redacción o extraer tareas clave).
-Responde SIEMPRE en formato JSON: {"action":"conversation","target_scope":"chat","explanation":"","content":"tu respuesta completa aquí"}."""
-
-                    sb.append("<user_request>\n")
-                    sb.append(userRequestText)
-                    sb.append("\n</user_request>")
-                } else {
-                    val userRequestText = """El usuario saluda o hace una consulta general: "$rawUserMsg".
-
-INSTRUCCIONES DE RESPUESTA:
-1. Responde con calidez y cercanía al saludo del usuario en 1-2 oraciones amables.
-2. Explica brevemente que eres Aura, su asistente inteligente de notas.
-3. Menciona 2 o 3 cosas útiles en las que puedes colaborar (crear notas, analizar archivos o PDFs, o estructurar apuntes).
-Responde SIEMPRE en formato JSON: {"action":"conversation","target_scope":"chat","explanation":"","content":"tu respuesta completa aquí"}."""
-
-                    sb.append("<user_request>\n")
-                    sb.append(userRequestText)
-                    sb.append("\n</user_request>")
-                }
+            if (isGreeting || (actualFileContent.isNullOrBlank() && imgUri == null && pText.isNullOrBlank() && !rawUserMsg.contains("nota", ignoreCase = true))) {
+                // Mensaje directo / saludo: Enviar texto limpio SIN envoltorios
+                sb.append(rawUserMsg)
             } else {
-                // Caso Estándar: Análisis profundo, edición o integración de notas y documentos
-
-                // 1. <full_note>
-                if (activeTargetNote != null) {
-                    val formattedNote = formatNoteBlocksForLlm(activeTargetNote.content, maxChars = 3500)
-                    sb.append("<full_note>\n")
-                    sb.append(formattedNote)
-                    sb.append("\n</full_note>\n\n")
-                } else if (allNotes.isNotEmpty() && rawUserMsg.contains("nota", ignoreCase = true)) {
-                    val matched = allNotes.find { rawUserMsg.contains(it.title, ignoreCase = true) } ?: allNotes.first()
-                    val formattedNote = formatNoteBlocksForLlm(matched.content, maxChars = 3000)
-                    sb.append("<full_note>\n")
-                    sb.append(formattedNote)
-                    sb.append("\n</full_note>\n\n")
-                }
-
-                // 2. <selected_text>
-                if (!pText.isNullOrBlank()) {
-                    sb.append("<selected_text>\n")
-                    sb.append(pText.take(2000))
-                    sb.append("\n</selected_text>\n\n")
-                }
-
-                // 3. <cursor_position>
-                if (activeTargetNote != null) {
-                    sb.append("<cursor_position>\n")
-                    sb.append("Al final de la nota activa (\"${activeTargetNote.title}\")")
-                    sb.append("\n</cursor_position>\n\n")
-                }
-
-                // 4. <attached_file>
+                // Caso Estándar: Análisis de notas, documentos adjuntos o imágenes
                 if (!actualFileContent.isNullOrBlank()) {
                     val safeFile = if (actualFileContent.length > 5000) actualFileContent.take(5000) + "\n...[Documento extenso condensado]" else actualFileContent
-                    sb.append("<attached_file>\n")
+                    sb.append("=== DOCUMENTO ADJUNTO (\"${fName ?: "archivo"}\") ===\n")
                     sb.append(safeFile)
-                    sb.append("\n</attached_file>\n\n")
+                    sb.append("\n===========================================\n\n")
                 }
 
-                // Contexto de imagen OCR si aplica
                 if (imageOcrText.isNotBlank()) {
-                    sb.append("<attached_image_ocr>\n")
+                    sb.append("=== TEXTO DETECTADO EN IMAGEN (OCR) ===\n")
                     sb.append(imageOcrText)
-                    sb.append("\n</attached_image_ocr>\n\n")
+                    sb.append("\n======================================\n\n")
                 }
 
-                // 5. Notas adicionales mencionadas con @
-                allNotes.forEach { note ->
-                    if (rawUserMsg.contains("@${note.title}", ignoreCase = true) && note.id != activeTargetNote?.id) {
-                        val mdContent = com.example.convertBlocksToMarkdown(note.content)
-                        val safeMd = if (mdContent.length > 2000) mdContent.take(2000) + "..." else mdContent
-                        sb.append("<referenced_note title=\"${note.title}\">\n$safeMd\n</referenced_note>\n\n")
-                    }
+                if (activeTargetNote != null && (rawUserMsg.contains("nota", ignoreCase = true) || actualFileContent.isNullOrBlank())) {
+                    val formattedNote = formatNoteBlocksForLlm(activeTargetNote.content, maxChars = 3500)
+                    sb.append("=== NOTA ACTIVA (\"${activeTargetNote.title}\") ===\n")
+                    sb.append(formattedNote)
+                    sb.append("\n=========================================\n\n")
                 }
 
-                // 6. <user_request>
-                val isAnalysisRequest = rawUserMsg.contains("analiz", ignoreCase = true) ||
-                                        rawUserMsg.contains("análisis", ignoreCase = true) ||
-                                        rawUserMsg.contains("resum", ignoreCase = true) ||
-                                        rawUserMsg.contains("sinteti", ignoreCase = true) ||
-                                        rawUserMsg.contains("explica", ignoreCase = true) ||
-                                        rawUserMsg.contains("revisa", ignoreCase = true) ||
-                                        rawUserMsg.contains("qué opina", ignoreCase = true) ||
-                                        rawUserMsg.contains("que opina", ignoreCase = true) ||
-                                        rawUserMsg.contains("de qué trata", ignoreCase = true) ||
-                                        rawUserMsg.contains("de que trata", ignoreCase = true)
+                if (!pText.isNullOrBlank()) {
+                    sb.append("=== FRAGMENTO SELECCIONADO ===\n")
+                    sb.append(pText.take(2000))
+                    sb.append("\n==============================\n\n")
+                }
 
-                val baseRequest = if (rawUserMsg.isNotBlank()) {
+                val promptText = if (rawUserMsg.isNotBlank()) {
                     rawUserMsg
                 } else if (!actualFileContent.isNullOrBlank()) {
-                    "Lee el documento adjunto y resume sus ideas clave integrándolas en un formato claro."
+                    "Por favor analiza el documento adjunto y presenta un resumen completo y estructurado de sus ideas clave en español."
                 } else if (imgUri != null) {
-                    "Analiza la imagen adjunta, transcribe su texto y describe sus elementos visuales."
+                    "Analiza la imagen adjunta, describe sus elementos visuales y resume su texto en español."
                 } else {
-                    "¿En qué puedes ayudarme con mis notas?"
+                    "Resume el contenido de forma clara y estructurada en español."
                 }
 
-                val userRequestText = if (isAnalysisRequest && !rawUserMsg.contains("reemplaza", ignoreCase = true) && !rawUserMsg.contains("modifica", ignoreCase = true)) {
-                    if (!actualFileContent.isNullOrBlank() && activeTargetNote != null) {
-                        """$baseRequest
-
-[INSTRUCCIÓN CRÍTICA DE SEPARACIÓN Y CONTRASTE]:
-1. Prioridad: Analiza el documento adjunto ('${fName ?: "documento"}') extrayendo sus PUNTOS CLAVE DIRECTOS en viñetas concretas con fidelidad estricta a su contenido.
-2. Cero alucinaciones: Básate ÚNICAMENTE en hechos explícitos del documento adjunto. PROHIBIDO desglosar párrafo por párrafo ('[Párrafo X]') y PROHIBIDO inventar interpretaciones narrativas extensas.
-3. Contraste de diferencias: En una sección separada al final titulada '### 🔍 Contraste con tu nota activa ("${activeTargetNote.title}")', señala puntualmente cómo se diferencia o relaciona con tu nota actual.
-4. Cero contaminación cruzada: No mezcles jamás los personajes, elementos o conceptos de la nota dentro del documento adjunto, ni viceversa.
-Utiliza action: "conversation" y target_scope: "chat"]."""
-                    } else if (!actualFileContent.isNullOrBlank()) {
-                        """$baseRequest
-
-[INSTRUCCIÓN CRÍTICA]:
-Analiza el documento adjunto ('${fName ?: "documento"}') extrayendo sus PUNTOS CLAVE DIRECTOS en viñetas concretas con fidelidad estricta al texto.
-PROHIBIDO desglosar párrafo por párrafo ('[Párrafo X]') y PROHIBIDO inventar interpretaciones narrativas extensas.
-Utiliza action: "conversation" y target_scope: "chat"]."""
-                    } else {
-                        """$baseRequest
-
-[INSTRUCCIÓN CRÍTICA]:
-Analiza la nota activa extrayendo sus PUNTOS CLAVE DIRECTOS en viñetas concretas con fidelidad estricta a su contenido.
-PROHIBIDO desglosar párrafo por párrafo ('[Párrafo X]') y PROHIBIDO alucinar hechos no presentes.
-Utiliza action: "conversation" y target_scope: "chat"]."""
-                    }
-                } else {
-                    baseRequest
-                }
-
-                sb.append("<user_request>\n")
-                sb.append(userRequestText)
-                sb.append("\n</user_request>")
+                sb.append("Instrucción del usuario: ").append(promptText)
             }
 
             val finalMsgForApi = sb.toString()
@@ -961,6 +878,24 @@ Utiliza action: "conversation" y target_scope: "chat"]."""
                 return@launch
             }
 
+            if (_selectedAiEngine.value == AiEngineType.GEMINI_CLOUD) {
+                val summary = currentNotes.take(5).joinToString("\n") { "• ${it.title}: ${it.content.take(80)}" }
+                val suggestions = try {
+                    val prompt = "En base a estas notas del usuario:\n$summary\nGenera 3 sugerencias breves de qué nota escribir o investigar a continuación. Devuelve exactamente 3 líneas separadas por salto de línea sin viñetas."
+                    val resp = cloudGemini.generateContent(prompt)
+                    resp.lines().map { it.trim().removePrefix("•").removePrefix("-").trim() }.filter { it.isNotBlank() }.take(3)
+                } catch (e: Exception) {
+                    emptyList()
+                }
+                _aiSuggestions.value = if (suggestions.isNotEmpty()) suggestions else listOf(
+                    "Sintetiza tus notas recientes con Gemini.",
+                    "Crea una nueva nota de resumen para tus proyectos.",
+                    "Organiza tus notas clave con etiquetas y colores."
+                )
+                _aiLoading.value = false
+                return@launch
+            }
+
             if (modelVerifier.checkCurrentStatus() is ModelDownloadStatus.Ready) {
                 val summary = currentNotes.take(5).joinToString("\n") { "• ${it.title}: ${it.content.take(80)}" }
                 val reqContext = localLlm.calculateElasticContext(summary.length + 200, 300)
@@ -987,12 +922,7 @@ Utiliza action: "conversation" y target_scope: "chat"]."""
     ) {
         viewModelScope.launch {
             _aiLoading.value = true
-            _aiMessage.value = "Aura mejorando párrafo..."
-            if (modelVerifier.checkCurrentStatus() !is ModelDownloadStatus.Ready) {
-                _aiMessage.value = "Descarga primero el modelo local Aura en Ajustes de IA."
-                _aiLoading.value = false
-                return@launch
-            }
+            _aiMessage.value = "Mejorando párrafo..."
             val prompt = """
                 Párrafo original:
                 $originalText
@@ -1001,11 +931,34 @@ Utiliza action: "conversation" y target_scope: "chat"]."""
                 $instruction
             """.trimIndent()
             val sysPrompt = """
-                Eres Aura, asistente experta de escritura. Tu tarea es reescribir o mejorar ÚNICAMENTE el párrafo o texto proporcionado siguiendo la instrucción.
+                Eres un asistente experto de escritura. Tu tarea es reescribir o mejorar ÚNICAMENTE el párrafo o texto proporcionado siguiendo la instrucción.
                 REGLAS CRÍTICAS:
                 1. Devuelve ÚNICAMENTE el texto final generado, sin introducciones, sin saludos, sin explicaciones ni comillas envolventes.
                 2. Si la instrucción pide corregir, devuelve el párrafo corregido. Si pide expandir, devuelve el párrafo expandido. Si pide resumir, devuelve la síntesis en un párrafo o lista concisa.
             """.trimIndent()
+
+            if (_selectedAiEngine.value == AiEngineType.GEMINI_CLOUD) {
+                val response = try {
+                    cloudGemini.generateContent(prompt = prompt, systemInstruction = sysPrompt)
+                } catch (e: Exception) {
+                    null
+                }
+                val clean = response?.trim()?.removeSurrounding("\"")?.removeSurrounding("```")?.trim()
+                if (!clean.isNullOrBlank()) {
+                    onSuccess(clean)
+                    _aiMessage.value = "Párrafo actualizado con Gemini"
+                } else {
+                    _aiMessage.value = "No se pudieron aplicar cambios al párrafo."
+                }
+                _aiLoading.value = false
+                return@launch
+            }
+
+            if (modelVerifier.checkCurrentStatus() !is ModelDownloadStatus.Ready) {
+                _aiMessage.value = "Descarga primero el modelo local Aura en Ajustes de IA."
+                _aiLoading.value = false
+                return@launch
+            }
             val reqContext = localLlm.calculateElasticContext(prompt.length + sysPrompt.length, 512)
             localLlm.ensureModelLoaded(modelVerifier.modelFile, reqContext)
             val response = localLlm.generateResponse(prompt, sysPrompt)
@@ -1023,7 +976,42 @@ Utiliza action: "conversation" y target_scope: "chat"]."""
     fun applyAiModificationToNote(note: NoteEntity, instruction: String) {
         viewModelScope.launch {
             _aiLoading.value = true
-            _aiMessage.value = "Qwen modificando nota..."
+            _aiMessage.value = "Modificando nota..."
+
+            if (_selectedAiEngine.value == AiEngineType.GEMINI_CLOUD) {
+                val prompt = "Título actual: ${note.title}\nContenido actual:\n${note.content}\n\nInstrucción:\n$instruction\n\nDevuelve la nota actualizada en formato:\nTITULO: <nuevo o mismo titulo>\nCONTENIDO: <nuevo contenido en prosa o bloques>"
+                val response = try {
+                    cloudGemini.generateContent(
+                        prompt = prompt,
+                        systemInstruction = "Eres un asistente editorial experto. Modifica la nota siguiendo rigurosamente las instrucciones del usuario."
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+                if (!response.isNullOrBlank()) {
+                    val (newTitle, newContent) = if (response.contains("CONTENIDO:")) {
+                        val t = response.substringAfter("TITULO:").substringBefore("CONTENIDO:").trim()
+                        val c = response.substringAfter("CONTENIDO:").trim()
+                        Pair(t.ifBlank { note.title }, c)
+                    } else {
+                        Pair(note.title, response)
+                    }
+                    val updatedNote = note.copy(
+                        title = newTitle,
+                        content = newContent,
+                        updatedAt = System.currentTimeMillis(),
+                        isSynced = false
+                    )
+                    repository.updateNote(updatedNote)
+                    _selectedNote.value = updatedNote
+                    _aiMessage.value = "Nota modificada exitosamente con Gemini!"
+                } else {
+                    _aiMessage.value = "No se pudieron aplicar cambios con Gemini."
+                }
+                _aiLoading.value = false
+                return@launch
+            }
+
             if (modelVerifier.checkCurrentStatus() !is ModelDownloadStatus.Ready) {
                 _aiMessage.value = "Descarga primero el modelo local Qwen en Ajustes de IA."
                 _aiLoading.value = false
@@ -1057,7 +1045,41 @@ Utiliza action: "conversation" y target_scope: "chat"]."""
         val currentPage = _selectedPage.value ?: return
         viewModelScope.launch {
             _aiLoading.value = true
-            _aiMessage.value = "Qwen generando nueva nota..."
+            _aiMessage.value = "Generando nueva nota..."
+
+            if (_selectedAiEngine.value == AiEngineType.GEMINI_CLOUD) {
+                val prompt = "Crea una nota completa, bien estructurada y detallada en español sobre: $instruction\nFormato de salida:\nTITULO: <titulo breve y representativo>\nCONTENIDO: <contenido completo estructurado en prosa y subtitulos>"
+                val response = try {
+                    cloudGemini.generateContent(
+                        prompt = prompt,
+                        systemInstruction = "Eres Aura impulsada por Gemini 3.5 Flash-Lite. Redacta notas informativas, claras y útiles en prosa estructurada."
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+                if (!response.isNullOrBlank()) {
+                    val (newTitle, newContent) = if (response.contains("CONTENIDO:")) {
+                        val t = response.substringAfter("TITULO:").substringBefore("CONTENIDO:").trim()
+                        val c = response.substringAfter("CONTENIDO:").trim()
+                        Pair(t.ifBlank { "Nota de Gemini" }, c)
+                    } else {
+                        Pair("Nota de Gemini", response)
+                    }
+                    val newNote = repository.createNote(
+                        pageId = currentPage.id,
+                        title = newTitle,
+                        content = newContent,
+                        tags = "Gemini, IA"
+                    )
+                    _selectedNote.value = newNote
+                    _aiMessage.value = "Nota creada con Gemini 3.5 Flash-Lite!"
+                } else {
+                    _aiMessage.value = "No se pudo generar la nota con Gemini."
+                }
+                _aiLoading.value = false
+                return@launch
+            }
+
             if (modelVerifier.checkCurrentStatus() !is ModelDownloadStatus.Ready) {
                 _aiMessage.value = "Descarga primero el modelo local Qwen en Ajustes de IA."
                 _aiLoading.value = false
@@ -1171,38 +1193,132 @@ Utiliza action: "conversation" y target_scope: "chat"]."""
         return sb.toString()
     }
 
-    fun buildAgentSystemPrompt(userQuery: String = ""): String {
-        return """
-Eres Aura, un asistente de notas y escritura con inteligencia artificial. Tu misión es ayudar al usuario con sus notas, responder consultas, analizar documentos o redactar contenido.
-
-REGLAS DE FORMATO (CRÍTICO):
-Responde SIEMPRE con un ÚNICO objeto JSON válido, sin delimitadores ```json y sin texto fuera del JSON:
-{
-  "action": "conversation" | "insert_at_cursor" | "replace_selection" | "replace_full_note",
-  "target_scope": "chat" | "cursor_position" | "selected_text" | "full_note",
-  "explanation": "<Breve titular de 1 a 3 palabras, o vacío \"\">",
-  "content": "<Mensaje conversacional o texto Markdown completo para el usuario>"
+enum class QueryComplexity {
+    SIMPLE,
+    INTERMEDIATE,
+    COMPLEX
 }
 
-REGLA DE ORO DE TOKENS (CERO DUPLICACIÓN):
-- En "conversation" (saludos, charlas, resúmenes, explicaciones): TODO tu mensaje debe colocarse dentro de "content". NUNCA pongas tu mensaje en "explanation". "explanation" debe quedar vacío "" o tener máximo 3 palabras (ej.: "Saludo", "Análisis").
-- En "insert_at_cursor", "replace_selection", "replace_full_note": "explanation" describe el cambio en 1 frase muy corta, y "content" contiene el texto exacto a insertar en la nota.
+    fun detectQueryComplexity(message: String): QueryComplexity {
+        val clean = message.trim().lowercase()
+        val isIdentityOrSimple = clean in listOf(
+            "hola", "hola!", "hola aura", "hola aura!", "buenos días", "buenas tardes", "buenas noches",
+            "buenas", "hey", "saludos", "hi", "hello", "qué tal", "que tal", "¿qué tal?", "¿que tal?",
+            "¿cómo estás?", "¿como estas?", "como estas", "cómo estás", "gracias", "muchas gracias",
+            "adiós", "chao", "hasta luego", "ok", "vale", "bien", "perfecto"
+        ) ||
+        clean.contains("tu nombre") || clean.contains("te llamas") || clean.contains("quién eres") ||
+        clean.contains("quien eres") || clean.contains("qué eres") || clean.contains("que eres") ||
+        clean.contains("para qué sirves") || clean.contains("para que sirves") ||
+        clean.contains("qué haces") || clean.contains("que haces") ||
+        clean.contains("qué puedes hacer") || clean.contains("que puedes hacer") ||
+        clean.contains("cuál es tu nombre") || clean.contains("cual es tu nombre") ||
+        clean.contains("cómo te llamas") || clean.contains("como te llamas") ||
+        (clean.length <= 25 && (clean.startsWith("hola") || clean.startsWith("buenas") || clean.startsWith("hey") || clean.startsWith("saludos")))
 
-ACCIONES:
-- "conversation": (target_scope: "chat") Saludos, preguntas generales, y PRINCIPALMENTE cuando el usuario pida analizar, estudiar, resumir o comparar notas y documentos.
-- "insert_at_cursor": (target_scope: "cursor_position") Agregar contenido o continuar la nota al final o en el cursor.
-- "replace_selection": (target_scope: "selected_text") Corregir o reescribir solo el texto seleccionado.
-- "replace_full_note": (target_scope: "full_note") Reemplazar toda la nota (solo si se pide explícitamente).
+        if (isIdentityOrSimple) {
+            return QueryComplexity.SIMPLE
+        }
 
-DIRECTRICES:
-1. Saludos o consultas generales: Responde con calidez y simpatía en 1-2 oraciones. Si hay una nota activa, menciona su título y ofrece 2-3 sugerencias concretas de lo que puedes hacer en ella.
-2. Análisis de documentos o notas: Usa action: "conversation", target_scope: "chat". Extrae PUNTOS CLAVE DIRECTOS en viñetas factuales. Prohibido desglosar por '[Párrafo X]' y prohibido inventar o alucinar historias. Si hay nota activa y documento adjunto, incluye al final una sección '### 🔍 Contraste con tu nota activa'.
-3. Concisión y naturalidad: Sé directo y estructurado en Markdown.
+        val isComplex = clean.contains("resum", ignoreCase = true) ||
+            clean.contains("analiz", ignoreCase = true) ||
+            clean.contains("explic", ignoreCase = true) ||
+            clean.contains("historia", ignoreCase = true) ||
+            clean.contains("por qué", ignoreCase = true) ||
+            clean.contains("por que", ignoreCase = true) ||
+            clean.contains("diferencia", ignoreCase = true) ||
+            clean.contains("compara", ignoreCase = true) ||
+            clean.contains("desarrolla", ignoreCase = true) ||
+            clean.contains("<attached_file>") ||
+            clean.contains("<full_note>") ||
+            clean.contains("INSTRUCCIÓN CRÍTICA DE SEPARACIÓN Y CONTRASTE") ||
+            clean.length > 80
+
+        return if (isComplex) QueryComplexity.COMPLEX else QueryComplexity.INTERMEDIATE
+    }
+
+    fun buildAgentSystemPrompt(userQuery: String = "", complexity: QueryComplexity = QueryComplexity.INTERMEDIATE): String {
+        val thinkingBudgetGuidance = when (complexity) {
+            QueryComplexity.SIMPLE -> """
+            - Complejidad: PREGUNTA COTIDIANA SIMPLE O SALUDO (ej. 'hola', 'cuál es tu nombre', 'quién eres', 'cómo te llamas').
+            - Tu pensamiento dentro de <think> ... </think> debe ser breve y directo (1 sola frase en español).
+            - RESPUESTA FINAL OBLIGATORIA: Responde de forma directa, cálida y natural en 1 o 2 oraciones en un solo párrafo.
+            - PROHIBICIÓN ESTRICTA: No uses listas de viñetas, apartados analíticos ni esquemas para responder preguntas cotidianas simples.
+            """.trimIndent()
+
+            QueryComplexity.INTERMEDIATE -> """
+            - Complejidad: CONSULTA DIRECTA / INTERMEDIA.
+            - Tu pensamiento dentro de <think> ... </think> debe ser conciso y enfocado (2 a 4 líneas en español) estructurando los puntos clave.
+            - Cierra </think> y entrega una respuesta clara y ordenada.
+            """.trimIndent()
+
+            QueryComplexity.COMPLEX -> """
+            - Complejidad: RESUMEN, ANÁLISIS O CONSULTA TEMÁTICA (películas, libros, obras, ciencia, historia o conceptos).
+            - MANDATO OBLIGATORIO DE RESPUESTA DIRECTA:
+              * Entrega INMEDIATAMENTE el resumen o desarrollo completo del tema solicitado con datos clave, trama, personajes, fases o hechos concretos.
+              * PROHIBICIÓN ABSOLUTA: PROHIBIDO responder con preguntas al usuario (como "¿en qué se centra?", "¿de qué trata?", "¿te gustaría que te hable de...?"). Nunca evadas la solicitud ni pidas al usuario que aclare o redacte primero. Responde tú con la información completa.
+            - DIRECTRIZ DE PENSAMIENTO (<think> ... </think>):
+              * Tu pensamiento dentro de <think> ... </think> debe ser breve y enfocado exclusivamente en sintetizar los puntos esenciales.
+              * Cierra de inmediato con </think> para redactar la respuesta.
+            - DIRECTRIZ DE RESPUESTA FINAL (Prosa narrativa en español):
+              * Redacta una explicación fluida, rica y completa, con título ('#') y subtítulos claros ('##') y párrafos bien redactados en español.
+            """.trimIndent()
+        }
+
+        return """
+Eres Aura, una asistente personal inteligente de notas, conocimiento y productividad. Tu idioma nativo es el español.
+Te comunicas siempre en español correcto, natural, elocuente y con gramática impecable.
+Cuando el usuario te pida un resumen o explicación de una película, libro, concepto científico o tema, entrégalo directamente de forma completa y desarrollada, sin repreguntar ni vacilar.
+Nunca uses calcos o modismos traducidos del inglés como "no problemo" o frases agramaticales; utiliza siempre expresiones auténticas y naturales del español (por ejemplo: "¡Hola! ¿En qué puedo ayudarte hoy con tus notas?").
+
+DIRECTRICES DE RAZONAMIENTO (<think>):
+$thinkingBudgetGuidance
+- Enfócate con naturalidad en el contenido y la intención del usuario. No menciones formatos técnicos ni instrucciones del sistema.
+
+RESPUESTA FINAL (Markdown directo en español):
+- Redacta de forma limpia, elegante y bien estructurada en español.
+- Nunca incluyas etiquetas técnicas (<assistant_answer>, <full_note>) ni bloques JSON en el chat.
 """.trimIndent()
     }
 
     fun parseAndApplyChatbotUpdates(response: String, userPrompt: String = ""): String {
+        // Sanitizar cualquier etiqueta técnica residual (<assistant_answer>, <full_note>, etc.)
         var cleanResponse = response
+            .replace(Regex("</?assistant_answer>", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("</?full_note>", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("</?user_request>", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("</?cursor_position>", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("</?selected_text>", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("</?active_note_preview>", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("</?attached_file>", RegexOption.IGNORE_CASE), "")
+            .trim()
+
+        if (cleanResponse.contains("</think>")) {
+            val endIdx = cleanResponse.indexOf("</think>")
+            cleanResponse = cleanResponse.substring(endIdx + "</think>".length).trim()
+        } else if (cleanResponse.contains("<think>")) {
+            val startIdx = cleanResponse.indexOf("<think>")
+            cleanResponse = cleanResponse.substring(0, startIdx).trim()
+        } else {
+            val headerIdx = cleanResponse.indexOfAny(listOf("\n# ", "\n## ", "\n### "))
+            if (headerIdx != -1) {
+                cleanResponse = cleanResponse.substring(headerIdx).trim()
+            }
+        }
+        cleanResponse = cleanResponse.replace("</think>", "").replace("<think>", "").trim()
+
+        if (cleanResponse.contains("Definición de la asistente personal") ||
+            cleanResponse.contains("Propósito y funcionalidad prioritaria") ||
+            cleanResponse.startsWith("Eres Aura, una asistente personal") ||
+            cleanResponse.startsWith("Integrando toda la información") ||
+            cleanResponse.contains("¿De cuán newy") ||
+            cleanResponse.contains("entañando") ||
+            cleanResponse.contains("pasadores del plato") ||
+            cleanResponse.contains("no te acercas a redactar")
+        ) {
+            cleanResponse = ""
+        }
+
         val actionsPerformed = mutableListOf<String>()
 
         // 1. Check for CREATE_BOOK
@@ -1455,21 +1571,28 @@ DIRECTRICES:
                             cleanResponse.substring(endCreateIdx + endTagCreate.length).trim()
         }
 
-        // 6. Si el usuario pidió explícitamente crear una nota o resumen y el modelo no generó las etiquetas cuadradas
+        // 6. Si el usuario dio la orden explícita de guardar en una nota
         val promptLower = userPrompt.lowercase()
-        val isNoteCreationRequest = promptLower.contains("crea una nota") ||
-                                    promptLower.contains("crear nota") ||
-                                    promptLower.contains("haz una nota") ||
-                                    promptLower.contains("guarda en una nota") ||
-                                    promptLower.contains("guardar en una nota") ||
-                                    promptLower.contains("crea un resumen") ||
-                                    promptLower.contains("nueva nota")
+        val isExplicitNoteCreation = promptLower.contains("guarda en una nota") ||
+                                     promptLower.contains("guardar en una nota") ||
+                                     promptLower.contains("guarda esta nota") ||
+                                     promptLower.contains("guardar esta nota") ||
+                                     promptLower.contains("crea y guarda una nota")
 
-        if (isNoteCreationRequest && actionsPerformed.isEmpty() && cleanResponse.length > 30) {
-            val lines = cleanResponse.lines().map { it.trim() }.filter { it.isNotBlank() }
-            val extractedTitle = lines.firstOrNull { it.startsWith("#") }?.removePrefix("#")?.trim()
+        if (isExplicitNoteCreation && actionsPerformed.isEmpty() && cleanResponse.length > 30) {
+            val sanitizedForTitle = cleanResponse
+                .replace(Regex("</?[a-zA-Z0-9_]+>"), "")
+                .trim()
+            val lines = sanitizedForTitle.lines().map { it.trim() }.filter { it.isNotBlank() }
+            val candidateTitle = lines.firstOrNull { it.startsWith("#") }?.removePrefix("#")?.trim()
                 ?: lines.firstOrNull()?.take(40)?.replace(Regex("[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ ]"), "")?.trim()
-                ?: "Resumen de Aura"
+                ?: "Nota de Aura"
+
+            val extractedTitle = if (candidateTitle.contains("assistantanswer", ignoreCase = true) || candidateTitle.length < 3) {
+                "Nota de Aura"
+            } else {
+                candidateTitle
+            }
 
             viewModelScope.launch {
                 var targetPage = _selectedPage.value
@@ -1491,7 +1614,7 @@ DIRECTRICES:
                     pageId = targetPage.id,
                     title = extractedTitle,
                     content = serializedContent,
-                    tags = "Generado, Qwen",
+                    tags = "Generado, Aura",
                     attachments = "[]",
                     reminderTime = null,
                     userEmail = currentEmail.value
@@ -1501,7 +1624,7 @@ DIRECTRICES:
                     triggerDriveSync()
                 }
             }
-            cleanResponse = "$cleanResponse\n\n✅ *Nota \"$extractedTitle\" guardada automáticamente en tu espacio de trabajo.*"
+            cleanResponse = "$cleanResponse\n\n*Nota \"$extractedTitle\" guardada en tu espacio de trabajo.*"
         }
 
         val trimmedClean = cleanResponse.trim()
@@ -1538,8 +1661,28 @@ DIRECTRICES:
         history: List<Pair<String, String>> = emptyList()
     ): String? {
         val noteId = _selectedNote.value?.id
-        val isGreeting = message.contains("<active_note_preview") || (message.length < 350 && !message.contains("<full_note>") && !message.contains("<attached_file>"))
-        val agentPrompt = buildAgentSystemPrompt(message)
+        val cleanMsg = message.trim().lowercase()
+        val isBareSummaryWithoutTopic = (cleanMsg == "dame un resumen" ||
+            cleanMsg == "resumen" ||
+            cleanMsg == "haz un resumen" ||
+            cleanMsg == "hazme un resumen" ||
+            cleanMsg == "analiza" ||
+            cleanMsg == "analiza este pdf" ||
+            cleanMsg == "analizar" ||
+            cleanMsg == "resume esto") &&
+            !message.contains("=== DOCUMENTO ADJUNTO") &&
+            !message.contains("=== NOTA ACTIVA") &&
+            !message.contains("<attached_file>") &&
+            !message.contains("<full_note>")
+
+        if (isBareSummaryWithoutTopic && noteId == null) {
+            return "¿Sobre qué tema, película o libro te gustaría el resumen? También puedes abrir una nota o adjuntar un archivo para que lo analice con detalle."
+        }
+
+        val complexity = detectQueryComplexity(message)
+        val agentPrompt = buildAgentSystemPrompt(message, complexity)
+        val isGreeting = complexity == QueryComplexity.SIMPLE
+
         val memoryContext = if (noteId != null && !isGreeting) {
             val bank = memoryVault.getMemoryBank(noteId)
             if (bank.summary.isNotBlank()) "\n\n=== RESUMEN DE LA NOTA ACTUAL ===\n${bank.summary.take(400)}" else ""
@@ -1547,28 +1690,11 @@ DIRECTRICES:
 
         val finalSystemPrompt = agentPrompt + memoryContext
         
-        // --- 100% LOCAL IA ---
-        val status = modelVerifier.checkCurrentStatus()
-        if (status !is ModelDownloadStatus.Ready) {
-            return "El modelo local Aura aún no está descargado.\n\nVe a Ajustes de IA y pulsa 'Descargar Modelo' para habilitar las funciones de inteligencia artificial 100% privada y local."
-        }
-
-        // Cálculo elástico continuo: desde 512 tokens (saludos) hasta 65,536 (64k para documentos gigantes)
-        val expectedOutputTokens = when {
-            isGreeting -> 256
-            message.contains("INSTRUCCIÓN CRÍTICA DE SEPARACIÓN Y CONTRASTE") || message.contains("<attached_file>") -> 1500
-            message.contains("resum", ignoreCase = true) || message.contains("analiz", ignoreCase = true) -> 1024
-            else -> 512
-        }
-
-        val requiredContext = localLlm.calculateElasticContext(
-            promptChars = message.length + finalSystemPrompt.length,
-            expectedOutputTokens = expectedOutputTokens
-        )
-
-        val isLoaded = localLlm.ensureModelLoaded(modelVerifier.modelFile, requiredContext)
-        if (!isLoaded) {
-            return "Cargando el cerebro de Aura en la memoria local... Por favor, intenta de nuevo en unos segundos."
+        // Presupuesto proporcional de tokens adaptativo según la complejidad
+        val expectedOutputTokens = when (complexity) {
+            QueryComplexity.SIMPLE -> 200
+            QueryComplexity.INTERMEDIATE -> 600
+            QueryComplexity.COMPLEX -> 1200
         }
 
         // Only add generic image note if no local OCR/analysis has already been integrated
@@ -1578,20 +1704,92 @@ DIRECTRICES:
 
         val effectiveSystemPrompt = finalSystemPrompt
 
-        val maxLen = ((requiredContext - expectedOutputTokens) * 3.2).toInt().coerceAtLeast(1200)
+        val maxLen = ((expectedOutputTokens) * 12).coerceAtLeast(3000)
         val safeMessage = if (message.length > maxLen) message.take(maxLen) + "\n...[Contenido condensado para análisis global]" else message
 
-        // Para saludos, no pasar historial previo innecesario que ralentice la evaluación del prompt en la CPU móvil
-        val effectiveHistory = if (isGreeting) emptyList() else history
+        val cleanUserMsg = message.trim().lowercase()
+        val isIndependentSummaryOrTopic = cleanUserMsg.startsWith("dame un resumen") ||
+            cleanUserMsg.startsWith("resumen") ||
+            cleanUserMsg.startsWith("explica") ||
+            cleanUserMsg.startsWith("qué es") ||
+            cleanUserMsg.startsWith("que es") ||
+            cleanUserMsg.contains("mitosis") ||
+            cleanUserMsg.contains("pelicula") ||
+            cleanUserMsg.contains("película")
 
-        val rawResponse = localLlm.generateResponse(
-            prompt = safeMessage + imageDisclaimer,
-            systemPrompt = effectiveSystemPrompt,
-            history = effectiveHistory,
-            onStatusUpdate = { status ->
-                _chatbotStatusText.value = status
+        val sanitizedHistory = history.filter { (_, text) ->
+            val lower = text.lowercase()
+            val isCorrupt = lower.contains("newy") ||
+                lower.contains("entañando") ||
+                lower.contains("pasadores del plato") ||
+                lower.contains("¿en qué se centra") ||
+                lower.contains("en que se centra") ||
+                lower.contains("no te acercas a redactar")
+            !isCorrupt
+        }
+
+        // Para consultas independientes de resumen o consultas simples, no arrastrar turnos previos corruptos
+        val effectiveHistory = if (complexity == QueryComplexity.SIMPLE || isIndependentSummaryOrTopic) {
+            emptyList()
+        } else {
+            sanitizedHistory.takeLast(4)
+        }
+
+        val rawResponse = if (_selectedAiEngine.value == AiEngineType.GEMINI_CLOUD) {
+            _chatbotStatusText.value = "Gemini 3.5 Flash-Lite pensando..."
+            _liveThinkingText.value = "Conectando con Gemini 3.5 Flash-Lite (Firebase AI Logic)..."
+            try {
+                val geminiPrompt = if (effectiveHistory.isNotEmpty()) {
+                    val historyStr = effectiveHistory.joinToString("\n") { (role, txt) ->
+                        if (role == "user") "Usuario: $txt" else "Aura: $txt"
+                    }
+                    "Historial previo de la conversación:\n$historyStr\n\nConsulta actual:\n$safeMessage"
+                } else {
+                    safeMessage
+                }
+
+                cloudGemini.generateContent(
+                    prompt = geminiPrompt + imageDisclaimer,
+                    systemInstruction = effectiveSystemPrompt,
+                    imageBase64 = imageBase64
+                )
+            } catch (e: Exception) {
+                android.util.Log.e("AetherViewModel", "Error en Gemini 3.5 Flash-Lite", e)
+                "Error al conectar con Gemini 3.5 Flash-Lite: ${e.localizedMessage ?: "Error de conexión"}.\n\nPuedes alternar al motor Aura Local en Ajustes de IA si deseas operar sin conexión."
+            } finally {
+                _chatbotStatusText.value = null
+                _liveThinkingText.value = null
             }
-        )
+        } else {
+            // --- 100% LOCAL IA ---
+            val status = modelVerifier.checkCurrentStatus()
+            if (status !is ModelDownloadStatus.Ready) {
+                return "El modelo local Aura aún no está descargado.\n\nVe a Ajustes de IA y pulsa 'Descargar Modelo' para habilitar las funciones de inteligencia artificial 100% privada y local, o activa el motor Gemini 3.5 Flash-Lite para respuestas ultra rápidas en la nube."
+            }
+
+            val requiredContext = localLlm.calculateElasticContext(
+                promptChars = message.length + finalSystemPrompt.length,
+                expectedOutputTokens = expectedOutputTokens
+            )
+
+            val isLoaded = localLlm.ensureModelLoaded(modelVerifier.modelFile, requiredContext)
+            if (!isLoaded) {
+                return "Cargando el cerebro de Aura en la memoria local... Por favor, intenta de nuevo en unos segundos."
+            }
+
+            try {
+                localLlm.generateResponse(
+                    prompt = safeMessage + imageDisclaimer,
+                    systemPrompt = effectiveSystemPrompt,
+                    history = effectiveHistory,
+                    maxTokens = expectedOutputTokens,
+                    onStatusUpdate = { s -> _chatbotStatusText.value = s },
+                    onThinkingUpdate = { thought -> _liveThinkingText.value = sanitizeThoughtContent(thought, complexity) }
+                )
+            } finally {
+                _liveThinkingText.value = null
+            }
+        }
 
         if (noteId != null) {
             viewModelScope.launch {
@@ -1609,40 +1807,154 @@ DIRECTRICES:
             }
         }
 
-        val clean = parseAndApplyChatbotUpdates(rawResponse, message).trim()
-        return clean.ifBlank { rawResponse.trim().ifBlank { "Aura ha procesado tu solicitud localmente." } }
+        var extractedThought = ""
+        val workingRaw = rawResponse.trim()
+        if (workingRaw.contains("<think>")) {
+            val s = workingRaw.indexOf("<think>")
+            val e = workingRaw.indexOf("</think>", s)
+            if (e != -1) {
+                extractedThought = workingRaw.substring(s + "<think>".length, e).trim()
+            } else {
+                val headerIdx = workingRaw.indexOfAny(listOf("\n# ", "\n## ", "\n### "), s)
+                if (headerIdx != -1) {
+                    extractedThought = workingRaw.substring(s + "<think>".length, headerIdx).trim()
+                } else {
+                    extractedThought = workingRaw.substring(s + "<think>".length).trim()
+                }
+            }
+        } else if (workingRaw.contains("</think>")) {
+            val e = workingRaw.indexOf("</think>")
+            extractedThought = workingRaw.substring(0, e).trim()
+        } else if (complexity != QueryComplexity.SIMPLE) {
+            val headerIdx = workingRaw.indexOfAny(listOf("\n# ", "\n## ", "\n### "))
+            if (headerIdx != -1) {
+                extractedThought = workingRaw.substring(0, headerIdx).trim()
+            }
+        }
+
+        // Si fue una consulta con pensamiento precargado en prompt
+        if (extractedThought.isBlank() && complexity == QueryComplexity.SIMPLE) {
+            extractedThought = "Consulta directa y cotidiana. Respondo con naturalidad, claridad y brevedad en español."
+        }
+
+        val sanitizedThought = sanitizeThoughtContent(extractedThought, complexity)
+        val cleanBody = parseAndApplyChatbotUpdates(rawResponse, message).trim()
+
+        val finalMessageForChat = if (cleanBody.isNotBlank()) {
+            if (sanitizedThought.isNotBlank()) {
+                "<think>$sanitizedThought</think>\n\n$cleanBody"
+            } else {
+                cleanBody
+            }
+        } else if (sanitizedThought.isNotBlank()) {
+            "<think>$sanitizedThought</think>\n\nAura ha procesado la información de tu solicitud."
+        } else {
+            if (complexity == QueryComplexity.SIMPLE) "¡Hola! ¿En qué puedo ayudarte hoy?" else "Aura ha procesado tu solicitud localmente."
+        }
+
+        return finalMessageForChat
     }
 
     /**
-     * Sanitiza cadenas JSON residuales para garantizar que el usuario nunca vea llaves ni comillas técnicas en el chat.
+     * Filtro activo anti-divagaciones: purga menciones a JSON, esquemas, reglas del sistema y reflexiones en inglés,
+     * garantizando un proceso reflexivo enfocado exclusivamente en los conceptos y la materia del usuario.
+     */
+    fun sanitizeThoughtContent(rawThought: String, complexity: QueryComplexity = QueryComplexity.INTERMEDIATE): String {
+        val trimmed = rawThought.trim()
+        if (trimmed.isBlank()) {
+            return when (complexity) {
+                QueryComplexity.SIMPLE -> "Consulta directa y cotidiana. Respondo con naturalidad, claridad y brevedad en español."
+                QueryComplexity.COMPLEX -> "Analizando la trama, personajes y puntos clave del tema en español."
+                QueryComplexity.INTERMEDIATE -> "Analizando la consulta con claridad y precisión en español."
+            }
+        }
+
+        val filteredLines = trimmed.lines().filter { line ->
+            val lower = line.lowercase()
+            val isMetaOrDrift = lower.contains("json") ||
+                lower.contains("formato") ||
+                lower.contains("schema") ||
+                lower.contains("regla") ||
+                lower.contains("rule") ||
+                lower.contains("prompt") ||
+                lower.contains("system") ||
+                lower.contains("perro") ||
+                lower.contains("pasear") ||
+                lower.contains("alright, so") ||
+                lower.contains("i'm trying to") ||
+                lower.contains("i need to") ||
+                lower.contains("looking back at") ||
+                lower.contains("the system is about") ||
+                lower.contains("i can't think in english") ||
+                lower.contains("oro rule") ||
+                lower.contains("definición de la asistente") ||
+                lower.contains("propósito y funcionalidad prioritaria") ||
+                lower.contains("ciencia de la computación") ||
+                lower.contains("compresión y representación") ||
+                lower.contains("that might be tricky")
+            !isMetaOrDrift
+        }.map { it.trim() }.filter { it.isNotBlank() }
+
+        val cleaned = filteredLines.joinToString("\n")
+        if (cleaned.isBlank()) {
+            return when (complexity) {
+                QueryComplexity.SIMPLE -> "Consulta directa y cotidiana. Respondo con naturalidad, claridad y brevedad en español."
+                QueryComplexity.COMPLEX -> "Analizando la trama, personajes y puntos clave del tema en español."
+                QueryComplexity.INTERMEDIATE -> "Analizando la consulta con claridad y precisión en español."
+            }
+        }
+
+        return when {
+            complexity == QueryComplexity.SIMPLE -> {
+                cleaned.lines().firstOrNull() ?: "Consulta directa y cotidiana. Respondo con naturalidad, claridad y brevedad en español."
+            }
+            else -> {
+                cleaned
+            }
+        }
+    }
+
+    private fun sanitizeTechnicalTags(text: String): String {
+        return text.replace(Regex("</?(assistant_answer|full_note|user_request|cursor_position|selected_text|active_note_preview|attached_file|think)>", RegexOption.IGNORE_CASE), "")
+            .trim()
+    }
+
+    /**
+     * Sanitiza cadenas JSON residuales y etiquetas XML técnicas para garantizar
+     * que el usuario nunca vea llaves ni etiquetas técnicas en el chat para cualquier modelo.
      */
     fun cleanRawJsonForDisplay(text: String): String {
-        val trimmed = text.trim()
+        var cleaned = sanitizeTechnicalTags(text)
+        val trimmed = cleaned.trim()
         if (!trimmed.startsWith("{") && !trimmed.contains("\"action\"")) {
             return trimmed
         }
         val contentRegex = Regex("\"content\"\\s*:\\s*\"([^\"]*)\"")
         val content = contentRegex.find(trimmed)?.groupValues?.get(1)?.trim()
-        if (!content.isNullOrBlank()) return content.replace("\\n", "\n").replace("\\\"", "\"")
+        if (!content.isNullOrBlank()) return sanitizeTechnicalTags(content.replace("\\n", "\n").replace("\\\"", "\""))
 
         val explanationRegex = Regex("\"explanation\"\\s*:\\s*\"([^\"]*)\"")
         val explanation = explanationRegex.find(trimmed)?.groupValues?.get(1)?.trim()
-        if (!explanation.isNullOrBlank()) return explanation.replace("\\n", "\n").replace("\\\"", "\"")
+        if (!explanation.isNullOrBlank()) return sanitizeTechnicalTags(explanation.replace("\\n", "\n").replace("\\\"", "\""))
 
-        return trimmed.replace(Regex("\"(action|target_scope|explanation|content)\"\\s*:\\s*"), "")
-            .replace("{", "")
-            .replace("}", "")
-            .replace("\"", "")
-            .trim()
+        return sanitizeTechnicalTags(
+            trimmed.replace(Regex("\"(action|target_scope|explanation|content)\"\\s*:\\s*"), "")
+                .replace("{", "")
+                .replace("}", "")
+                .replace("\"", "")
+                .trim()
+        )
     }
 
     /**
-     * Parsea de forma resiliente la respuesta estructurada en JSON de Aura,
-     * extrayendo action, target_scope, explanation y content sin duplicación ni código expuesto.
+     * Parsea de forma resiliente la respuesta estructurada o directa en Markdown de Aura,
+     * extrayendo pensamientos (<think>...</think>), action, target_scope, explanation y content
+     * sin duplicación, etiquetas técnicas ni código expuesto para todos los modelos presentes y futuros.
      */
     fun parseAuraJsonResponse(raw: String): AuraActionResponse {
         var extractedThought = ""
         var workingRaw = raw.trim()
+
         if (workingRaw.contains("<think>")) {
             val startIdx = workingRaw.indexOf("<think>")
             val endIdx = workingRaw.indexOf("</think>", startIdx)
@@ -1653,7 +1965,14 @@ DIRECTRICES:
                 extractedThought = workingRaw.substring(startIdx + "<think>".length).trim()
                 workingRaw = workingRaw.substring(0, startIdx).trim()
             }
+        } else if (workingRaw.contains("</think>")) {
+            val endIdx = workingRaw.indexOf("</think>")
+            extractedThought = workingRaw.substring(0, endIdx).trim()
+            workingRaw = workingRaw.substring(endIdx + "</think>".length).trim()
         }
+
+        extractedThought = sanitizeThoughtContent(sanitizeTechnicalTags(extractedThought))
+        workingRaw = sanitizeTechnicalTags(workingRaw)
 
         val trimmed = workingRaw
         val unwrapped = if (trimmed.startsWith("```json") && trimmed.endsWith("```")) {
@@ -1675,8 +1994,8 @@ DIRECTRICES:
             val obj = org.json.JSONObject(jsonCandidate)
             val action = obj.optString("action", "conversation")
             val targetScope = obj.optString("target_scope", "chat")
-            var explanation = obj.optString("explanation", "").trim()
-            var content = obj.optString("content", "").trim()
+            var explanation = sanitizeTechnicalTags(obj.optString("explanation", "").trim())
+            var content = sanitizeTechnicalTags(obj.optString("content", "").trim())
 
             // Si el modelo colocó el saludo/mensaje en explanation dejando content vacío:
             if (content.isBlank() && explanation.isNotBlank()) {
@@ -1725,6 +2044,9 @@ DIRECTRICES:
                         }
                     }
                 }
+
+                cleanContent = sanitizeTechnicalTags(cleanContent)
+                explanationMatch = sanitizeTechnicalTags(explanationMatch)
 
                 if (cleanContent.isBlank() && explanationMatch.isNotBlank()) {
                     cleanContent = explanationMatch

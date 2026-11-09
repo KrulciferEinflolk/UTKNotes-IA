@@ -49,6 +49,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -97,6 +98,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import com.example.util.configureAppCheck
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
 
@@ -106,6 +108,7 @@ class MainActivity : ComponentActivity() {
     @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureAppCheck(this, intent)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -4284,6 +4287,8 @@ fun NoteEditorWorkspace(
     var showFormattingPanel by remember { mutableStateOf(false) }
     var showInsertionPanel by remember { mutableStateOf(false) }
     var showAiPanel by remember { mutableStateOf(false) }
+    var showFloatingAiInput by remember { mutableStateOf(false) }
+    var floatingAiInstruction by remember { mutableStateOf("") }
     var showTextFontPicker by remember { mutableStateOf(false) }
     var showTextColorPicker by remember { mutableStateOf(false) }
 
@@ -4701,7 +4706,7 @@ fun NoteEditorWorkspace(
         bottomBar = {
             val isKeyboardVisible = WindowInsets.isImeVisible
             val hasSelectedTextBlock = selectedBlockIndex in blocks.indices && blocks[selectedBlockIndex] is EditorBlock.Text
-            val showEditorToolbar = hasSelectedTextBlock || showFormattingPanel || showInsertionPanel || showAiPanel || showTextFontPicker || showTextColorPicker
+            val showEditorToolbar = hasSelectedTextBlock || showFormattingPanel || showInsertionPanel || showAiPanel || showFloatingAiInput || showTextFontPicker || showTextColorPicker
             
             if (showEditorToolbar) {
                 Column(
@@ -4712,8 +4717,150 @@ fun NoteEditorWorkspace(
                         .navigationBarsPadding()
                         .imePadding()
                 ) {
+                    // ENTRADA DE TEXTO FLOTANTE DE IA ARRIBA DE LA BARRA
+                    if (showFloatingAiInput) {
+                        val activeParagraph = if (selectedBlockIndex in blocks.indices) blocks[selectedBlockIndex] as? EditorBlock.Text else null
+                        val targetScope = if (activeParagraph != null && activeParagraph.content.isNotBlank()) "Párrafo activo" else "Toda la nota"
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            color = CosmicSurfaceVariant,
+                            border = BorderStroke(1.5.dp, GeminiCyanAccent.copy(alpha = 0.7f)),
+                            shadowElevation = 8.dp
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.AutoAwesome,
+                                            contentDescription = null,
+                                            tint = GeminiCyanAccent,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "Instrucción de IA directa",
+                                            color = TextPrimary,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Surface(
+                                            color = GeminiCyanAccent.copy(alpha = 0.18f),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Text(
+                                                text = targetScope,
+                                                color = GeminiCyanAccent,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            showFloatingAiInput = false
+                                            floatingAiInstruction = ""
+                                        },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Cerrar",
+                                            tint = TextTertiary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(CosmicSurface, RoundedCornerShape(10.dp))
+                                        .border(1.dp, CosmicBorder, RoundedCornerShape(10.dp))
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    BasicTextField(
+                                        value = floatingAiInstruction,
+                                        onValueChange = { floatingAiInstruction = it },
+                                        modifier = Modifier.weight(1f),
+                                        textStyle = TextStyle(color = TextPrimary, fontSize = 13.sp),
+                                        singleLine = false,
+                                        maxLines = 3,
+                                        decorationBox = { innerTextField ->
+                                            if (floatingAiInstruction.isEmpty()) {
+                                                Text(
+                                                    text = if (activeParagraph != null && activeParagraph.content.isNotBlank())
+                                                        "Ej: Hazlo más formal, traduce al inglés, añade ejemplos..."
+                                                    else
+                                                        "Ej: Agrega una conclusión, reorganiza en puntos clave...",
+                                                    color = TextTertiary,
+                                                    fontSize = 12.sp
+                                                )
+                                            }
+                                            innerTextField()
+                                        }
+                                    )
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    IconButton(
+                                        onClick = {
+                                            val trimmed = floatingAiInstruction.trim()
+                                            if (trimmed.isNotEmpty()) {
+                                                if (activeParagraph != null && activeParagraph.content.isNotBlank() && onAiModifyParagraph != null) {
+                                                    onAiModifyParagraph(selectedBlockIndex, activeParagraph.content, trimmed) { newText ->
+                                                        pushHistory()
+                                                        if (selectedBlockIndex in blocks.indices) {
+                                                            val b = blocks[selectedBlockIndex]
+                                                            if (b is EditorBlock.Text) {
+                                                                blocks[selectedBlockIndex] = b.copy(content = newText)
+                                                                updateBlocksAndSave(null)
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    onAiModify(trimmed)
+                                                }
+                                                floatingAiInstruction = ""
+                                                showFloatingAiInput = false
+                                                Toast.makeText(context, "IA aplicando instrucción en la nota...", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        enabled = floatingAiInstruction.isNotBlank(),
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .background(
+                                                if (floatingAiInstruction.isNotBlank()) GeminiCyanAccent else CosmicBorder,
+                                                CircleShape
+                                            )
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.Send,
+                                            contentDescription = "Ejecutar instrucción de IA",
+                                            tint = if (floatingAiInstruction.isNotBlank()) Color.Black else TextTertiary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // 1. AI QUICK ACTIONS PANEL
                     if (showAiPanel) {
+                        val activeParagraph = if (selectedBlockIndex in blocks.indices) blocks[selectedBlockIndex] as? EditorBlock.Text else null
                         LazyRow(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -4722,26 +4869,79 @@ fun NoteEditorWorkspace(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            val prompts = listOf(
-                                "✨ Resumir" to "Sintetiza esta nota en tres puntos clave.",
-                                "📋 Extraer To-Dos" to "Extrae las tareas y acciones de esta nota en formato de lista To-Do accionable con casillas [ ].",
-                                "💡 Ideas Clave" to "Genera 3 ideas y preguntas clave complementarias para profundizar en esta nota.",
-                                "✍️ Expandir" to "Amplía el contenido de la nota agregando detalles y ejemplos útiles.",
-                                "🎯 Corregir" to "Corrige la ortografía, redacción y gramática de la nota sin alterar el fondo.",
-                                "🌐 Traducir" to "Traduce la nota completa al inglés de manera fluida.",
-                                "🔖 Etiquetas" to "Sugiere 5 etiquetas adecuadas basadas en el contenido."
-                            )
-                            items(prompts) { (label, promptText) ->
+                            // Botón para desplegar la entrada de texto flotante
+                            item {
                                 AssistChip(
                                     onClick = {
-                                        onAiModify(promptText)
+                                        showFloatingAiInput = !showFloatingAiInput
                                     },
-                                    label = { Text(label, fontSize = 11.sp, color = TextPrimary) },
+                                    label = { Text("⚡ Escribir Instrucción", fontSize = 11.sp, color = GeminiCyanAccent, fontWeight = FontWeight.Bold) },
+                                    leadingIcon = { Icon(Icons.Default.Edit, null, modifier = Modifier.size(14.dp), tint = GeminiCyanAccent) },
                                     colors = AssistChipDefaults.assistChipColors(
-                                        containerColor = CosmicSurface,
-                                        labelColor = TextPrimary
+                                        containerColor = if (showFloatingAiInput) GeminiCyanAccent.copy(alpha = 0.25f) else GeminiCyanAccent.copy(alpha = 0.12f),
+                                        labelColor = GeminiCyanAccent
                                     )
                                 )
+                            }
+
+                            if (activeParagraph != null && activeParagraph.content.isNotBlank()) {
+                                val paragraphPrompts = listOf(
+                                    "✨ Mejorar" to "Reescribe y mejora la redacción, estilo y claridad de este párrafo manteniendo su significado.",
+                                    "🎯 Resumir" to "Sintetiza este párrafo de forma concisa y directa.",
+                                    "🔧 Corregir" to "Corrige la ortografía, puntuación y gramática de este párrafo sin cambiar su mensaje.",
+                                    "✍️ Expandir" to "Amplía este párrafo agregando detalles explicativos y ejemplos relevantes.",
+                                    "💼 Profesional" to "Reescribe este párrafo con un tono formal, elegante y profesional.",
+                                    "💡 En viñetas" to "Convierte este párrafo en una lista estructurada de viñetas claras.",
+                                    "🌐 En inglés" to "Traduce este párrafo al inglés de manera natural y precisa."
+                                )
+                                items(paragraphPrompts) { (label, promptText) ->
+                                    AssistChip(
+                                        onClick = {
+                                            if (onAiModifyParagraph != null) {
+                                                onAiModifyParagraph(selectedBlockIndex, activeParagraph.content, promptText) { newText ->
+                                                    pushHistory()
+                                                    if (selectedBlockIndex in blocks.indices) {
+                                                        val b = blocks[selectedBlockIndex]
+                                                        if (b is EditorBlock.Text) {
+                                                            blocks[selectedBlockIndex] = b.copy(content = newText)
+                                                            updateBlocksAndSave(null)
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                onAiModify("Modifica el párrafo: \"${activeParagraph.content}\"\n$promptText")
+                                            }
+                                        },
+                                        label = { Text(label, fontSize = 11.sp, color = TextPrimary) },
+                                        colors = AssistChipDefaults.assistChipColors(
+                                            containerColor = CosmicSurface,
+                                            labelColor = TextPrimary
+                                        )
+                                    )
+                                }
+                            } else {
+                                val notePrompts = listOf(
+                                    "✨ Mejorar Nota" to "Reescribe y optimiza la redacción y coherencia general de la nota.",
+                                    "🎯 Resumir Nota" to "Sintetiza esta nota en tres puntos clave estructurados.",
+                                    "🔧 Corregir Nota" to "Corrige la ortografía y gramática de toda la nota sin alterar el fondo.",
+                                    "📋 Extraer To-Dos" to "Extrae las tareas y acciones de esta nota en formato de lista To-Do accionable con casillas [ ].",
+                                    "💡 Ideas Clave" to "Genera 3 ideas y preguntas clave complementarias para profundizar en esta nota.",
+                                    "✍️ Expandir Nota" to "Amplía el contenido de la nota agregando detalles y ejemplos útiles.",
+                                    "🌐 Traducir Nota" to "Traduce la nota completa al inglés de manera fluida.",
+                                    "🔖 Sugerir Etiquetas" to "Sugiere 5 etiquetas adecuadas basadas en el contenido."
+                                )
+                                items(notePrompts) { (label, promptText) ->
+                                    AssistChip(
+                                        onClick = {
+                                            onAiModify(promptText)
+                                        },
+                                        label = { Text(label, fontSize = 11.sp, color = TextPrimary) },
+                                        colors = AssistChipDefaults.assistChipColors(
+                                            containerColor = CosmicSurface,
+                                            labelColor = TextPrimary
+                                        )
+                                    )
+                                }
                             }
                         }
                     }
@@ -5136,58 +5336,6 @@ fun NoteEditorWorkspace(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // Mini Menú de IA para el párrafo seleccionado
-                            val activeParagraph = if (selectedBlockIndex in blocks.indices) blocks[selectedBlockIndex] as? EditorBlock.Text else null
-                            if (activeParagraph != null && activeParagraph.content.isNotBlank()) {
-                                item {
-                                    AssistChip(
-                                        onClick = {
-                                            onOpenChatbot(activeParagraph.content)
-                                        },
-                                        label = { Text("Consultar a Aura", fontSize = 11.sp, color = GeminiCyanAccent, fontWeight = FontWeight.Bold) },
-                                        leadingIcon = { Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(14.dp), tint = GeminiCyanAccent) },
-                                        colors = AssistChipDefaults.assistChipColors(
-                                            containerColor = GeminiCyanAccent.copy(alpha = 0.15f),
-                                            labelColor = GeminiCyanAccent
-                                        )
-                                    )
-                                }
-                                val paragraphAiPrompts = listOf(
-                                    "✨ Mejorar" to "Reescribe y mejora la redacción y claridad de este párrafo.",
-                                    "✍️ Expandir" to "Amplía este párrafo agregando más detalles y explicaciones útiles.",
-                                    "🎯 Resumir" to "Sintetiza este párrafo de forma concisa y directa.",
-                                    "🔧 Corregir" to "Corrige la ortografía y gramática de este párrafo sin cambiar su mensaje."
-                                )
-                                items(paragraphAiPrompts) { (label, prompt) ->
-                                    AssistChip(
-                                        onClick = {
-                                            if (onAiModifyParagraph != null) {
-                                                onAiModifyParagraph(selectedBlockIndex, activeParagraph.content, prompt) { newText ->
-                                                    pushHistory()
-                                                    if (selectedBlockIndex in blocks.indices) {
-                                                        val b = blocks[selectedBlockIndex]
-                                                        if (b is EditorBlock.Text) {
-                                                            blocks[selectedBlockIndex] = b.copy(content = newText)
-                                                            updateBlocksAndSave(null)
-                                                        }
-                                                    }
-                                                }
-                                            } else {
-                                                onOpenChatbot("Sobre este párrafo: \"${activeParagraph.content}\"\n$prompt")
-                                            }
-                                        },
-                                        label = { Text(label, fontSize = 11.sp, color = TextPrimary) },
-                                        colors = AssistChipDefaults.assistChipColors(
-                                            containerColor = CosmicSurface,
-                                            labelColor = TextPrimary
-                                        )
-                                    )
-                                }
-                                item {
-                                    VerticalDivider(color = CosmicBorder, modifier = Modifier.height(20.dp))
-                                }
-                            }
-
                             item {
                                 AssistChip(
                                     onClick = {
@@ -5367,13 +5515,14 @@ fun NoteEditorWorkspace(
                             item {
                                 IconButton(onClick = {
                                     showAiPanel = !showAiPanel
+                                    if (!showAiPanel) showFloatingAiInput = false
                                     showInsertionPanel = false
                                     showFormattingPanel = false
                                 }) {
                                     Icon(
                                         imageVector = Icons.Default.AutoAwesome,
                                         contentDescription = "IA Mágica",
-                                        tint = if (showAiPanel) GeminiCyanAccent else TextPrimary
+                                        tint = if (showAiPanel || showFloatingAiInput) GeminiCyanAccent else TextPrimary
                                     )
                                 }
                             }
@@ -5382,6 +5531,7 @@ fun NoteEditorWorkspace(
                                 IconButton(onClick = {
                                     showInsertionPanel = !showInsertionPanel
                                     showAiPanel = false
+                                    showFloatingAiInput = false
                                     showFormattingPanel = false
                                 }) {
                                     Icon(
@@ -5396,6 +5546,7 @@ fun NoteEditorWorkspace(
                                 IconButton(onClick = {
                                     showFormattingPanel = !showFormattingPanel
                                     showAiPanel = false
+                                    showFloatingAiInput = false
                                     showInsertionPanel = false
                                 }) {
                                     Icon(
@@ -5592,6 +5743,7 @@ fun NoteEditorWorkspace(
                                 showFormattingPanel = false
                                 showInsertionPanel = false
                                 showAiPanel = false
+                                showFloatingAiInput = false
                             }
                         }) {
                             Icon(
@@ -7538,7 +7690,7 @@ fun ThinkingAccordionCard(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Proceso de razonamiento (R1)",
+                        text = "Proceso de razonamiento",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = Color(0xFFD4C8FF)
@@ -8075,6 +8227,8 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
     val currentSessionId by viewModel.currentChatSessionId.collectAsStateWithLifecycle()
     val isSending by viewModel.isChatbotSending.collectAsStateWithLifecycle()
     val chatbotStatusText by viewModel.chatbotStatusText.collectAsStateWithLifecycle()
+    val liveThinkingText by viewModel.liveThinkingText.collectAsStateWithLifecycle()
+    var isThinkingExpanded by remember { mutableStateOf(true) }
     
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -8299,13 +8453,55 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                 }
             }
 
-            // Center: AI Name
-            Text(
-                text = "Aura",
-                color = TextPrimary,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 17.sp
-            )
+            val selectedAiEngine by viewModel.selectedAiEngine.collectAsStateWithLifecycle()
+
+            // Center: AI Name + Engine pill
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.clickable {
+                    val nextEngine = if (selectedAiEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) {
+                        com.example.ui.AiEngineType.AURA_LOCAL
+                    } else {
+                        com.example.ui.AiEngineType.GEMINI_CLOUD
+                    }
+                    viewModel.setAiEngine(nextEngine)
+                    Toast.makeText(
+                        context,
+                        if (nextEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) "Motor activado: Gemini 3.5 Flash-Lite" else "Motor activado: Aura Local (Offline)",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            ) {
+                Text(
+                    text = "Aura",
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+                Surface(
+                    color = if (selectedAiEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) GeminiCyanAccent.copy(alpha = 0.2f) else TextSecondary.copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (selectedAiEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) Icons.Default.AutoAwesome else Icons.Default.Memory,
+                            contentDescription = null,
+                            tint = if (selectedAiEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) GeminiCyanAccent else TextSecondary,
+                            modifier = Modifier.size(11.dp)
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text(
+                            text = if (selectedAiEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) "Gemini 3.5 Flash-Lite" else "Aura Local",
+                            color = if (selectedAiEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) GeminiCyanAccent else TextSecondary,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
 
             // Right Group: Sound/Speaker Toggle + Settings Icon
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -8748,12 +8944,14 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                 if (isSending) {
                     item {
                         val statusMessage = chatbotStatusText ?: "Aura está pensando..."
+                        val hasThinkingText = !liveThinkingText.isNullOrBlank()
+
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 6.dp),
                             horizontalArrangement = Arrangement.Start,
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.Top
                         ) {
                             Box(
                                 modifier = Modifier
@@ -8774,28 +8972,77 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
 
                             Spacer(modifier = Modifier.width(10.dp))
 
+                            // RECUADRO ORIGINAL UNIFICADO CON DESPLEGABLE INTERNO
                             Surface(
                                 shape = RoundedCornerShape(16.dp),
                                 color = CosmicSurfaceVariant,
                                 tonalElevation = 2.dp,
-                                modifier = Modifier.border(1.dp, Color(0xFF49454F), RoundedCornerShape(16.dp))
+                                modifier = Modifier
+                                    .fillMaxWidth(0.95f)
+                                    .border(1.dp, Color(0xFF49454F), RoundedCornerShape(16.dp))
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
                                 ) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(16.dp),
-                                        strokeWidth = 2.dp,
-                                        color = GeminiCyanAccent
-                                    )
-                                    Text(
-                                        text = statusMessage,
-                                        color = TextPrimary,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .then(
+                                                if (hasThinkingText) Modifier.clickable { isThinkingExpanded = !isThinkingExpanded }
+                                                else Modifier
+                                            ),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp,
+                                                color = GeminiCyanAccent
+                                            )
+                                            Text(
+                                                text = statusMessage,
+                                                color = TextPrimary,
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
+
+                                        if (hasThinkingText) {
+                                            Icon(
+                                                imageVector = if (isThinkingExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                                contentDescription = if (isThinkingExpanded) "Contraer pensamientos" else "Expandir pensamientos",
+                                                tint = GeminiCyanAccent,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+
+                                    // DESPLEGABLE DENTRO DEL RECUADRO ORIGINAL
+                                    AnimatedVisibility(
+                                        visible = hasThinkingText && isThinkingExpanded,
+                                        enter = expandVertically() + fadeIn(),
+                                        exit = shrinkVertically() + fadeOut()
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(top = 8.dp)
+                                        ) {
+                                            HorizontalDivider(
+                                                color = Color(0xFF49454F).copy(alpha = 0.6f),
+                                                thickness = 1.dp
+                                            )
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Text(
+                                                text = liveThinkingText.orEmpty(),
+                                                color = TextSecondary,
+                                                fontSize = 12.sp,
+                                                lineHeight = 17.sp
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }

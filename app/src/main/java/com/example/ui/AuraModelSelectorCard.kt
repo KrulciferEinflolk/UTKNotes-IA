@@ -31,6 +31,7 @@ fun AuraModelSelectorCard(
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
+    val selectedAiEngine by viewModel.selectedAiEngine.collectAsStateWithLifecycle()
     val activeModel by viewModel.modelVerifier.activeModel.collectAsStateWithLifecycle()
     val modelDownloadStatus by viewModel.modelVerifier.status.collectAsStateWithLifecycle()
     val downloadingModelId by viewModel.modelVerifier.downloadingModelId.collectAsStateWithLifecycle()
@@ -47,37 +48,146 @@ fun AuraModelSelectorCard(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    Icons.Default.Memory,
+                    Icons.Default.AutoAwesome,
                     contentDescription = null,
                     tint = GeminiCyanAccent,
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Motor de IA (Aura)",
+                    text = "Motor de Inteligencia Artificial",
                     color = TextPrimary,
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp
-                )
-            }
-
-            Surface(
-                color = GeminiCyanAccent.copy(alpha = 0.15f),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text(
-                    text = "Según tu teléfono",
-                    color = GeminiCyanAccent,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                 )
             }
         }
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Lista de modelos
+        // Tarjeta Gemini 3.5 Flash-Lite (Cloud)
+        val isGeminiActive = selectedAiEngine == AiEngineType.GEMINI_CLOUD
+        Surface(
+            color = if (isGeminiActive) CosmicSurface.copy(alpha = 0.95f) else CosmicSurfaceVariant.copy(alpha = 0.5f),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(
+                width = if (isGeminiActive) 1.5.dp else 1.dp,
+                color = if (isGeminiActive) GeminiCyanAccent else CosmicBorder
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+                .clickable { viewModel.setAiEngine(AiEngineType.GEMINI_CLOUD) }
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(
+                    selected = isGeminiActive,
+                    onClick = { viewModel.setAiEngine(AiEngineType.GEMINI_CLOUD) },
+                    colors = RadioButtonDefaults.colors(selectedColor = GeminiCyanAccent)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Gemini 3.5 Flash-Lite",
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            color = GeminiCyanAccent.copy(alpha = 0.2f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = "Nube Ultra Rápida",
+                                color = GeminiCyanAccent,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Respuestas en prosa instantáneas, análisis de archivos y multimodal con Google Cloud Firebase.",
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+
+        // Tarjeta Aura Local (Offline / Qwen)
+        val isLocalActive = selectedAiEngine == AiEngineType.AURA_LOCAL
+        Surface(
+            color = if (isLocalActive) CosmicSurface.copy(alpha = 0.95f) else CosmicSurfaceVariant.copy(alpha = 0.5f),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(
+                width = if (isLocalActive) 1.5.dp else 1.dp,
+                color = if (isLocalActive) GeminiCyanAccent else CosmicBorder
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+                .clickable { viewModel.setAiEngine(AiEngineType.AURA_LOCAL) }
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(
+                    selected = isLocalActive,
+                    onClick = { viewModel.setAiEngine(AiEngineType.AURA_LOCAL) },
+                    colors = RadioButtonDefaults.colors(selectedColor = GeminiCyanAccent)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Aura Local (On-Device)",
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            color = TextSecondary.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = "100% Offline",
+                                color = TextSecondary,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Ejecución privada en la memoria de tu teléfono sin conexión.",
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+
+        if (isLocalActive) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Modelos locales descargables:",
+                color = TextSecondary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
+        }
+
+        // Lista de modelos locales si se activa local
+        if (isLocalActive) {
         LlmModelCatalog.ALL_MODELS.forEach { model ->
             val isActive = activeModel.id == model.id
             val isDownloaded = viewModel.modelVerifier.isModelDownloaded(model)
@@ -274,6 +384,7 @@ fun AuraModelSelectorCard(
                     }
                 }
             }
+        }
         }
     }
 

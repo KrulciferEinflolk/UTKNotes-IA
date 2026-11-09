@@ -250,7 +250,7 @@ class LocalLlmManager(
         history: List<Pair<String, String>> = emptyList()
     ): String {
         val sb = StringBuilder()
-        val sys = systemPrompt ?: "Eres un asistente inteligente para tomar notas, analizar documentos y responder preguntas con precisión."
+        val sys = systemPrompt ?: "Eres Aura, asistente inteligente de notas. Tu idioma nativo es el español. Responde siempre en español."
         sb.append("<|im_start|>system\n").append(sys.trim()).append("<|im_end|>\n")
 
         for ((role, text) in history) {
@@ -259,7 +259,42 @@ class LocalLlmManager(
         }
 
         sb.append("<|im_start|>user\n").append(userMessage.trim()).append("<|im_end|>\n")
-        sb.append("<|im_start|>assistant\n")
+
+        val clean = userMessage.trim().lowercase()
+        val isSimpleOrConversational = clean in listOf(
+            "hola", "hola!", "hola aura", "hola aura!", "buenos días", "buenas tardes", "buenas noches",
+            "buenas", "hey", "saludos", "hi", "hello", "qué tal", "que tal", "¿qué tal?", "¿que tal?",
+            "¿cómo estás?", "¿como estas?", "como estas", "cómo estás", "gracias", "muchas gracias",
+            "adiós", "chao", "hasta luego", "ok", "vale", "bien", "perfecto"
+        ) ||
+        clean.contains("tu nombre") || clean.contains("te llamas") || clean.contains("quién eres") ||
+        clean.contains("quien eres") || clean.contains("qué eres") || clean.contains("que eres") ||
+        clean.contains("para qué sirves") || clean.contains("para que sirves") ||
+        clean.contains("qué haces") || clean.contains("que haces") ||
+        clean.contains("qué puedes hacer") || clean.contains("que puedes hacer") ||
+        clean.contains("cuál es tu nombre") || clean.contains("cual es tu nombre") ||
+        clean.contains("cómo te llamas") || clean.contains("como te llamas") ||
+        (clean.length <= 25 && (clean.startsWith("hola") || clean.startsWith("buenas") || clean.startsWith("hey") || clean.startsWith("saludos")))
+
+        val isComplexOrAnalytical = !isSimpleOrConversational && (
+            clean.contains("resum", ignoreCase = true) ||
+            clean.contains("analiz", ignoreCase = true) ||
+            clean.contains("explic", ignoreCase = true) ||
+            clean.contains("historia", ignoreCase = true) ||
+            clean.contains("compara", ignoreCase = true) ||
+            clean.contains("diferencia", ignoreCase = true) ||
+            clean.contains("desarrolla", ignoreCase = true) ||
+            clean.contains("<attached_file>") ||
+            clean.contains("<full_note>") ||
+            clean.contains("INSTRUCCIÓN CRÍTICA DE SEPARACIÓN Y CONTRASTE") ||
+            clean.length > 80
+        )
+
+        if (isSimpleOrConversational) {
+            sb.append("<|im_start|>assistant\n<think>\nConsulta directa y cotidiana. Respondo con naturalidad, claridad y brevedad en español.\n</think>\n")
+        } else {
+            sb.append("<|im_start|>assistant\n<think>\n")
+        }
         return sb.toString()
     }
 
@@ -352,26 +387,72 @@ class LocalLlmManager(
         return loadModel(modelFile, requiredContextSize)
     }
 
+    private fun getLlamaAndroid(helper: LlamaHelper): org.nehuatl.llamacpp.LlamaAndroid? {
+        return try {
+            val field = helper.javaClass.getDeclaredField("llama")
+            field.isAccessible = true
+            field.get(helper) as? org.nehuatl.llamacpp.LlamaAndroid
+        } catch (_: Exception) {
+            try {
+                val method = helper.javaClass.getDeclaredMethod("access\$getLlama", LlamaHelper::class.java)
+                method.isAccessible = true
+                method.invoke(null, helper) as? org.nehuatl.llamacpp.LlamaAndroid
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    private fun getCurrentContextId(helper: LlamaHelper): Int? {
+        return try {
+            val field = helper.javaClass.getDeclaredField("currentContext")
+            field.isAccessible = true
+            field.get(helper) as? Int
+        } catch (_: Exception) {
+            try {
+                val method = helper.javaClass.getDeclaredMethod("access\$getCurrentContext\$p", LlamaHelper::class.java)
+                method.isAccessible = true
+                method.invoke(null, helper) as? Int
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    private fun isCompletedJson(text: String): Boolean {
+        val trimmed = text.trim()
+        if (!trimmed.startsWith("{")) return false
+        if (!trimmed.endsWith("}")) return false
+        return trimmed.contains("\"content\"") || trimmed.contains("\"action\"")
+    }
+
     /**
-     * Genera una respuesta completa garantizando que no se corte a media oración
-     * mediante la combinación de la ventana máxima de tokens y extensión automática en segundo plano.
+     * Genera una respuesta completa optimizada con parada instantánea al terminar,
+     * presupuesto estricto de tokens y hilos de CPU adaptativos.
      */
     suspend fun generateResponse(
         prompt: String,
         systemPrompt: String? = null,
         history: List<Pair<String, String>> = emptyList(),
         imageUri: String? = null,
+        maxTokens: Int = 512,
         onStatusUpdate: ((String) -> Unit)? = null,
-        onTokenUpdate: ((String) -> Unit)? = null
+        onTokenUpdate: ((String) -> Unit)? = null,
+        onThinkingUpdate: ((String) -> Unit)? = null
     ): String {
-        var result = generateSinglePass(prompt, systemPrompt, history, imageUri, onStatusUpdate, onTokenUpdate)
+        var result = generateSinglePass(prompt, systemPrompt, history, imageUri, maxTokens, onStatusUpdate, onTokenUpdate, onThinkingUpdate)
+
+        // Si es un saludo, respuesta corta o JSON ya completado, no realizar pasadas adicionales
+        if (maxTokens <= 256 || isCompletedJson(result)) {
+            return repairIncompleteJson(result)
+        }
 
         var pass = 0
         val maxPasses = 2
         while (pass < maxPasses && isResponseIncomplete(result)) {
             pass++
             // Pausa preventiva para dar tiempo al recolector y al hilo C++ nativo entre pasadas
-            kotlinx.coroutines.delay(350L)
+            kotlinx.coroutines.delay(250L)
             onStatusUpdate?.invoke("Aura está completando la respuesta detallada...")
             val continuationPrompt = "Cierra puntualmente la última oración o elemento pendiente sin repetir nada, sin inventar interpretaciones narrativas y cerrando el formato adecuadamente:"
             val continuationHistory = history + listOf(
@@ -384,8 +465,10 @@ class LocalLlmManager(
                     systemPrompt = systemPrompt,
                     history = continuationHistory,
                     imageUri = null,
+                    maxTokens = 256,
                     onStatusUpdate = onStatusUpdate,
-                    onTokenUpdate = null
+                    onTokenUpdate = null,
+                    onThinkingUpdate = null
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "Error durante la pasada de continuación: ${e.message}")
@@ -409,6 +492,9 @@ class LocalLlmManager(
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return false
 
+        // Si es JSON completo, nunca está incompleto
+        if (isCompletedJson(trimmed)) return false
+
         // 1. Si contiene JSON pero no está cerrado
         if (trimmed.startsWith("{") && !trimmed.endsWith("}")) return true
         if (trimmed.contains("\"action\"") && !trimmed.endsWith("}")) return true
@@ -425,7 +511,11 @@ class LocalLlmManager(
     }
 
     private fun stitchContinuation(base: String, continuation: String): String {
-        val cleanCont = continuation.replace("<|im_end|>", "").replace("<|endoftext|>", "").replace("<|eot_id|>", "").trim()
+        val cleanCont = continuation.replace("<|im_end|>", "")
+            .replace("<|endoftext|>", "")
+            .replace("<|eot_id|>", "")
+            .replace("<｜end of sentence｜>", "")
+            .trim()
         if (cleanCont.isEmpty()) return base
         val baseTrimmed = base.trimEnd()
         return "$baseTrimmed $cleanCont"
@@ -448,13 +538,15 @@ class LocalLlmManager(
         systemPrompt: String? = null,
         history: List<Pair<String, String>> = emptyList(),
         imageUri: String? = null,
+        maxTokens: Int = 512,
         onStatusUpdate: ((String) -> Unit)? = null,
-        onTokenUpdate: ((String) -> Unit)? = null
+        onTokenUpdate: ((String) -> Unit)? = null,
+        onThinkingUpdate: ((String) -> Unit)? = null
     ): String = inferenceMutex.withLock {
         withContext(Dispatchers.Default) {
             val helper = llamaHelper
             if (helper == null || _modelState.value !is LlmModelState.Ready) {
-                return@withContext "El modelo local Qwen no está cargado en memoria nativa. Abre Ajustes para verificar el estado de la IA local."
+                return@withContext "El modelo local Aura no está cargado en memoria nativa. Abre Ajustes para verificar el estado de la IA local."
             }
             if (isGenerating) {
                 try {
@@ -469,9 +561,14 @@ class LocalLlmManager(
             onStatusUpdate?.invoke("Aura está pensando...")
 
             val formattedPrompt = formatPrompt(prompt, systemPrompt, history)
+            val promptHasCompletedThinking = formattedPrompt.contains("</think>")
             val accumulatedText = StringBuilder()
             val doneSignal = kotlinx.coroutines.CompletableDeferred<String>()
             var hasStarted = false
+
+            // Hilos adaptativos automáticos según los núcleos de la CPU del procesador (4 hilos por defecto)
+            val cpuCores = Runtime.getRuntime().availableProcessors()
+            val optimalThreads = cpuCores.coerceIn(2, 6)
 
             val job = scope.launch {
                 llmEvents.collect { event ->
@@ -485,26 +582,80 @@ class LocalLlmManager(
                             hasStarted = true
                             isGenerating = true
                             accumulatedText.append(event.word)
-                            onTokenUpdate?.invoke(accumulatedText.toString())
-                            if (accumulatedText.length in 1..40) {
+                            val currentText = accumulatedText.toString()
+                            onTokenUpdate?.invoke(currentText)
+
+                            if (promptHasCompletedThinking) {
+                                // El pensamiento ya fue resuelto en el prompt inicial
                                 onStatusUpdate?.invoke("Aura está escribiendo...")
+                            } else {
+                                // Procesar razonamiento/pensamientos en tiempo real
+                                if (currentText.contains("</think>")) {
+                                    val thinkEnd = currentText.indexOf("</think>")
+                                    val rawLive = if (currentText.contains("<think>")) {
+                                        val thinkStart = currentText.indexOf("<think>") + "<think>".length
+                                        currentText.substring(thinkStart, thinkEnd).trim()
+                                    } else {
+                                        currentText.substring(0, thinkEnd).trim()
+                                    }
+                                    if (rawLive.isNotBlank()) {
+                                        onThinkingUpdate?.invoke(rawLive)
+                                    }
+                                    onStatusUpdate?.invoke("Aura está escribiendo...")
+                                } else {
+                                    val rawLive = if (currentText.contains("<think>")) {
+                                        val thinkStart = currentText.indexOf("<think>") + "<think>".length
+                                        currentText.substring(thinkStart).trim()
+                                    } else {
+                                        currentText.trim()
+                                    }
+                                    if (rawLive.isNotBlank()) {
+                                        onThinkingUpdate?.invoke(rawLive)
+                                        onStatusUpdate?.invoke("Aura está pensando...")
+                                    } else {
+                                        onStatusUpdate?.invoke("Aura está pensando...")
+                                    }
+                                }
+                            }
+
+                            // Detección temprana instantánea al terminar la respuesta para liberar la CPU
+                            if (currentText.contains("<|im_end|>") ||
+                                currentText.contains("<｜end of sentence｜>") ||
+                                currentText.contains("<|eot_id|>") ||
+                                isCompletedJson(currentText)
+                            ) {
+                                try {
+                                    helper.stopPrediction()
+                                } catch (_: Exception) {}
+                                if (!doneSignal.isCompleted) {
+                                    val cleaned = currentText.replace("<|im_end|>", "")
+                                        .replace("<｜end of sentence｜>", "")
+                                        .replace("<|eot_id|>", "")
+                                        .replace("<|endoftext|>", "")
+                                        .trim()
+                                    doneSignal.complete(cleaned)
+                                }
                             }
                         }
                         is LlamaHelper.LLMEvent.Done -> {
                             val text = event.fullText.ifBlank { accumulatedText.toString() }.trim()
                             isGenerating = false
-                            doneSignal.complete(text.ifBlank { accumulatedText.toString().trim() })
+                            if (!doneSignal.isCompleted) {
+                                doneSignal.complete(text.ifBlank { accumulatedText.toString().trim() })
+                            }
                         }
                         is LlamaHelper.LLMEvent.Error -> {
                             isGenerating = false
-                            doneSignal.complete("Error de inferencia en Qwen local: ${event.message}")
+                            if (!doneSignal.isCompleted) {
+                                doneSignal.complete("Error de inferencia en Aura local: ${event.message}")
+                            }
                         }
                         else -> Unit
                     }
                 }
             }
 
-            // Proteger el tamaño del prompt formateado dentro de la ventana elástica asignada (hasta 64k tokens)
+            // Proteger el tamaño del prompt formateado dentro de la ventana elástica asignada
             val maxPromptChars = ((currentContextSize - 180) * 3.2).toInt().coerceAtLeast(1000)
             val safePrompt = if (formattedPrompt.length > maxPromptChars) {
                 val sysStart = formattedPrompt.indexOf("<|im_start|>system")
@@ -518,33 +669,54 @@ class LocalLlmManager(
             }
 
             var completedNormally = false
+            var customCompletionJob: kotlinx.coroutines.Job? = null
             try {
                 isGenerating = true
-                // Pausa defensiva previa para asegurar que el hilo nativo esté inactivo
-                var predictAttempts = 0
-                var predictSuccess = false
-                var lastError: Exception? = null
-                while (predictAttempts < 3 && !predictSuccess) {
-                    predictAttempts++
-                    try {
-                        helper.predict(safePrompt, imageUri, true)
-                        predictSuccess = true
-                    } catch (e: Exception) {
-                        lastError = e
-                        if (e.message?.contains("busy", ignoreCase = true) == true) {
-                            Log.w(TAG, "Contexto nativo reportó ocupado (intento $predictAttempts), deteniendo y esperando...")
-                            try { helper.stopPrediction() } catch (_: Exception) {}
-                            kotlinx.coroutines.delay(200L * predictAttempts)
-                        } else {
-                            throw e
+
+                val llamaAndroid = getLlamaAndroid(helper)
+                val contextId = getCurrentContextId(helper)
+
+                val stopTokens = listOf(
+                    "<|im_end|>",
+                    "<|endoftext|>",
+                    "<|eot_id|>",
+                    "<｜end of sentence｜>",
+                    "<｜tool outputs end｜>"
+                )
+
+                if (llamaAndroid != null && contextId != null) {
+                    val params = mutableMapOf<String, Any>(
+                        "prompt" to safePrompt,
+                        "emit_partial_completion" to true,
+                        "n_predict" to maxTokens,
+                        "stop" to stopTokens,
+                        "n_threads" to optimalThreads,
+                        "temperature" to 0.6f,
+                        "top_p" to 0.9f
+                    )
+                    Log.i(TAG, "Inferencia directa lanzada con n_predict=$maxTokens, n_threads=$optimalThreads")
+
+                    customCompletionJob = scope.launch(Dispatchers.Default) {
+                        try {
+                            val result = llamaAndroid.launchCompletion(contextId, params)
+                            val completionText = (result?.get("text") as? String) ?: accumulatedText.toString()
+                            if (!doneSignal.isCompleted) {
+                                doneSignal.complete(completionText.trim())
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Excepción en launchCompletion directa: ${e.message}")
+                            if (!doneSignal.isCompleted) {
+                                doneSignal.complete(accumulatedText.toString().trim())
+                            }
                         }
                     }
-                }
-                if (!predictSuccess && lastError != null) {
-                    throw lastError
+                } else {
+                    // Fallback a predict estándar
+                    helper.predict(safePrompt, imageUri, true)
                 }
 
-                val result = kotlinx.coroutines.withTimeoutOrNull(240_000L) {
+                val timeoutMs = if (maxTokens <= 256) 35_000L else if (maxTokens <= 1024) 85_000L else 135_000L
+                val result = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
                     doneSignal.await()
                 }
                 if (result != null) {
@@ -553,7 +725,7 @@ class LocalLlmManager(
                 val rawResult = result ?: accumulatedText.toString().trim().ifEmpty {
                     "Aura tardó más de lo esperado debido a la carga del procesador. Puedes intentar con una pregunta más concisa."
                 }
-                val cleanResult = rawResult.replace("<|im_end|>", "").replace("<|endoftext|>", "").replace("<|eot_id|>", "").trim()
+                val cleanResult = rawResult.replace("<|im_end|>", "").replace("<|endoftext|>", "").replace("<|eot_id|>", "").replace("<｜end of sentence｜>", "").trim()
                 if (cleanResult.isBlank()) {
                     val fallbackText = accumulatedText.toString().trim()
                     if (fallbackText.isNotBlank()) {
@@ -565,7 +737,7 @@ class LocalLlmManager(
                     cleanResult
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error en inferencia local con Qwen", e)
+                Log.e(TAG, "Error en inferencia local con Aura", e)
                 val msg = e.localizedMessage ?: e.message ?: "Error desconocido"
                 if (msg.contains("not loaded", ignoreCase = true)) {
                     _modelState.value = LlmModelState.Unloaded
@@ -575,6 +747,7 @@ class LocalLlmManager(
                 }
             } finally {
                 isGenerating = false
+                customCompletionJob?.cancel()
                 job.cancel()
                 if (!completedNormally) {
                     try {
@@ -583,8 +756,8 @@ class LocalLlmManager(
                         Log.w(TAG, "Error limpiando predicción no finalizada en finally", e)
                     }
                 }
-                // Pausa para asegurar que la biblioteca nativa C++ libere totalmente el contexto JNI
-                kotlinx.coroutines.delay(200L)
+                // Pausa defensiva para asegurar que la biblioteca nativa libere el contexto
+                kotlinx.coroutines.delay(150L)
             }
         }
     }
