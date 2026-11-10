@@ -128,10 +128,10 @@ jobs:
           RECAPTCHA_SITE_KEY: ${{ secrets.RECAPTCHA_SITE_KEY }}
         run: |
           python3 -c '
-          import os, base64, textwrap
+          import os, base64, textwrap, xml.sax.saxutils
 
-          explicit_recaptcha_key = os.environ.get("RECAPTCHA_SITE_KEY", "").strip()
-          recaptcha_key = explicit_recaptcha_key or "6Lf8uhYuAAAAAP2dv9-EUmYH_37EgrJOeMmEK3GF"
+          explicit_recaptcha_key = os.environ.get("RECAPTCHA_SITE_KEY", "").strip().strip("\"").strip("\x27")
+          recaptcha_key = xml.sax.saxutils.escape(explicit_recaptcha_key or "6Lf8uhYuAAAAAP2dv9-EUmYH_37EgrJOeMmEK3GF")
           config_path = "app/src/main/res/values/firebase_applet_config.xml"
           config_content = (
               "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n"

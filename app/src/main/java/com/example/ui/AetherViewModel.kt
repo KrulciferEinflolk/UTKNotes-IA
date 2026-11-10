@@ -888,7 +888,9 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     throw e
                 } catch (e: Exception) {
                     android.util.Log.e("AetherViewModel", "Error generando sugerencias con Gemini", e)
-                    _aiMessage.value = e.localizedMessage ?: "No se pudo conectar con Gemini 3.5 Flash-Lite."
+                    _aiMessage.value = com.example.util.sanitizeSensitiveDetails(
+                        e.localizedMessage.orEmpty()
+                    ).ifBlank { "No se pudo conectar con Gemini 3.5 Flash-Lite." }
                     emptyList()
                 }
                 _aiSuggestions.value = if (suggestions.isNotEmpty()) suggestions else listOf(
@@ -949,7 +951,9 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     throw e
                 } catch (e: Exception) {
                     android.util.Log.e("AetherViewModel", "Error mejorando párrafo con Gemini", e)
-                    _aiMessage.value = e.localizedMessage ?: "Error al mejorar el párrafo con Gemini."
+                    _aiMessage.value = com.example.util.sanitizeSensitiveDetails(
+                        e.localizedMessage.orEmpty()
+                    ).ifBlank { "Error al mejorar el párrafo con Gemini." }
                     errorHandled = true
                     null
                 }
@@ -1000,7 +1004,9 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     throw e
                 } catch (e: Exception) {
                     android.util.Log.e("AetherViewModel", "Error modificando nota con Gemini", e)
-                    _aiMessage.value = e.localizedMessage ?: "Error al modificar la nota con Gemini."
+                    _aiMessage.value = com.example.util.sanitizeSensitiveDetails(
+                        e.localizedMessage.orEmpty()
+                    ).ifBlank { "Error al modificar la nota con Gemini." }
                     errorHandled = true
                     null
                 }
@@ -1075,7 +1081,9 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     throw e
                 } catch (e: Exception) {
                     android.util.Log.e("AetherViewModel", "Error creando nota con Gemini", e)
-                    _aiMessage.value = e.localizedMessage ?: "Error al crear la nota con Gemini."
+                    _aiMessage.value = com.example.util.sanitizeSensitiveDetails(
+                        e.localizedMessage.orEmpty()
+                    ).ifBlank { "Error al crear la nota con Gemini." }
                     errorHandled = true
                     null
                 }
@@ -1779,16 +1787,10 @@ RESPUESTA FINAL (Markdown directo en español):
                 throw e
             } catch (e: Exception) {
                 android.util.Log.e("AetherViewModel", "Error en Gemini 3.5 Flash-Lite", e)
-                val errorMsg = e.localizedMessage ?: "Error de conexión"
-                if (errorMsg.contains("verificación de seguridad", ignoreCase = true) ||
-                    errorMsg.contains("App Check", ignoreCase = true) ||
-                    errorMsg.contains("token is invalid", ignoreCase = true) ||
-                    errorMsg.contains("403", ignoreCase = true)
-                ) {
-                    "No se pudo verificar la conexión segura con Gemini 3.5 Flash-Lite.\n\nComprueba tu conexión a Internet o alterna al motor 'Aura Local' en Ajustes de IA para trabajar 100% sin conexión."
-                } else {
-                    "Error al conectar con Gemini 3.5 Flash-Lite: $errorMsg.\n\nPuedes alternar al motor Aura Local en Ajustes de IA si deseas operar sin conexión."
-                }
+                val safeError = com.example.util.sanitizeSensitiveDetails(
+                    e.localizedMessage ?: "Error de conexión"
+                ).ifBlank { "Error de conexión con Gemini 3.5 Flash-Lite" }
+                "$safeError\n\nPuedes alternar al motor 'Aura Local' en Ajustes de IA si deseas operar sin conexión."
             } finally {
                 _chatbotStatusText.value = null
                 _liveThinkingText.value = null
