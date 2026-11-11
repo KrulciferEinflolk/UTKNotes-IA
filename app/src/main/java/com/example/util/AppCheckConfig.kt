@@ -32,12 +32,19 @@ private var installedSignature: String? = null
 @Volatile
 private var activeProviderLabel: String = "sin inicializar"
 
+@Volatile
+private var pendingForceRefresh: Boolean = false
+
+@Volatile
+private var lastAttestationFailure: String? = null
+
 internal sealed class AppCheckDiagnosis {
     data class TokenObtained(val providerMode: String) : AppCheckDiagnosis()
     data class TokenError(
         val providerMode: String,
         val errorClass: String,
-        val sanitizedMessage: String
+        val sanitizedMessage: String,
+        val capturedCauseMessage: String? = null
     ) : AppCheckDiagnosis()
 }
 
@@ -189,6 +196,7 @@ fun configureAppCheck(context: Context, intent: Intent?) {
         if (plan.clearTokenCache) {
             tokenCachePrefs?.edit()?.clear()?.commit()
             runtimePrefs.edit().putString(KEY_PROVIDER_SIGNATURE, plan.targetSignature).commit()
+            lastAttestationFailure = null
         }
 
         if (plan.kind == AppCheckProviderKind.NONE) {
@@ -210,7 +218,9 @@ fun configureAppCheck(context: Context, intent: Intent?) {
                         RecaptchaAppCheckProviderFactory.getInstance()
                     )
                     if (plan.forceTokenRefresh) {
-                        appCheck.getAppCheckToken(true)
+                        // Defer the forced refresh to the first actual AI call so we capture
+                        // any real HTTP/reCAPTCHA failure instead of silently burning RetryManager at boot.
+                        pendingForceRefresh = true
                     }
                 }
 
@@ -260,11 +270,7 @@ internal fun sanitizeSensitiveDetails(raw: String): String {
         .trim()
 }
 
-/**
- * Forces an App Check token refresh on failure to distinguish client-side attestation errors
- * (e.g., reCAPTCHA SDK failure) from backend rejection (e.g., mismatched Site Key or disabled AI Logic API).
- */
-internal suspend fun diagnoseAppCheckStatus(context: Context): AppCheckDiagnosis {
+private suspend fun fetchAppCheckTokenInternal(context: Context, forceRefresh: Boolean): AppCheckDiagnosis {
     val providerMode = activeProviderLabel
     return try {
         if (FirebaseApp.getApps(context).isEmpty()) {
@@ -273,7 +279,7 @@ internal suspend fun diagnoseAppCheckStatus(context: Context): AppCheckDiagnosis
         val token = withTimeout(15_000L) {
             suspendCancellableCoroutine<String> { cont ->
                 FirebaseAppCheck.getInstance()
-                    .getAppCheckToken(true)
+                    .getAppCheckToken(forceRefresh)
                     .addOnSuccessListener { result ->
                         if (cont.isActive) cont.resume(result.token)
                     }
@@ -282,18 +288,45 @@ internal suspend fun diagnoseAppCheckStatus(context: Context): AppCheckDiagnosis
                     }
             }
         }
-        Log.w(TAG, "App Check token obtained client-side ($providerMode, length=${token.length}).")
+        pendingForceRefresh = false
+        lastAttestationFailure = null
+        Log.d(TAG, "App Check token ready ($providerMode, length=${token.length}).")
         AppCheckDiagnosis.TokenObtained(providerMode)
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
         Log.e(TAG, "Underlying App Check attestation failure ($providerMode): ${e.javaClass.simpleName}: ${e.localizedMessage}", e)
+        val sanitized = sanitizeSensitiveDetails(e.localizedMessage.orEmpty())
+        val isThrottled = sanitized.contains("Too many attempts", ignoreCase = true)
+        if (!isThrottled && sanitized.isNotBlank()) {
+            pendingForceRefresh = false
+            lastAttestationFailure = sanitized
+        }
         AppCheckDiagnosis.TokenError(
             providerMode = providerMode,
             errorClass = e.javaClass.simpleName,
-            sanitizedMessage = sanitizeSensitiveDetails(e.localizedMessage.orEmpty())
+            sanitizedMessage = sanitized,
+            capturedCauseMessage = if (isThrottled) lastAttestationFailure else null
         )
     }
+}
+
+/**
+ * Ensures a valid App Check token is available before sending an AI request.
+ * Uses cached tokens when available (no extra reCAPTCHA calls), forcing refresh only
+ * when a provider/site-key change happened across updates.
+ */
+internal suspend fun ensureAppCheckReady(context: Context): AppCheckDiagnosis {
+    val shouldForce = pendingForceRefresh
+    return fetchAppCheckTokenInternal(context, forceRefresh = shouldForce)
+}
+
+/**
+ * Forces an App Check token refresh on failure to distinguish client-side attestation errors
+ * (e.g., reCAPTCHA SDK failure) from backend rejection (e.g., mismatched Site Key or disabled AI Logic API).
+ */
+internal suspend fun diagnoseAppCheckStatus(context: Context): AppCheckDiagnosis {
+    return fetchAppCheckTokenInternal(context, forceRefresh = true)
 }
 
 @androidx.annotation.VisibleForTesting
@@ -303,5 +336,7 @@ internal fun currentAppCheckProviderMode(): String = activeProviderLabel
 internal fun resetInstalledSignatureForTest() {
     installedSignature = null
     activeProviderLabel = "sin inicializar"
+    pendingForceRefresh = false
+    lastAttestationFailure = null
 }
 

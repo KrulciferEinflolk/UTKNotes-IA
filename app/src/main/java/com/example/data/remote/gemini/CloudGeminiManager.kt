@@ -7,6 +7,7 @@ import android.util.Base64
 import android.util.Log
 import com.example.util.AppCheckDiagnosis
 import com.example.util.diagnoseAppCheckStatus
+import com.example.util.ensureAppCheckReady
 import com.example.util.sanitizeSensitiveDetails
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
@@ -26,6 +27,8 @@ class CloudGeminiManager(
     }
 ) {
 
+    private class PrecheckedFailureException(message: String) : IllegalStateException(message)
+
     companion object {
         private const val TAG = "CloudGeminiManager"
         const val DEFAULT_MODEL = "gemini-3.5-flash-lite"
@@ -40,6 +43,7 @@ class CloudGeminiManager(
             raw.contains("token is invalid", ignoreCase = true) ||
             raw.contains("attestation", ignoreCase = true) ||
             raw.contains("recaptcha", ignoreCase = true) ||
+            raw.contains("Too many attempts", ignoreCase = true) ||
             raw.contains("permission", ignoreCase = true) ||
             raw.contains("disabled", ignoreCase = true) ||
             raw.contains("deactivated", ignoreCase = true) ||
@@ -49,7 +53,9 @@ class CloudGeminiManager(
             raw.contains("KEYTYPE", ignoreCase = true) ||
             raw.contains("SITE_KEY", ignoreCase = true) ||
             raw.contains("403", ignoreCase = true) ||
-            raw.contains("401", ignoreCase = true)
+            raw.contains("401", ignoreCase = true) ||
+            raw.contains("400", ignoreCase = true) ||
+            raw.contains("404", ignoreCase = true)
     }
 
     private fun extractRawErrorMessage(e: Exception): String {
@@ -73,6 +79,65 @@ class CloudGeminiManager(
         return buildSafeUserException(e, diagnosis)
     }
 
+    private fun formatTokenErrorDetails(providerMode: String, errorClass: String, sanitizedMessage: String): String {
+        val detail = "$errorClass $sanitizedMessage"
+        return when {
+            detail.contains("KEYTYPE", ignoreCase = true) ||
+                detail.contains("KEY_TYPE", ignoreCase = true) -> {
+                "La Site Key configurada en reCAPTCHA Enterprise no es de tipo Android ($providerMode). " +
+                    "En Google Cloud > reCAPTCHA Enterprise, crea o usa una clave con plataforma 'Android' para el paquete utk.notes.gemini."
+            }
+
+            detail.contains("SITE_KEY", ignoreCase = true) ||
+                detail.contains("sitekey", ignoreCase = true) ||
+                detail.contains("site key", ignoreCase = true) -> {
+                "reCAPTCHA Enterprise rechazó la Site Key incluida en esta compilación ($providerMode). " +
+                    "Si compilaste en GitHub Actions, asegúrate de subir la última versión del workflow y de guardar la clave Android correcta en RECAPTCHA_SITE_KEY."
+            }
+
+            detail.contains("PACKAGE_NAME", ignoreCase = true) ||
+                detail.contains("package", ignoreCase = true) -> {
+                "reCAPTCHA Enterprise rechazó el paquete de la app (utk.notes.gemini). " +
+                    "Comprueba que 'utk.notes.gemini' esté agregado en tu clave Android dentro de Google Cloud reCAPTCHA Enterprise."
+            }
+
+            detail.contains("has not been used", ignoreCase = true) ||
+                detail.contains("SERVICE_DISABLED", ignoreCase = true) ||
+                detail.contains("API_NOT_ENABLED", ignoreCase = true) -> {
+                "Falta habilitar la API de reCAPTCHA Enterprise o Firebase App Check API en el proyecto de Google Cloud de tu google-services.json."
+            }
+
+            detail.contains("NETWORK", ignoreCase = true) ||
+                detail.contains("UnknownHost", ignoreCase = true) ||
+                detail.contains("ConnectException", ignoreCase = true) ||
+                detail.contains("timeout", ignoreCase = true) -> {
+                "No se pudo conectar con reCAPTCHA / Google Play Services. Verifica tu conexión a Internet y que la fecha y hora automáticas estén activadas."
+            }
+
+            detail.contains("PlayServices", ignoreCase = true) ||
+                detail.contains("API_UNAVAILABLE", ignoreCase = true) ||
+                detail.contains("SERVICE_INVALID", ignoreCase = true) -> {
+                "Google Play Services no pudo validar reCAPTCHA en este dispositivo ($errorClass)."
+            }
+
+            detail.contains("403", ignoreCase = true) ||
+                detail.contains("400", ignoreCase = true) ||
+                detail.contains("404", ignoreCase = true) ||
+                detail.contains("INVALID_ARGUMENT", ignoreCase = true) ||
+                detail.contains("attestation", ignoreCase = true) ||
+                detail.contains("exchange", ignoreCase = true) -> {
+                "Firebase App Check rechazó el intercambio de $providerMode (error HTTP 400/403/404). " +
+                    "Comprueba en Firebase Console > App Check > Apps que tu app Android (utk.notes.gemini) tenga registrado reCAPTCHA Enterprise con la misma Site Key de RECAPTCHA_SITE_KEY, " +
+                    "que la API de reCAPTCHA Enterprise esté habilitada en el proyecto de google-services.json y que esté activada la opción 'Support applications distributed outside of the Google Play Store'."
+            }
+
+            else -> {
+                val reason = sanitizedMessage.ifBlank { errorClass }.take(180)
+                "No se pudo obtener el token de $providerMode: $reason"
+            }
+        }
+    }
+
     private fun buildSafeUserException(e: Exception, diagnosis: AppCheckDiagnosis?): Exception {
         val raw = extractRawErrorMessage(e)
         val safeRaw = sanitizeSensitiveDetails(raw)
@@ -84,50 +149,20 @@ class CloudGeminiManager(
         val message = when (diagnosis) {
             is AppCheckDiagnosis.TokenError -> {
                 val detail = "${diagnosis.errorClass} ${diagnosis.sanitizedMessage}"
-                when {
-                    detail.contains("KEYTYPE", ignoreCase = true) ||
-                        detail.contains("KEY_TYPE", ignoreCase = true) -> {
-                        "La Site Key configurada en reCAPTCHA Enterprise no es de tipo Android (${diagnosis.providerMode}). " +
-                            "En Google Cloud > reCAPTCHA Enterprise, crea o usa una clave con plataforma 'Android' para el paquete utk.notes.gemini."
+                if (detail.contains("Too many attempts", ignoreCase = true)) {
+                    val priorCause = diagnosis.capturedCauseMessage
+                        ?.takeIf { it.isNotBlank() && !it.contains("Too many attempts", ignoreCase = true) }
+                    if (priorCause != null) {
+                        formatTokenErrorDetails(diagnosis.providerMode, diagnosis.errorClass, priorCause) +
+                            " (Nota: Firebase App Check pausó los reintentos tras ese primer fallo; tras corregir la configuración, cierra por completo la app y vuelve a abrirla)."
+                    } else {
+                        "Firebase App Check pausó temporalmente las validaciones con ${diagnosis.providerMode} ('Too many attempts') tras un fallo previo.\n" +
+                            "1. Cierra por completo la app (quítala de apps recientes) y vuelve a abrirla para reiniciar la pausa local.\n" +
+                            "2. En Firebase Console > App Check > Apps, registra reCAPTCHA Enterprise en tu app Android (utk.notes.gemini) con exactamente la Site Key guardada en RECAPTCHA_SITE_KEY.\n" +
+                            "3. En Google Cloud > reCAPTCHA Enterprise, verifica que la clave sea Android, incluya utk.notes.gemini, tenga activado 'Support applications distributed outside of the Google Play Store' y que la API reCAPTCHA Enterprise esté habilitada en el mismo proyecto de tu google-services.json."
                     }
-
-                    detail.contains("SITE_KEY", ignoreCase = true) ||
-                        detail.contains("sitekey", ignoreCase = true) ||
-                        detail.contains("site key", ignoreCase = true) -> {
-                        "reCAPTCHA Enterprise rechazó la Site Key incluida en esta compilación (${diagnosis.providerMode}). " +
-                            "Si compilaste en GitHub Actions, asegúrate de subir la última versión del workflow y de guardar la clave Android correcta en RECAPTCHA_SITE_KEY."
-                    }
-
-                    detail.contains("PACKAGE_NAME", ignoreCase = true) ||
-                        detail.contains("package", ignoreCase = true) -> {
-                        "reCAPTCHA Enterprise rechazó el paquete de la app (utk.notes.gemini). " +
-                            "Comprueba que 'utk.notes.gemini' esté agregado en tu clave Android dentro de Google Cloud reCAPTCHA Enterprise."
-                    }
-
-                    detail.contains("NETWORK", ignoreCase = true) ||
-                        detail.contains("UnknownHost", ignoreCase = true) ||
-                        detail.contains("ConnectException", ignoreCase = true) ||
-                        detail.contains("timeout", ignoreCase = true) -> {
-                        "No se pudo conectar con reCAPTCHA / Google Play Services. Verifica tu conexión a Internet y que la fecha y hora automáticas estén activadas."
-                    }
-
-                    detail.contains("PlayServices", ignoreCase = true) ||
-                        detail.contains("API_UNAVAILABLE", ignoreCase = true) ||
-                        detail.contains("SERVICE_INVALID", ignoreCase = true) -> {
-                        "Google Play Services no pudo validar reCAPTCHA en este dispositivo (${diagnosis.errorClass})."
-                    }
-
-                    detail.contains("403", ignoreCase = true) ||
-                        detail.contains("400", ignoreCase = true) ||
-                        detail.contains("exchange", ignoreCase = true) -> {
-                        "Firebase App Check rechazó el intercambio de ${diagnosis.providerMode} (403/400). " +
-                            "Revisa que la API de reCAPTCHA Enterprise esté habilitada en el mismo proyecto de tu google-services.json y que esté activada la opción 'Support applications distributed outside of the Google Play Store'."
-                    }
-
-                    else -> {
-                        val reason = diagnosis.sanitizedMessage.ifBlank { diagnosis.errorClass }.take(180)
-                        "No se pudo obtener el token de ${diagnosis.providerMode}: $reason"
-                    }
+                } else {
+                    formatTokenErrorDetails(diagnosis.providerMode, diagnosis.errorClass, diagnosis.sanitizedMessage)
                 }
             }
 
@@ -219,6 +254,14 @@ class CloudGeminiManager(
         }
 
         try {
+            val precheck = contextProvider()?.let { ensureAppCheckReady(it) }
+            if (precheck is AppCheckDiagnosis.TokenError) {
+                val formatted = buildSafeUserException(
+                    IllegalStateException(precheck.sanitizedMessage.ifBlank { precheck.errorClass }),
+                    precheck
+                )
+                throw PrecheckedFailureException(formatted.message.orEmpty())
+            }
             withTimeout(60_000L) {
                 executeModelRequest(fullPrompt, bitmap)
             }
@@ -227,6 +270,8 @@ class CloudGeminiManager(
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Timeout invocando Firebase AI Gemini", e)
             throw IllegalStateException("Tiempo de espera agotado (60s) conectando con Gemini.", e)
+        } catch (e: PrecheckedFailureException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Error invocando Firebase AI Gemini", e)
             val raw = extractRawErrorMessage(e)
@@ -274,6 +319,14 @@ class CloudGeminiManager(
         }
 
         try {
+            val precheck = contextProvider()?.let { ensureAppCheckReady(it) }
+            if (precheck is AppCheckDiagnosis.TokenError) {
+                val formatted = buildSafeUserException(
+                    IllegalStateException(precheck.sanitizedMessage.ifBlank { precheck.errorClass }),
+                    precheck
+                )
+                throw PrecheckedFailureException(formatted.message.orEmpty())
+            }
             withTimeout(60_000L) {
                 val stream = if (bitmap != null) {
                     model.generateContentStream(
@@ -298,6 +351,8 @@ class CloudGeminiManager(
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Timeout en streaming de Firebase AI Gemini", e)
             throw IllegalStateException("Tiempo de espera agotado (60s) conectando con Gemini.", e)
+        } catch (e: PrecheckedFailureException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Error en streaming de Firebase AI Gemini", e)
             val raw = extractRawErrorMessage(e)

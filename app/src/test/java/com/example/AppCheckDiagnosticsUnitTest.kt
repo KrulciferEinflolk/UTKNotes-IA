@@ -156,5 +156,24 @@ class AppCheckDiagnosticsUnitTest {
         val nestedResult = manager.formatFailureForUser(nestedCause, null)
         assertTrue(nestedResult.message.orEmpty().contains("Falta habilitar Firebase AI Logic"))
         assertFalse(nestedResult.message.orEmpty().contains("nested-proj-123"))
+
+        val throttledDirect = manager.formatFailureForUser(
+            IllegalStateException("Too many attempts."),
+            AppCheckDiagnosis.TokenError("reCAPTCHA Enterprise", "FirebaseException", "Too many attempts.")
+        )
+        assertTrue(throttledDirect.message.orEmpty().contains("Cierra por completo la app"))
+        assertTrue(throttledDirect.message.orEmpty().contains("Firebase Console > App Check > Apps"))
+
+        val throttledWithCapturedCause = manager.formatFailureForUser(
+            IllegalStateException("Too many attempts."),
+            AppCheckDiagnosis.TokenError(
+                providerMode = "reCAPTCHA Enterprise",
+                errorClass = "FirebaseException",
+                sanitizedMessage = "Too many attempts.",
+                capturedCauseMessage = "Error returned from API. code: 400 body: App attestation failed."
+            )
+        )
+        assertTrue(throttledWithCapturedCause.message.orEmpty().contains("error HTTP 400/403/404"))
+        assertTrue(throttledWithCapturedCause.message.orEmpty().contains("cierra por completo la app"))
     }
 }
