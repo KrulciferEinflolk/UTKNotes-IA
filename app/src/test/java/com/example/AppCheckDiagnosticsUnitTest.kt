@@ -88,11 +88,11 @@ class AppCheckDiagnosticsUnitTest {
     }
 
     @Test
-    fun `sanitizeSensitiveDetails removes all project identifiers keys hashes and uuids`() {
-        val raw = "Failed for projects/my-private-proj project 854876463054 " +
+    fun `sanitizeSensitiveDetails removes all project identifiers keys hashes jwts and uuids`() {
+        val raw = "Failed for projects/my-private-proj/apps/1:854876463054:android:698b6068187074bad4959f project 854876463054 " +
             "apiKey AIzaSyDummySecret123456 siteKey 6Lf8uhYuAAAAAP2dv9-EUmYH " +
+            "jwt eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U " +
             "sha 0C:CF:C0:5E:AC:EC:49:FA:CC:1F:2F:2D:8B:98:B2:55:A0:69:7E:3C " +
-            "app 1:854876463054:android:698b6068187074bad4959f " +
             "uuid 11111111-2222-3333-4444-555555555555 code INVALID_KEYTYPE"
 
         val cleaned = sanitizeSensitiveDetails(raw)
@@ -101,6 +101,7 @@ class AppCheckDiagnosticsUnitTest {
         assertFalse(cleaned.contains("854876463054"))
         assertFalse(cleaned.contains("AIzaSy"))
         assertFalse(cleaned.contains("6Lf8uhYu"))
+        assertFalse(cleaned.contains("eyJhbGci"))
         assertFalse(cleaned.contains("0C:CF:C0"))
         assertFalse(cleaned.contains("698b60681870"))
         assertFalse(cleaned.contains("11111111-2222"))
@@ -108,7 +109,7 @@ class AppCheckDiagnosticsUnitTest {
     }
 
     @Test
-    fun `CloudGeminiManager distinguishes reCAPTCHA key errors vs AI Logic API disabled vs Replay Protection vs backend App Check rejection`() {
+    fun `CloudGeminiManager distinguishes reCAPTCHA key errors HTTP 400 403 404 API key blocks and AI Logic API errors`() {
         val manager = CloudGeminiManager { null }
 
         val invalidKeyType = manager.formatFailureForUser(
@@ -122,6 +123,42 @@ class AppCheckDiagnosticsUnitTest {
             AppCheckDiagnosis.TokenError("reCAPTCHA Enterprise", "RecaptchaException", "INVALID_SITEKEY")
         )
         assertTrue(siteKeyError.message.orEmpty().contains("RECAPTCHA_SITE_KEY"))
+
+        val apiKeyBlocked = manager.formatFailureForUser(
+            IllegalStateException("Too many attempts."),
+            AppCheckDiagnosis.TokenError(
+                providerMode = "reCAPTCHA Enterprise",
+                errorClass = "FirebaseException",
+                sanitizedMessage = "Error returned from API. code: 403 body: Requests from this Android client application utk.notes.gemini are blocked. AIzaSyDummySecret123456"
+            )
+        )
+        assertTrue(apiKeyBlocked.message.orEmpty().contains("clave de API", ignoreCase = true))
+        assertTrue(apiKeyBlocked.message.orEmpty().contains("Firebase App Check API"))
+        assertTrue(apiKeyBlocked.message.orEmpty().contains("Detalle técnico:"))
+        assertFalse(apiKeyBlocked.message.orEmpty().contains("AIzaSy"))
+
+        val http404Exchange = manager.formatFailureForUser(
+            IllegalStateException("404"),
+            AppCheckDiagnosis.TokenError(
+                providerMode = "reCAPTCHA Enterprise",
+                errorClass = "FirebaseException",
+                sanitizedMessage = "Error returned from API. code: 404 body: Requested entity was not found for projects/secret-proj-404."
+            )
+        )
+        assertTrue(http404Exchange.message.orEmpty().contains("error HTTP 404"))
+        assertTrue(http404Exchange.message.orEmpty().contains("Requested entity was not found"))
+        assertFalse(http404Exchange.message.orEmpty().contains("secret-proj-404"))
+
+        val http403Exchange = manager.formatFailureForUser(
+            IllegalStateException("403"),
+            AppCheckDiagnosis.TokenError(
+                providerMode = "reCAPTCHA Enterprise",
+                errorClass = "FirebaseException",
+                sanitizedMessage = "Error returned from API. code: 403 body: App attestation failed."
+            )
+        )
+        assertTrue(http403Exchange.message.orEmpty().contains("error HTTP 403"))
+        assertTrue(http403Exchange.message.orEmpty().contains("App attestation failed."))
 
         val deactivatedEnforcement = manager.formatFailureForUser(
             IllegalStateException("PERMISSION_DENIED: Firebase AI Logic has been deactivated in this project. To resume using Firebase AI Logic, you must enforce Firebase App Check."),
@@ -170,10 +207,13 @@ class AppCheckDiagnosticsUnitTest {
                 providerMode = "reCAPTCHA Enterprise",
                 errorClass = "FirebaseException",
                 sanitizedMessage = "Too many attempts.",
-                capturedCauseMessage = "Error returned from API. code: 400 body: App attestation failed."
+                capturedCauseMessage = "Error returned from API. code: 400 body: App attestation failed. 6LfSecretSiteKey12345"
             )
         )
-        assertTrue(throttledWithCapturedCause.message.orEmpty().contains("error HTTP 400/403/404"))
+        assertTrue(throttledWithCapturedCause.message.orEmpty().contains("error HTTP 400"))
+        assertFalse(throttledWithCapturedCause.message.orEmpty().contains("400/403/404"))
+        assertTrue(throttledWithCapturedCause.message.orEmpty().contains("App attestation failed."))
         assertTrue(throttledWithCapturedCause.message.orEmpty().contains("cierra por completo la app"))
+        assertFalse(throttledWithCapturedCause.message.orEmpty().contains("6LfSecretSiteKey"))
     }
 }

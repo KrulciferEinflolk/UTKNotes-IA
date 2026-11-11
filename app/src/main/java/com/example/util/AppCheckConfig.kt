@@ -262,12 +262,30 @@ internal fun sanitizeSensitiveDetails(raw: String): String {
         .replace(Regex("""6L[0-9A-Za-z_\-]{10,}"""), "[SITE_KEY_OCULTA]")
         .replace(Regex("""projects/[^/\s,)"']+""", RegexOption.IGNORE_CASE), "projects/[PROYECTO]")
         .replace(Regex("""project\s+\d{6,}""", RegexOption.IGNORE_CASE), "project [PROYECTO]")
+        .replace(Regex("""eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}(?:\.[A-Za-z0-9_\-]*)?"""), "[JWT_OCULTO]")
         .replace(Regex("""([0-9A-Fa-f]{2}:){10,}[0-9A-Fa-f]{2}"""), "[HASH_OCULTO]")
         .replace(Regex("""\b\d+:\d+:[a-z]+:[0-9a-fA-F]{6,}\b"""), "[APP_ID]")
+        .replace(Regex("""apps/(?!\[APP_ID\])[^/\s,:)"']+""", RegexOption.IGNORE_CASE), "apps/[APP_ID]")
         .replace(Regex("""\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"""), "[TOKEN_OCULTO]")
         .replace(Regex("""\b[0-9A-Fa-f]{32,}\b"""), "[HASH_OCULTO]")
         .replace(Regex("""\b\d{10,}\b"""), "[ID_OCULTO]")
         .trim()
+}
+
+private fun extractThrowableChain(e: Throwable): String {
+    val seen = LinkedHashSet<String>()
+    var current: Throwable? = e
+    var depth = 0
+    while (current != null && depth < 5) {
+        val msg = current.localizedMessage?.takeIf { it.isNotBlank() }
+            ?: current.message?.takeIf { it.isNotBlank() }
+        if (msg != null) {
+            seen.add(msg)
+        }
+        current = current.cause
+        depth++
+    }
+    return seen.joinToString(" | ")
 }
 
 private suspend fun fetchAppCheckTokenInternal(context: Context, forceRefresh: Boolean): AppCheckDiagnosis {
@@ -295,8 +313,9 @@ private suspend fun fetchAppCheckTokenInternal(context: Context, forceRefresh: B
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        Log.e(TAG, "Underlying App Check attestation failure ($providerMode): ${e.javaClass.simpleName}: ${e.localizedMessage}", e)
-        val sanitized = sanitizeSensitiveDetails(e.localizedMessage.orEmpty())
+        val rawChain = extractThrowableChain(e)
+        Log.e(TAG, "Underlying App Check attestation failure ($providerMode): ${e.javaClass.simpleName}: $rawChain", e)
+        val sanitized = sanitizeSensitiveDetails(rawChain)
         val isThrottled = sanitized.contains("Too many attempts", ignoreCase = true)
         if (!isThrottled && sanitized.isNotBlank()) {
             pendingForceRefresh = false

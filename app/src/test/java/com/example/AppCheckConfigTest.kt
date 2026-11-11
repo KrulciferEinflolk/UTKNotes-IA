@@ -130,5 +130,16 @@ class AppCheckConfigTest {
         )
         assertTrue(deactivatedEnforcement.message.orEmpty().contains("Replay protection"))
         assertFalse(deactivatedEnforcement.message.orEmpty().contains("Falta habilitar"))
+
+        val http400 = manager.formatFailureForUser(
+            IllegalStateException("400"),
+            AppCheckDiagnosis.TokenError(
+                "reCAPTCHA Enterprise",
+                "FirebaseException",
+                "Error returned from API. code: 400 body: App attestation failed."
+            )
+        )
+        assertTrue(http400.message.orEmpty().contains("error HTTP 400"))
+        assertTrue(http400.message.orEmpty().contains("App attestation failed."))
     }
 }

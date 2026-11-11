@@ -79,56 +79,91 @@ class CloudGeminiManager(
         return buildSafeUserException(e, diagnosis)
     }
 
-    private fun formatTokenErrorDetails(providerMode: String, errorClass: String, sanitizedMessage: String): String {
-        val detail = "$errorClass $sanitizedMessage"
+    private fun formatTechnicalSnippet(sanitizedMessage: String, errorClass: String): String {
+        val clean = sanitizedMessage
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+            .ifBlank { errorClass.trim() }
+        return if (clean.isNotBlank()) "\nDetalle técnico: ${clean.take(180)}" else ""
+    }
+
+    private fun formatTokenErrorDetails(providerMode: String, errorClass: String, rawMessage: String): String {
+        val sanitizedMessage = sanitizeSensitiveDetails(rawMessage)
+        val classificationText = "$errorClass $sanitizedMessage".replace(Regex("""\[[A-Z_]+\]"""), " ")
+        val snippet = formatTechnicalSnippet(sanitizedMessage, errorClass)
         return when {
-            detail.contains("KEYTYPE", ignoreCase = true) ||
-                detail.contains("KEY_TYPE", ignoreCase = true) -> {
+            classificationText.contains("Requests from this Android client", ignoreCase = true) ||
+                classificationText.contains("API_KEY_ANDROID_APP_BLOCKED", ignoreCase = true) ||
+                classificationText.contains("API_KEY_SERVICE_BLOCKED", ignoreCase = true) ||
+                classificationText.contains("API_KEY_INVALID", ignoreCase = true) ||
+                classificationText.contains("API key not valid", ignoreCase = true) ||
+                classificationText.contains("API key", ignoreCase = true) -> {
+                "La clave de API de google-services.json fue bloqueada al validar $providerMode. " +
+                    "En Google Cloud > APIs y servicios > Credenciales, revisa la clave de API Android para asegurarte de que permita 'Firebase App Check API', 'reCAPTCHA Enterprise API' y la huella SHA-1 de tu APK.$snippet"
+            }
+
+            classificationText.contains("KEYTYPE", ignoreCase = true) ||
+                classificationText.contains("KEY_TYPE", ignoreCase = true) -> {
                 "La Site Key configurada en reCAPTCHA Enterprise no es de tipo Android ($providerMode). " +
-                    "En Google Cloud > reCAPTCHA Enterprise, crea o usa una clave con plataforma 'Android' para el paquete utk.notes.gemini."
+                    "En Google Cloud > reCAPTCHA Enterprise, crea o usa una clave con plataforma 'Android' para el paquete utk.notes.gemini.$snippet"
             }
 
-            detail.contains("SITE_KEY", ignoreCase = true) ||
-                detail.contains("sitekey", ignoreCase = true) ||
-                detail.contains("site key", ignoreCase = true) -> {
+            classificationText.contains("SITE_KEY", ignoreCase = true) ||
+                classificationText.contains("sitekey", ignoreCase = true) ||
+                classificationText.contains("site key", ignoreCase = true) -> {
                 "reCAPTCHA Enterprise rechazó la Site Key incluida en esta compilación ($providerMode). " +
-                    "Si compilaste en GitHub Actions, asegúrate de subir la última versión del workflow y de guardar la clave Android correcta en RECAPTCHA_SITE_KEY."
+                    "Si compilaste en GitHub Actions, asegúrate de subir la última versión del workflow y de guardar la clave Android correcta en RECAPTCHA_SITE_KEY.$snippet"
             }
 
-            detail.contains("PACKAGE_NAME", ignoreCase = true) ||
-                detail.contains("package", ignoreCase = true) -> {
+            classificationText.contains("has not been used", ignoreCase = true) ||
+                classificationText.contains("SERVICE_DISABLED", ignoreCase = true) ||
+                classificationText.contains("API_NOT_ENABLED", ignoreCase = true) ||
+                classificationText.contains("API has not been enabled", ignoreCase = true) -> {
+                "Falta habilitar la API de reCAPTCHA Enterprise o Firebase App Check API en el proyecto de Google Cloud de tu google-services.json.$snippet"
+            }
+
+            classificationText.contains("PACKAGE_NAME", ignoreCase = true) ||
+                classificationText.contains("package name", ignoreCase = true) -> {
                 "reCAPTCHA Enterprise rechazó el paquete de la app (utk.notes.gemini). " +
-                    "Comprueba que 'utk.notes.gemini' esté agregado en tu clave Android dentro de Google Cloud reCAPTCHA Enterprise."
+                    "Comprueba que 'utk.notes.gemini' esté agregado en tu clave Android dentro de Google Cloud reCAPTCHA Enterprise.$snippet"
             }
 
-            detail.contains("has not been used", ignoreCase = true) ||
-                detail.contains("SERVICE_DISABLED", ignoreCase = true) ||
-                detail.contains("API_NOT_ENABLED", ignoreCase = true) -> {
-                "Falta habilitar la API de reCAPTCHA Enterprise o Firebase App Check API en el proyecto de Google Cloud de tu google-services.json."
+            classificationText.contains("NETWORK", ignoreCase = true) ||
+                classificationText.contains("UnknownHost", ignoreCase = true) ||
+                classificationText.contains("ConnectException", ignoreCase = true) ||
+                classificationText.contains("timeout", ignoreCase = true) -> {
+                "No se pudo conectar con reCAPTCHA / Google Play Services. Verifica tu conexión a Internet y que la fecha y hora automáticas estén activadas.$snippet"
             }
 
-            detail.contains("NETWORK", ignoreCase = true) ||
-                detail.contains("UnknownHost", ignoreCase = true) ||
-                detail.contains("ConnectException", ignoreCase = true) ||
-                detail.contains("timeout", ignoreCase = true) -> {
-                "No se pudo conectar con reCAPTCHA / Google Play Services. Verifica tu conexión a Internet y que la fecha y hora automáticas estén activadas."
+            classificationText.contains("PlayServices", ignoreCase = true) ||
+                classificationText.contains("API_UNAVAILABLE", ignoreCase = true) ||
+                classificationText.contains("SERVICE_INVALID", ignoreCase = true) -> {
+                "Google Play Services no pudo validar reCAPTCHA en este dispositivo ($errorClass).$snippet"
             }
 
-            detail.contains("PlayServices", ignoreCase = true) ||
-                detail.contains("API_UNAVAILABLE", ignoreCase = true) ||
-                detail.contains("SERVICE_INVALID", ignoreCase = true) -> {
-                "Google Play Services no pudo validar reCAPTCHA en este dispositivo ($errorClass)."
+            Regex("""\b404\b""").containsMatchIn(classificationText) ||
+                classificationText.contains("NOT_FOUND", ignoreCase = true) -> {
+                "Firebase App Check devolvió error HTTP 404 al intercambiar el token de $providerMode. " +
+                    "Esto indica que la app utk.notes.gemini aún no tiene vinculado reCAPTCHA Enterprise en Firebase Console > App Check > Apps, " +
+                    "o que RECAPTCHA_SITE_KEY y google-services.json pertenecen a proyectos distintos.$snippet"
             }
 
-            detail.contains("403", ignoreCase = true) ||
-                detail.contains("400", ignoreCase = true) ||
-                detail.contains("404", ignoreCase = true) ||
-                detail.contains("INVALID_ARGUMENT", ignoreCase = true) ||
-                detail.contains("attestation", ignoreCase = true) ||
-                detail.contains("exchange", ignoreCase = true) -> {
-                "Firebase App Check rechazó el intercambio de $providerMode (error HTTP 400/403/404). " +
-                    "Comprueba en Firebase Console > App Check > Apps que tu app Android (utk.notes.gemini) tenga registrado reCAPTCHA Enterprise con la misma Site Key de RECAPTCHA_SITE_KEY, " +
-                    "que la API de reCAPTCHA Enterprise esté habilitada en el proyecto de google-services.json y que esté activada la opción 'Support applications distributed outside of the Google Play Store'."
+            Regex("""\b403\b""").containsMatchIn(classificationText) ||
+                classificationText.contains("PERMISSION_DENIED", ignoreCase = true) -> {
+                "Firebase App Check rechazó el intercambio de $providerMode (error HTTP 403). " +
+                    "Comprueba: (1) en Firebase Console > App Check > Apps que utk.notes.gemini tenga vinculado reCAPTCHA Enterprise con la misma Site Key de RECAPTCHA_SITE_KEY, " +
+                    "(2) en Google Cloud que 'reCAPTCHA Enterprise API' y 'Firebase App Check API' estén habilitadas y sin bloqueo en la clave de API de google-services.json, y " +
+                    "(3) en Google Cloud > reCAPTCHA Enterprise que esté activada la opción 'Support applications distributed outside of the Google Play Store'.$snippet"
+            }
+
+            Regex("""\b400\b""").containsMatchIn(classificationText) ||
+                classificationText.contains("INVALID_ARGUMENT", ignoreCase = true) ||
+                classificationText.contains("attestation", ignoreCase = true) ||
+                classificationText.contains("exchange", ignoreCase = true) -> {
+                val codeTag = if (Regex("""\b400\b""").containsMatchIn(classificationText)) "error HTTP 400" else "error de validación"
+                "Firebase App Check rechazó el intercambio de $providerMode ($codeTag). " +
+                    "Comprueba en Firebase Console > App Check > Apps que utk.notes.gemini tenga registrado reCAPTCHA Enterprise con exactamente la misma Site Key de RECAPTCHA_SITE_KEY (sin espacios ni comillas), " +
+                    "que la clave sea de plataforma Android en el mismo proyecto de google-services.json y que esté activada la opción 'Support applications distributed outside of the Google Play Store'.$snippet"
             }
 
             else -> {
@@ -199,8 +234,11 @@ class CloudGeminiManager(
 
                     raw.contains("API key", ignoreCase = true) ||
                         raw.contains("API_KEY_INVALID", ignoreCase = true) ||
+                        raw.contains("API_KEY_SERVICE_BLOCKED", ignoreCase = true) ||
+                        raw.contains("API_KEY_ANDROID_APP_BLOCKED", ignoreCase = true) ||
                         raw.contains("Requests from this Android client", ignoreCase = true) -> {
-                        "La clave de API del archivo google-services.json fue rechazada o tiene restricciones incompatibles con Firebase AI Logic."
+                        "La clave de API del archivo google-services.json fue rechazada o tiene restricciones incompatibles con Firebase AI Logic." +
+                            if (safeRaw.isNotBlank()) "\nDetalle técnico: ${safeRaw.take(180)}" else ""
                     }
 
                     raw.contains("429", ignoreCase = true) ||
