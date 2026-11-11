@@ -43,6 +43,7 @@ import com.example.data.local.llm.LlmModelState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -1537,6 +1538,10 @@ fun AppSettingsDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier
+            .fillMaxWidth(0.94f)
+            .widthIn(max = 560.dp),
         containerColor = CosmicSurfaceVariant,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {

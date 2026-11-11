@@ -12,10 +12,15 @@ import com.example.data.model.PageEntity
 import com.example.data.remote.DriveSyncManager
 import com.example.data.remote.SyncState
 import com.example.data.repository.NotesRepository
+import com.example.data.local.ai.AiApiSettingsState
+import com.example.data.local.ai.AiStudioConfigStore
+import com.example.data.local.ai.ApiKeyValidationState
 import com.example.data.local.llm.LocalLlmManager
 import com.example.data.local.llm.ModelDownloadVerifier
 import com.example.data.local.llm.ModelDownloadStatus
 import com.example.data.local.memory.NoteMemoryVaultManager
+import com.example.data.remote.gemini.GoogleAiStudioManager
+import com.example.data.remote.gemini.MissingApiKeyException
 import com.example.ui.reminders.NotificationHelper
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -32,7 +37,7 @@ data class AuraActionResponse(
 )
 
 enum class AiEngineType {
-    GEMINI_CLOUD,
+    GOOGLE_AI_STUDIO,
     AURA_LOCAL
 }
 
@@ -44,13 +49,71 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     val localLlm = LocalLlmManager(application)
     val modelVerifier = ModelDownloadVerifier(application)
     val memoryVault = NoteMemoryVaultManager(application)
-    val cloudGemini = com.example.data.remote.gemini.CloudGeminiManager { getApplication<Application>() }
+    val aiStudioConfig = AiStudioConfigStore(application)
 
-    private val _selectedAiEngine = MutableStateFlow(AiEngineType.GEMINI_CLOUD)
+    private val _aiSettingsState = MutableStateFlow(aiStudioConfig.getSettingsSnapshot())
+    val aiSettingsState: StateFlow<AiApiSettingsState> = _aiSettingsState.asStateFlow()
+
+    val googleAiStudio = GoogleAiStudioManager(
+        apiKeyProvider = { aiStudioConfig.getDecryptedApiKey() },
+        modelProvider = { _aiSettingsState.value.selectedModel }
+    )
+
+    private val _selectedAiEngine = MutableStateFlow(aiStudioConfig.getSavedEngineType())
     val selectedAiEngine: StateFlow<AiEngineType> = _selectedAiEngine.asStateFlow()
 
     fun setAiEngine(engine: AiEngineType) {
+        aiStudioConfig.saveEngineType(engine)
         _selectedAiEngine.value = engine
+    }
+
+    fun saveGoogleAiStudioApiKey(rawKey: String) {
+        val currentValidation = ApiKeyValidationState.Idle
+        _aiSettingsState.value = aiStudioConfig.saveApiKey(rawKey).copy(
+            validationState = currentValidation
+        )
+    }
+
+    fun clearGoogleAiStudioApiKey() {
+        _aiSettingsState.value = aiStudioConfig.clearApiKey().copy(
+            validationState = ApiKeyValidationState.Idle
+        )
+    }
+
+    fun setGoogleAiStudioModel(modelId: String) {
+        val currentValidation = _aiSettingsState.value.validationState
+        _aiSettingsState.value = aiStudioConfig.saveSelectedModel(modelId).copy(
+            validationState = currentValidation
+        )
+    }
+
+    fun testGoogleAiStudioConnection(candidateApiKey: String? = null) {
+        val trimmedCandidate = candidateApiKey?.trim()?.takeIf { it.isNotEmpty() }
+        viewModelScope.launch {
+            _aiSettingsState.value = _aiSettingsState.value.copy(
+                validationState = ApiKeyValidationState.Validating
+            )
+            try {
+                val models = googleAiStudio.listAvailableModels(apiKeyOverride = trimmedCandidate)
+                if (trimmedCandidate != null) {
+                    aiStudioConfig.saveApiKey(trimmedCandidate)
+                }
+                val updated = aiStudioConfig.saveDiscoveredModels(models)
+                _aiSettingsState.value = updated.copy(
+                    validationState = ApiKeyValidationState.Valid(models.size)
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val safeError = com.example.util.sanitizeSensitiveDetails(
+                    e.localizedMessage.orEmpty(),
+                    trimmedCandidate
+                ).ifBlank { "No se pudo verificar la clave en Google AI Studio." }
+                _aiSettingsState.value = _aiSettingsState.value.copy(
+                    validationState = ApiKeyValidationState.Invalid(safeError)
+                )
+            }
+        }
     }
 
     init {
@@ -878,23 +941,27 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 return@launch
             }
 
-            if (_selectedAiEngine.value == AiEngineType.GEMINI_CLOUD) {
+            if (_selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO) {
+                val activeModelId = _aiSettingsState.value.selectedModel
                 val summary = currentNotes.take(5).joinToString("\n") { "• ${it.title}: ${it.content.take(80)}" }
                 val suggestions = try {
                     val prompt = "En base a estas notas del usuario:\n$summary\nGenera 3 sugerencias breves de qué nota escribir o investigar a continuación. Devuelve exactamente 3 líneas separadas por salto de línea sin viñetas."
-                    val resp = cloudGemini.generateContent(prompt)
+                    val resp = googleAiStudio.generateContent(
+                        prompt = prompt,
+                        includeThoughtBlock = false
+                    )
                     resp.lines().map { it.trim().removePrefix("•").removePrefix("-").trim() }.filter { it.isNotBlank() }.take(3)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    android.util.Log.e("AetherViewModel", "Error generando sugerencias con Gemini", e)
+                    android.util.Log.e("AetherViewModel", "Error generando sugerencias con Google AI Studio ($activeModelId)", e)
                     _aiMessage.value = com.example.util.sanitizeSensitiveDetails(
                         e.localizedMessage.orEmpty()
-                    ).ifBlank { "No se pudo conectar con Gemini 3.5 Flash-Lite." }
+                    ).ifBlank { "No se pudo conectar con Google AI Studio ($activeModelId)." }
                     emptyList()
                 }
                 _aiSuggestions.value = if (suggestions.isNotEmpty()) suggestions else listOf(
-                    "Sintetiza tus notas recientes con Gemini.",
+                    "Sintetiza tus notas recientes con Google AI Studio.",
                     "Crea una nueva nota de resumen para tus proyectos.",
                     "Organiza tus notas clave con etiquetas y colores."
                 )
@@ -943,24 +1010,29 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 2. Si la instrucción pide corregir, devuelve el párrafo corregido. Si pide expandir, devuelve el párrafo expandido. Si pide resumir, devuelve la síntesis en un párrafo o lista concisa.
             """.trimIndent()
 
-            if (_selectedAiEngine.value == AiEngineType.GEMINI_CLOUD) {
+            if (_selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO) {
+                val activeModelId = _aiSettingsState.value.selectedModel
                 var errorHandled = false
                 val response = try {
-                    cloudGemini.generateContent(prompt = prompt, systemInstruction = sysPrompt)
+                    googleAiStudio.generateContent(
+                        prompt = prompt,
+                        systemInstruction = sysPrompt,
+                        includeThoughtBlock = false
+                    )
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    android.util.Log.e("AetherViewModel", "Error mejorando párrafo con Gemini", e)
+                    android.util.Log.e("AetherViewModel", "Error mejorando párrafo con Google AI Studio ($activeModelId)", e)
                     _aiMessage.value = com.example.util.sanitizeSensitiveDetails(
                         e.localizedMessage.orEmpty()
-                    ).ifBlank { "Error al mejorar el párrafo con Gemini." }
+                    ).ifBlank { "Error al mejorar el párrafo con Google AI Studio ($activeModelId)." }
                     errorHandled = true
                     null
                 }
                 val clean = response?.trim()?.removeSurrounding("\"")?.removeSurrounding("```")?.trim()
                 if (!clean.isNullOrBlank()) {
                     onSuccess(clean)
-                    _aiMessage.value = "Párrafo actualizado con Gemini"
+                    _aiMessage.value = "Párrafo actualizado con $activeModelId"
                 } else if (!errorHandled) {
                     _aiMessage.value = "No se pudieron aplicar cambios al párrafo."
                 }
@@ -992,21 +1064,23 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             _aiLoading.value = true
             _aiMessage.value = "Modificando nota..."
 
-            if (_selectedAiEngine.value == AiEngineType.GEMINI_CLOUD) {
+            if (_selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO) {
+                val activeModelId = _aiSettingsState.value.selectedModel
                 val prompt = "Título actual: ${note.title}\nContenido actual:\n${note.content}\n\nInstrucción:\n$instruction\n\nDevuelve la nota actualizada en formato:\nTITULO: <nuevo o mismo titulo>\nCONTENIDO: <nuevo contenido en prosa o bloques>"
                 var errorHandled = false
                 val response = try {
-                    cloudGemini.generateContent(
+                    googleAiStudio.generateContent(
                         prompt = prompt,
-                        systemInstruction = "Eres un asistente editorial experto. Modifica la nota siguiendo rigurosamente las instrucciones del usuario."
+                        systemInstruction = "Eres un asistente editorial experto. Modifica la nota siguiendo rigurosamente las instrucciones del usuario.",
+                        includeThoughtBlock = false
                     )
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    android.util.Log.e("AetherViewModel", "Error modificando nota con Gemini", e)
+                    android.util.Log.e("AetherViewModel", "Error modificando nota con Google AI Studio ($activeModelId)", e)
                     _aiMessage.value = com.example.util.sanitizeSensitiveDetails(
                         e.localizedMessage.orEmpty()
-                    ).ifBlank { "Error al modificar la nota con Gemini." }
+                    ).ifBlank { "Error al modificar la nota con Google AI Studio." }
                     errorHandled = true
                     null
                 }
@@ -1026,9 +1100,9 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     )
                     repository.updateNote(updatedNote)
                     _selectedNote.value = updatedNote
-                    _aiMessage.value = "Nota modificada exitosamente con Gemini!"
+                    _aiMessage.value = "Nota modificada exitosamente con $activeModelId"
                 } else if (!errorHandled) {
-                    _aiMessage.value = "No se pudieron aplicar cambios con Gemini."
+                    _aiMessage.value = "No se pudieron aplicar cambios con Google AI Studio."
                 }
                 _aiLoading.value = false
                 return@launch
@@ -1069,21 +1143,23 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             _aiLoading.value = true
             _aiMessage.value = "Generando nueva nota..."
 
-            if (_selectedAiEngine.value == AiEngineType.GEMINI_CLOUD) {
+            if (_selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO) {
+                val activeModelId = _aiSettingsState.value.selectedModel
                 val prompt = "Crea una nota completa, bien estructurada y detallada en español sobre: $instruction\nFormato de salida:\nTITULO: <titulo breve y representativo>\nCONTENIDO: <contenido completo estructurado en prosa y subtitulos>"
                 var errorHandled = false
                 val response = try {
-                    cloudGemini.generateContent(
+                    googleAiStudio.generateContent(
                         prompt = prompt,
-                        systemInstruction = "Eres Aura impulsada por Gemini 3.5 Flash-Lite. Redacta notas informativas, claras y útiles en prosa estructurada."
+                        systemInstruction = "Eres Aura impulsada por $activeModelId. Redacta notas informativas, claras y útiles en prosa estructurada.",
+                        includeThoughtBlock = false
                     )
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    android.util.Log.e("AetherViewModel", "Error creando nota con Gemini", e)
+                    android.util.Log.e("AetherViewModel", "Error creando nota con Google AI Studio ($activeModelId)", e)
                     _aiMessage.value = com.example.util.sanitizeSensitiveDetails(
                         e.localizedMessage.orEmpty()
-                    ).ifBlank { "Error al crear la nota con Gemini." }
+                    ).ifBlank { "Error al crear la nota con Google AI Studio ($activeModelId)." }
                     errorHandled = true
                     null
                 }
@@ -1091,20 +1167,21 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     val (newTitle, newContent) = if (response.contains("CONTENIDO:")) {
                         val t = response.substringAfter("TITULO:").substringBefore("CONTENIDO:").trim()
                         val c = response.substringAfter("CONTENIDO:").trim()
-                        Pair(t.ifBlank { "Nota de Gemini" }, c)
+                        Pair(t.ifBlank { "Nota de Aura" }, c)
                     } else {
-                        Pair("Nota de Gemini", response)
+                        Pair("Nota de Aura", response)
                     }
                     val newNote = repository.createNote(
                         pageId = currentPage.id,
                         title = newTitle,
                         content = newContent,
-                        tags = "Gemini, IA"
+                        tags = "Gemini, IA",
+                        userEmail = currentEmail.value
                     )
                     _selectedNote.value = newNote
-                    _aiMessage.value = "Nota creada con Gemini 3.5 Flash-Lite!"
+                    _aiMessage.value = "Nota creada con $activeModelId"
                 } else if (!errorHandled) {
-                    _aiMessage.value = "No se pudo generar la nota con Gemini."
+                    _aiMessage.value = "No se pudo generar la nota con Google AI Studio."
                 }
                 _aiLoading.value = false
                 return@launch
@@ -1765,32 +1842,33 @@ RESPUESTA FINAL (Markdown directo en español):
             sanitizedHistory.takeLast(4)
         }
 
-        val rawResponse = if (_selectedAiEngine.value == AiEngineType.GEMINI_CLOUD) {
-            _chatbotStatusText.value = "Gemini 3.5 Flash-Lite pensando..."
-            _liveThinkingText.value = "Conectando con Gemini 3.5 Flash-Lite (Firebase AI Logic)..."
+        val rawResponse = if (_selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO) {
+            val activeModelId = _aiSettingsState.value.selectedModel
+            _chatbotStatusText.value = "Conectando con Google AI Studio ($activeModelId)..."
+            _liveThinkingText.value = "Enviando consulta directa a $activeModelId..."
             try {
-                val geminiPrompt = if (effectiveHistory.isNotEmpty()) {
-                    val historyStr = effectiveHistory.joinToString("\n") { (role, txt) ->
-                        if (role == "user") "Usuario: $txt" else "Aura: $txt"
-                    }
-                    "Historial previo de la conversación:\n$historyStr\n\nConsulta actual:\n$safeMessage"
-                } else {
-                    safeMessage
-                }
-
-                cloudGemini.generateContent(
-                    prompt = geminiPrompt + imageDisclaimer,
+                googleAiStudio.generateContent(
+                    prompt = safeMessage + imageDisclaimer,
                     systemInstruction = effectiveSystemPrompt,
-                    imageBase64 = imageBase64
+                    imageBase64 = imageBase64,
+                    imageMimeType = mimeType,
+                    history = effectiveHistory,
+                    includeThoughtBlock = true,
+                    onStatusUpdate = { status ->
+                        _chatbotStatusText.value = status
+                        _liveThinkingText.value = status
+                    }
                 )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
+            } catch (e: MissingApiKeyException) {
+                e.message ?: "Configura tu clave API de Google AI Studio en Ajustes de IA (engranaje) o cambia al motor 'Aura Local'."
             } catch (e: Exception) {
-                android.util.Log.e("AetherViewModel", "Error en Gemini 3.5 Flash-Lite", e)
+                android.util.Log.e("AetherViewModel", "Error en Google AI Studio ($activeModelId)", e)
                 val safeError = com.example.util.sanitizeSensitiveDetails(
                     e.localizedMessage ?: "Error de conexión"
-                ).ifBlank { "Error de conexión con Gemini 3.5 Flash-Lite" }
-                "$safeError\n\nPuedes alternar al motor 'Aura Local' en Ajustes de IA si deseas operar sin conexión."
+                ).ifBlank { "Error de conexión con Google AI Studio ($activeModelId)" }
+                "$safeError\n\nSi el problema es de cuota, puedes cambiar a 'gemini-2.5-flash-lite' o alternar a 'Aura Local' en Ajustes de IA."
             } finally {
                 _chatbotStatusText.value = null
                 _liveThinkingText.value = null
@@ -1799,7 +1877,7 @@ RESPUESTA FINAL (Markdown directo en español):
             // --- 100% LOCAL IA ---
             val status = modelVerifier.checkCurrentStatus()
             if (status !is ModelDownloadStatus.Ready) {
-                return "El modelo local Aura aún no está descargado.\n\nVe a Ajustes de IA y pulsa 'Descargar Modelo' para habilitar las funciones de inteligencia artificial 100% privada y local, o activa el motor Gemini 3.5 Flash-Lite para respuestas ultra rápidas en la nube."
+                return "El modelo local Aura aún no está descargado.\n\nVe a Ajustes de IA y pulsa 'Descargar Modelo' para habilitar las funciones de inteligencia artificial 100% privada y local, o activa el motor Google AI Studio con tu clave API gratuita."
             }
 
             val requiredContext = localLlm.calculateElasticContext(

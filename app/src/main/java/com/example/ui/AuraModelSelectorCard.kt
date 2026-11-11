@@ -12,6 +12,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -30,6 +31,7 @@ fun AuraModelSelectorCard(
 ) {
     val scope = rememberCoroutineScope()
     val selectedAiEngine by viewModel.selectedAiEngine.collectAsStateWithLifecycle()
+    val aiSettings by viewModel.aiSettingsState.collectAsStateWithLifecycle()
     val activeModel by viewModel.modelVerifier.activeModel.collectAsStateWithLifecycle()
     val modelDownloadStatus by viewModel.modelVerifier.status.collectAsStateWithLifecycle()
     val downloadingModelId by viewModel.modelVerifier.downloadingModelId.collectAsStateWithLifecycle()
@@ -48,13 +50,13 @@ fun AuraModelSelectorCard(
                 Icon(
                     Icons.Default.AutoAwesome,
                     contentDescription = null,
-                    tint = GeminiCyanAccent,
+                    tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = "Motor de Inteligencia Artificial",
-                    color = TextPrimary,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp
                 )
@@ -63,84 +65,22 @@ fun AuraModelSelectorCard(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Tarjeta Gemini 3.5 Flash-Lite (Cloud)
-        val isGeminiActive = selectedAiEngine == AiEngineType.GEMINI_CLOUD
-        Surface(
-            color = if (isGeminiActive) CosmicSurface.copy(alpha = 0.95f) else CosmicSurfaceVariant.copy(alpha = 0.5f),
-            shape = RoundedCornerShape(12.dp),
-            border = BorderStroke(
-                width = if (isGeminiActive) 1.5.dp else 1.dp,
-                color = if (isGeminiActive) GeminiCyanAccent else CosmicBorder
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 4.dp)
-                .clickable { viewModel.setAiEngine(AiEngineType.GEMINI_CLOUD) }
-        ) {
-            Row(
-                modifier = Modifier.padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                RadioButton(
-                    selected = isGeminiActive,
-                    onClick = { viewModel.setAiEngine(AiEngineType.GEMINI_CLOUD) },
-                    colors = RadioButtonDefaults.colors(selectedColor = GeminiCyanAccent)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "Gemini 3.5 Flash-Lite",
-                            color = TextPrimary,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Surface(
-                            color = GeminiCyanAccent.copy(alpha = 0.2f),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = "Nube Ultra Rápida",
-                                color = GeminiCyanAccent,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
-                    Text(
-                        text = "Respuestas en prosa instantáneas, análisis de archivos y multimodal con Google Cloud Firebase.",
-                        color = TextSecondary,
-                        fontSize = 12.sp
-                    )
-                    if (isGeminiActive) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.Shield,
-                                contentDescription = null,
-                                tint = GeminiCyanAccent,
-                                modifier = Modifier.size(13.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "Protegido con Firebase App Check",
-                                color = GeminiCyanAccent,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
-                }
-            }
-        }
+        // Tarjeta 1: Google AI Studio (API Propia gratuita)
+        GoogleAiStudioEngineCard(
+            isCloudActive = selectedAiEngine == AiEngineType.GOOGLE_AI_STUDIO,
+            aiSettings = aiSettings,
+            onSelectEngine = { viewModel.setAiEngine(AiEngineType.GOOGLE_AI_STUDIO) },
+            onSaveApiKey = { viewModel.saveGoogleAiStudioApiKey(it) },
+            onClearApiKey = { viewModel.clearGoogleAiStudioApiKey() },
+            onTestConnection = { viewModel.testGoogleAiStudioConnection(it) },
+            onSelectModel = { viewModel.setGoogleAiStudioModel(it) }
+        )
 
-        // Tarjeta Aura Local (Offline / Qwen)
+        // Tarjeta 2: Aura Local (Offline / Qwen)
         val isLocalActive = selectedAiEngine == AiEngineType.AURA_LOCAL
         Surface(
-            color = if (isLocalActive) CosmicSurface.copy(alpha = 0.95f) else CosmicSurfaceVariant.copy(alpha = 0.5f),
-            shape = RoundedCornerShape(12.dp),
+            color = if (isLocalActive) CosmicSurface.copy(alpha = 0.96f) else CosmicSurfaceVariant.copy(alpha = 0.5f),
+            shape = RoundedCornerShape(14.dp),
             border = BorderStroke(
                 width = if (isLocalActive) 1.5.dp else 1.dp,
                 color = if (isLocalActive) GeminiCyanAccent else CosmicBorder
@@ -148,6 +88,7 @@ fun AuraModelSelectorCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 4.dp)
+                .testTag("engine_aura_local_card")
                 .clickable { viewModel.setAiEngine(AiEngineType.AURA_LOCAL) }
         ) {
             Row(
@@ -157,14 +98,17 @@ fun AuraModelSelectorCard(
                 RadioButton(
                     selected = isLocalActive,
                     onClick = { viewModel.setAiEngine(AiEngineType.AURA_LOCAL) },
-                    colors = RadioButtonDefaults.colors(selectedColor = GeminiCyanAccent)
+                    colors = RadioButtonDefaults.colors(selectedColor = GeminiCyanAccent),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("engine_aura_local_radio")
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(4.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = "Aura Local (On-Device)",
-                            color = TextPrimary,
+                            color = MaterialTheme.colorScheme.onSurface,
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp
                         )
@@ -174,7 +118,7 @@ fun AuraModelSelectorCard(
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Text(
-                                text = "100% Offline",
+                                text = "0 Límites • Offline",
                                 color = TextSecondary,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
@@ -183,8 +127,8 @@ fun AuraModelSelectorCard(
                         }
                     }
                     Text(
-                        text = "Ejecución privada en la memoria de tu teléfono sin conexión.",
-                        color = TextSecondary,
+                        text = "Ejecución privada en la memoria de tu teléfono sin internet ni cuotas.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp
                     )
                 }
@@ -200,211 +144,201 @@ fun AuraModelSelectorCard(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(vertical = 4.dp)
             )
-        }
 
-        // Lista de modelos locales si se activa local
-        if (isLocalActive) {
-        LlmModelCatalog.ALL_MODELS.forEach { model ->
-            val isActive = activeModel.id == model.id
-            val isDownloaded = viewModel.modelVerifier.isModelDownloaded(model)
-            val isDownloadingThis = downloadingModelId == model.id
+            LlmModelCatalog.ALL_MODELS.forEach { model ->
+                val isActive = activeModel.id == model.id
+                val isDownloaded = viewModel.modelVerifier.isModelDownloaded(model)
+                val isDownloadingThis = downloadingModelId == model.id
+                val isLoadedInRam = isActive && llmModelState is LlmModelState.Ready
 
-            val isLoadedInRam = isActive && llmModelState is LlmModelState.Ready
-
-            Surface(
-                color = if (isActive) CosmicSurface.copy(alpha = 0.95f) else CosmicSurfaceVariant.copy(alpha = 0.5f),
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(
-                    width = if (isActive) 1.5.dp else 1.dp,
-                    color = if (isActive) GeminiCyanAccent else CosmicBorder
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 5.dp)
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    // Fila superior: Título, Tag y botón de eliminar si está descargado
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = model.name,
-                                    color = TextPrimary,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Surface(
-                                    color = when (model.tag) {
-                                        "2 GB RAM" -> Color(0xFF00E676).copy(alpha = 0.2f)
-                                        "3 GB RAM" -> Color(0xFFFFD54F).copy(alpha = 0.2f)
-                                        "4 GB RAM" -> Color(0xFFB388FF).copy(alpha = 0.25f)
-                                        else -> CosmicBorder
-                                    },
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text(
-                                        text = model.tag,
-                                        color = when (model.tag) {
-                                            "2 GB RAM" -> Color(0xFF69F0AE)
-                                            "3 GB RAM" -> Color(0xFFFFE082)
-                                            "4 GB RAM" -> Color(0xFFD1C4E9)
-                                            else -> TextSecondary
-                                        },
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = "Descarga: ${model.downloadSizeDisplay}  •  RAM: ${model.ramRequiredDisplay}",
-                                color = TextSecondary,
-                                fontSize = 11.sp
-                            )
-                        }
-
-                        if (isDownloaded && !isDownloadingThis) {
-                            IconButton(
-                                onClick = { modelToDelete = model },
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.DeleteOutline,
-                                    contentDescription = "Eliminar archivo descargado",
-                                    tint = Color.Red.copy(alpha = 0.7f),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = model.description,
-                        color = TextSecondary.copy(alpha = 0.85f),
-                        fontSize = 12.sp,
-                        lineHeight = 16.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Estado y acciones
-                    if (isDownloadingThis) {
-                        val currentProgress = (modelDownloadStatus as? ModelDownloadStatus.Downloading)?.progress ?: 0f
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "Descargando: ${(currentProgress * 100).toInt()}%",
-                                    color = GeminiBlue,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                TextButton(
-                                    onClick = { viewModel.modelVerifier.cancelDownload() },
-                                    contentPadding = PaddingValues(0.dp)
-                                ) {
-                                    Text("Cancelar", color = Color.Red, fontSize = 11.sp)
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            LinearProgressIndicator(
-                                progress = { currentProgress },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(6.dp)
-                                    .clip(RoundedCornerShape(3.dp)),
-                                color = GeminiBlue,
-                                trackColor = CosmicBorder
-                            )
-                        }
-                    } else if (isDownloaded) {
+                Surface(
+                    color = if (isActive) CosmicSurface.copy(alpha = 0.95f) else CosmicSurfaceVariant.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(
+                        width = if (isActive) 1.5.dp else 1.dp,
+                        color = if (isActive) GeminiCyanAccent else CosmicBorder
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 5.dp)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = if (isLoadedInRam) Color(0xFF4CAF50) else Color(0xFF81C784),
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Spacer(modifier = Modifier.width(5.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = model.name,
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Surface(
+                                        color = when (model.tag) {
+                                            "2 GB RAM" -> Color(0xFF00E676).copy(alpha = 0.2f)
+                                            "3 GB RAM" -> Color(0xFFFFD54F).copy(alpha = 0.2f)
+                                            "4 GB RAM" -> Color(0xFFB388FF).copy(alpha = 0.25f)
+                                            else -> CosmicBorder
+                                        },
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text(
+                                            text = model.tag,
+                                            color = when (model.tag) {
+                                                "2 GB RAM" -> Color(0xFF69F0AE)
+                                                "3 GB RAM" -> Color(0xFFFFE082)
+                                                "4 GB RAM" -> Color(0xFFD1C4E9)
+                                                else -> TextSecondary
+                                            },
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = if (isLoadedInRam) "Activo en RAM" else "Descargado en disco",
-                                    color = if (isLoadedInRam) Color(0xFF81C784) else TextSecondary,
-                                    fontSize = 12.sp,
-                                    fontWeight = if (isLoadedInRam) FontWeight.Bold else FontWeight.Normal
+                                    text = "Descarga: ${model.downloadSizeDisplay}  •  RAM: ${model.ramRequiredDisplay}",
+                                    color = TextSecondary,
+                                    fontSize = 11.sp
                                 )
                             }
 
-                            if (!isActive) {
-                                OutlinedButton(
-                                    onClick = {
-                                        viewModel.selectAndLoadModel(model)
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                    modifier = Modifier.height(32.dp),
-                                    border = BorderStroke(1.dp, GeminiCyanAccent)
+                            if (isDownloaded && !isDownloadingThis) {
+                                IconButton(
+                                    onClick = { modelToDelete = model },
+                                    modifier = Modifier.minimumInteractiveComponentSize()
                                 ) {
-                                    Text("Activar", color = GeminiCyanAccent, fontSize = 12.sp)
-                                }
-                            } else if (!isLoadedInRam) {
-                                Button(
-                                    onClick = {
-                                        scope.launch {
-                                            viewModel.localLlm.ensureModelLoaded(viewModel.modelVerifier.getModelFile(model))
-                                        }
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                    modifier = Modifier.height(32.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
-                                ) {
-                                    Text("Cargar en RAM", color = GeminiOnPrimary, fontSize = 12.sp)
+                                    Icon(
+                                        Icons.Default.DeleteOutline,
+                                        contentDescription = "Eliminar archivo descargado",
+                                        tint = Color.Red.copy(alpha = 0.7f),
+                                        modifier = Modifier.size(18.dp)
+                                    )
                                 }
                             }
                         }
-                    } else {
-                        // No descargado
-                        Button(
-                            onClick = {
-                                viewModel.downloadModel(model)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (model.isRecommendedFor6Gb) Color(0xFF6750A4) else GeminiBlue
-                            ),
-                            contentPadding = PaddingValues(vertical = 6.dp)
-                        ) {
-                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Descargar ${model.name} (${model.downloadSizeDisplay})",
-                                color = Color.White,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = model.description,
+                            color = TextSecondary.copy(alpha = 0.85f),
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        if (isDownloadingThis) {
+                            val currentProgress = (modelDownloadStatus as? ModelDownloadStatus.Downloading)?.progress ?: 0f
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Descargando: ${(currentProgress * 100).toInt()}%",
+                                        color = GeminiBlue,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    TextButton(
+                                        onClick = { viewModel.modelVerifier.cancelDownload() },
+                                        modifier = Modifier.minimumInteractiveComponentSize()
+                                    ) {
+                                        Text("Cancelar", color = Color.Red, fontSize = 11.sp)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                LinearProgressIndicator(
+                                    progress = { currentProgress },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp)),
+                                    color = GeminiBlue,
+                                    trackColor = CosmicBorder
+                                )
+                            }
+                        } else if (isDownloaded) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = if (isLoadedInRam) Color(0xFF4CAF50) else Color(0xFF81C784),
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = if (isLoadedInRam) "Activo en RAM" else "Descargado en disco",
+                                        color = if (isLoadedInRam) Color(0xFF81C784) else TextSecondary,
+                                        fontSize = 12.sp,
+                                        fontWeight = if (isLoadedInRam) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+
+                                if (!isActive) {
+                                    OutlinedButton(
+                                        onClick = { viewModel.selectAndLoadModel(model) },
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                        modifier = Modifier.minimumInteractiveComponentSize(),
+                                        border = BorderStroke(1.dp, GeminiCyanAccent)
+                                    ) {
+                                        Text("Activar", color = GeminiCyanAccent, fontSize = 12.sp)
+                                    }
+                                } else if (!isLoadedInRam) {
+                                    Button(
+                                        onClick = {
+                                            scope.launch {
+                                                viewModel.localLlm.ensureModelLoaded(viewModel.modelVerifier.getModelFile(model))
+                                            }
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                        modifier = Modifier.minimumInteractiveComponentSize(),
+                                        colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
+                                    ) {
+                                        Text("Cargar en RAM", color = GeminiOnPrimary, fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        } else {
+                            Button(
+                                onClick = { viewModel.downloadModel(model) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .minimumInteractiveComponentSize(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (model.isRecommendedFor6Gb) Color(0xFF6750A4) else GeminiBlue
+                                ),
+                                contentPadding = PaddingValues(vertical = 8.dp)
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Descargar ${model.name} (${model.downloadSizeDisplay})",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
                         }
                     }
                 }
             }
         }
-        }
     }
 
-    // Cuadro de diálogo de confirmación para eliminar modelo
     if (modelToDelete != null) {
         val target = modelToDelete!!
         AlertDialog(

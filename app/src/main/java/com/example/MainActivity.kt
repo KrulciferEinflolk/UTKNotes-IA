@@ -98,8 +98,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import com.example.util.configureAppCheck
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.window.DialogProperties
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -108,13 +108,11 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        configureAppCheck(this, intent)
     }
 
     @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        configureAppCheck(this, intent)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -8243,10 +8241,16 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
     val selectedNote by viewModel.selectedNote.collectAsStateWithLifecycle()
     val modelDownloadStatus by viewModel.modelVerifier.status.collectAsStateWithLifecycle()
     val llmModelState by viewModel.localLlm.modelState.collectAsStateWithLifecycle()
+    val aiSettings by viewModel.aiSettingsState.collectAsStateWithLifecycle()
+    val selectedAiEngine by viewModel.selectedAiEngine.collectAsStateWithLifecycle()
 
     if (showSettingsDialog) {
         AlertDialog(
             onDismissRequest = { showSettingsDialog = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .widthIn(max = 560.dp),
             containerColor = CosmicSurfaceVariant,
             title = { Text("Ajustes de IA", color = TextPrimary, fontWeight = FontWeight.Bold) },
             text = {
@@ -8458,24 +8462,31 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                 }
             }
 
-            val selectedAiEngine by viewModel.selectedAiEngine.collectAsStateWithLifecycle()
-
             // Center: AI Name + Engine pill
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.clickable {
-                    val nextEngine = if (selectedAiEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) {
-                        com.example.ui.AiEngineType.AURA_LOCAL
-                    } else {
-                        com.example.ui.AiEngineType.GEMINI_CLOUD
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .padding(horizontal = 6.dp)
+                    .minimumInteractiveComponentSize()
+                    .testTag("chatbot_engine_pill")
+                    .clickable {
+                        val nextEngine = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) {
+                            com.example.ui.AiEngineType.AURA_LOCAL
+                        } else {
+                            com.example.ui.AiEngineType.GOOGLE_AI_STUDIO
+                        }
+                        viewModel.setAiEngine(nextEngine)
+                        Toast.makeText(
+                            context,
+                            if (nextEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) {
+                                "Motor activado: Google AI Studio (${aiSettings.selectedModel})"
+                            } else {
+                                "Motor activado: Aura Local (Offline)"
+                            },
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
-                    viewModel.setAiEngine(nextEngine)
-                    Toast.makeText(
-                        context,
-                        if (nextEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) "Motor activado: Gemini 3.5 Flash-Lite" else "Motor activado: Aura Local (Offline)",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
             ) {
                 Text(
                     text = "Aura",
@@ -8484,25 +8495,31 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     fontSize = 16.sp
                 )
                 Surface(
-                    color = if (selectedAiEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) GeminiCyanAccent.copy(alpha = 0.2f) else TextSecondary.copy(alpha = 0.15f),
+                    color = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) GeminiCyanAccent.copy(alpha = 0.2f) else TextSecondary.copy(alpha = 0.15f),
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            imageVector = if (selectedAiEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) Icons.Default.AutoAwesome else Icons.Default.Memory,
+                            imageVector = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) Icons.Default.AutoAwesome else Icons.Default.Memory,
                             contentDescription = null,
-                            tint = if (selectedAiEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) GeminiCyanAccent else TextSecondary,
+                            tint = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) GeminiCyanAccent else TextSecondary,
                             modifier = Modifier.size(11.dp)
                         )
-                        Spacer(modifier = Modifier.width(3.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = if (selectedAiEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) "Gemini 3.5 Flash-Lite" else "Aura Local",
-                            color = if (selectedAiEngine == com.example.ui.AiEngineType.GEMINI_CLOUD) GeminiCyanAccent else TextSecondary,
+                            text = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) {
+                                "AI Studio · ${aiSettings.selectedModel}"
+                            } else {
+                                "Aura Local"
+                            },
+                            color = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) GeminiCyanAccent else TextSecondary,
                             fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -8526,9 +8543,10 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     )
                 }
                 Spacer(modifier = Modifier.width(4.dp))
-                IconButton(onClick = {
-                    showSettingsDialog = true
-                }) {
+                IconButton(
+                    onClick = { showSettingsDialog = true },
+                    modifier = Modifier.testTag("chatbot_settings_button")
+                ) {
                     Icon(
                         imageVector = Icons.Default.Settings,
                         contentDescription = "Configuración",
@@ -8552,7 +8570,9 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.padding(24.dp)
+                    modifier = Modifier
+                        .widthIn(max = 460.dp)
+                        .padding(24.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.AutoAwesome,
@@ -8563,12 +8583,72 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                             .padding(bottom = 16.dp)
                     )
                     Text(
-                        text = "¿Que tienes en mente?",
+                        text = "¿Qué tienes en mente?",
                         color = TextPrimary,
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Light,
                         textAlign = TextAlign.Center
                     )
+
+                    if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO && !aiSettings.hasApiKey) {
+                        Spacer(modifier = Modifier.height(20.dp))
+                        Surface(
+                            color = CosmicSurface,
+                            shape = RoundedCornerShape(16.dp),
+                            border = BorderStroke(1.dp, GeminiCyanAccent.copy(alpha = 0.45f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = "Conecta tu clave API gratuita",
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Pega tu clave de Google AI Studio y elige cualquier modelo Gemini directamente en Ajustes de IA, o usa Aura Local sin conexión.",
+                                    color = TextSecondary,
+                                    fontSize = 12.sp,
+                                    textAlign = TextAlign.Center,
+                                    lineHeight = 17.sp
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = { showSettingsDialog = true },
+                                        colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .minimumInteractiveComponentSize()
+                                            .testTag("empty_state_open_ai_settings_btn")
+                                    ) {
+                                        Icon(Icons.Default.Key, contentDescription = null, tint = GeminiOnPrimary, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Configurar API", color = GeminiOnPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                    OutlinedButton(
+                                        onClick = { viewModel.setAiEngine(com.example.ui.AiEngineType.AURA_LOCAL) },
+                                        border = BorderStroke(1.dp, CosmicBorder),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .minimumInteractiveComponentSize()
+                                            .testTag("empty_state_use_local_btn")
+                                    ) {
+                                        Icon(Icons.Default.Memory, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Aura Local", color = TextPrimary, fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         } else {
