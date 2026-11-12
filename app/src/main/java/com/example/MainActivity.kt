@@ -163,11 +163,6 @@ class MainActivity : ComponentActivity() {
                                 viewModel = viewModel,
                                 modifier = Modifier.padding(innerPadding)
                             )
-                        } else if (selectedBook == null) {
-                            LibraryMainScreen(
-                                viewModel = viewModel,
-                                modifier = Modifier.padding(innerPadding)
-                            )
                         } else if (selectedNote != null) {
                             androidx.activity.compose.BackHandler {
                                 viewModel.selectNote(null)
@@ -187,6 +182,11 @@ class MainActivity : ComponentActivity() {
                                     viewModel.openChatbot(selectedNote, citation)
                                 },
                                 syncManager = viewModel.syncManager
+                            )
+                        } else if (selectedBook == null) {
+                            LibraryMainScreen(
+                                viewModel = viewModel,
+                                modifier = Modifier.padding(innerPadding)
                             )
                         } else {
                             androidx.activity.compose.BackHandler {
@@ -305,42 +305,16 @@ fun AetherAppScreen(
 
                     if (isPdf) {
                         var totalElementsExtracted = 0
-                        val imageDir = java.io.File(context.filesDir, "extracted_pdf_images").apply { mkdirs() }
                         try {
-                            val reader = com.itextpdf.text.pdf.PdfReader(destFile.absolutePath)
-                            val numPages = reader.numberOfPages
-                            val parser = com.itextpdf.text.pdf.parser.PdfReaderContentParser(reader)
-                            for (page in 1..numPages) {
-                                viewModel.setImportProgress(page, numPages, "Leyendo página $page de $numPages...")
-                                val extractor = PageElementExtractor(context, imageDir, totalElementsExtracted)
-                                parser.processContent(page, extractor)
-                                val pageBlocks = processPageElements(extractor.elements, extractor.markers)
-                                if (pageBlocks.isNotEmpty()) {
-                                    totalElementsExtracted += extractor.elements.size
-                                    val lastBlock = blocks.lastOrNull()
-                                    val firstBlock = pageBlocks.firstOrNull()
-                                    if (lastBlock is EditorBlock.Text && firstBlock is EditorBlock.Text &&
-                                        !lastBlock.isHeader && !firstBlock.isHeader &&
-                                        !lastBlock.isBullet && !firstBlock.isBullet &&
-                                        !lastBlock.isNumbered && !firstBlock.isNumbered &&
-                                        lastBlock.parentToggleId == firstBlock.parentToggleId &&
-                                        !lastBlock.content.trimEnd().endsWith(".") &&
-                                        !firstBlock.content.startsWith("—") &&
-                                        !firstBlock.content.startsWith("–")
-                                    ) {
-                                        val mergedText = if (lastBlock.content.endsWith("-")) {
-                                            lastBlock.content.dropLast(1) + firstBlock.content
-                                        } else {
-                                            lastBlock.content + " " + firstBlock.content
-                                        }
-                                        blocks[blocks.size - 1] = lastBlock.copy(content = mergedText)
-                                        blocks.addAll(pageBlocks.drop(1))
-                                    } else {
-                                        blocks.addAll(pageBlocks)
-                                    }
-                                }
+                            val (extractedBlocks, extractedCount) = com.example.util.PdfStructureExtractor.extractDigitalPdfBlocksFromFile(
+                                context = context,
+                                pdfFile = destFile,
+                                extractImages = true
+                            ) { cur, tot ->
+                                viewModel.setImportProgress(cur, tot, "Leyendo página $cur de $tot...")
                             }
-                            reader.close()
+                            blocks.addAll(extractedBlocks)
+                            totalElementsExtracted = extractedCount
                         } catch (e: Exception) {
                             android.util.Log.e("PDFImport", "Error extracting PDF", e)
                         }
@@ -1641,6 +1615,7 @@ fun AetherInputDialog(
 // --- RICH EDITOR BLOCK STATE DEFINITIONS ---
 sealed class EditorBlock {
     abstract val id: String
+    abstract val parentToggleId: String?
 
     data class Text(
         override val id: String = UUID.randomUUID().toString(),
@@ -1658,7 +1633,7 @@ sealed class EditorBlock {
         var isCollapsed: Boolean = false,
         var isHeader: Boolean = false,
         var indentLevel: Int = 0,
-        var parentToggleId: String? = null
+        override var parentToggleId: String? = null
     ) : EditorBlock()
 
     data class Table(
@@ -1671,15 +1646,15 @@ sealed class EditorBlock {
         var cellColor: String = "Surface",
         var margin: Int = 0,
         var tableWidth: String = "Match",
-        var mergedCells: String = ""
+        var mergedCells: String = "",
+        override var parentToggleId: String? = null
     ) : EditorBlock()
 
     data class Image(
         override val id: String = UUID.randomUUID().toString(),
         var urlOrPath: String = "Mantener pulsado para editar",
-        var caption: String = "", var width: String = "Match", var height: String = "Wrap"
-        
-        
+        var caption: String = "", var width: String = "Match", var height: String = "Wrap",
+        override var parentToggleId: String? = null
     ) : EditorBlock()
 
     data class Audio(
@@ -1687,26 +1662,31 @@ sealed class EditorBlock {
         var name: String = "Mantener pulsado para editar",
         var duration: String = "02:30",
         var isPlaying: Boolean = false,
-        var sourceUrl: String = ""
+        var sourceUrl: String = "",
+        override var parentToggleId: String? = null
     ) : EditorBlock()
 
     data class Video(
         override val id: String = UUID.randomUUID().toString(),
         var title: String = "Mantener pulsado para editar",
         var length: String = "05:15",
-        var sourceUrl: String = "", var width: String = "Match", var height: String = "Wrap"
+        var sourceUrl: String = "", var width: String = "Match", var height: String = "Wrap",
+        override var parentToggleId: String? = null
     ) : EditorBlock()
+
     data class File(
         override val id: String = java.util.UUID.randomUUID().toString(),
         var name: String = "Mantener pulsado para editar",
         var sourceUrl: String = "",
-        var size: String = "Desconocido"
+        var size: String = "Desconocido",
+        override var parentToggleId: String? = null
     ) : EditorBlock()
 
     data class Todo(
         override val id: String = UUID.randomUUID().toString(),
         var content: String = "",
-        var isChecked: Boolean = false
+        var isChecked: Boolean = false,
+        override var parentToggleId: String? = null
     ) : EditorBlock()
 
     data class Callout(
@@ -1715,19 +1695,22 @@ sealed class EditorBlock {
         var emoji: String = "💡",
         var colorVariant: String = "Purple",
         var bgColorHex: String? = null,
-        var textColorHex: String? = null
+        var textColorHex: String? = null,
+        override var parentToggleId: String? = null
     ) : EditorBlock()
 
     data class Quote(
         override val id: String = UUID.randomUUID().toString(),
-        var content: String = ""
+        var content: String = "",
+        override var parentToggleId: String? = null
     ) : EditorBlock()
 
     data class Divider(
         override val id: String = UUID.randomUUID().toString(),
         var style: String = "Solid", // "Solid", "Dotted", "Dashed"
         var thickness: Int = 1,
-        var colorHex: String? = null
+        var colorHex: String? = null,
+        override var parentToggleId: String? = null
     ) : EditorBlock()
 
     data class Code(
@@ -1735,7 +1718,8 @@ sealed class EditorBlock {
         var code: String = "",
         var language: String = "Kotlin",
         var bgColorHex: String? = null,
-        var textColorHex: String? = null
+        var textColorHex: String? = null,
+        override var parentToggleId: String? = null
     ) : EditorBlock()
 }
 
@@ -2087,6 +2071,7 @@ fun parseBlocks(content: String): List<EditorBlock> {
             val obj = array.optJSONObject(i) ?: continue
             val type = obj.optString("type")
             val id = obj.optString("id", UUID.randomUUID().toString())
+            val parentToggleId = obj.optString("parentToggleId", "").takeIf { it.isNotEmpty() }
             when (type) {
                 "text" -> {
                     list.add(
@@ -2106,7 +2091,7 @@ fun parseBlocks(content: String): List<EditorBlock> {
                             isCollapsed = obj.optBoolean("isCollapsed", false),
                             isHeader = obj.optBoolean("isHeader", false),
                             indentLevel = obj.optInt("indentLevel", 0),
-                            parentToggleId = if (obj.has("parentToggleId")) obj.getString("parentToggleId").takeIf { it.isNotEmpty() } else null
+                            parentToggleId = parentToggleId
                         )
                     )
                 }
@@ -2148,7 +2133,8 @@ fun parseBlocks(content: String): List<EditorBlock> {
                             cellColor = cellColor,
                             margin = margin,
                             tableWidth = tableWidth,
-                            mergedCells = mergedCells
+                            mergedCells = mergedCells,
+                            parentToggleId = parentToggleId
                         )
                     )
                 }
@@ -2159,7 +2145,8 @@ fun parseBlocks(content: String): List<EditorBlock> {
                             urlOrPath = obj.optString("urlOrPath", "Mantener pulsado para editar"),
                             caption = obj.optString("caption", ""),
                             width = obj.optString("width", "Match"),
-                            height = obj.optString("height", "Wrap")
+                            height = obj.optString("height", "Wrap"),
+                            parentToggleId = parentToggleId
                         )
                     )
                 }
@@ -2169,7 +2156,8 @@ fun parseBlocks(content: String): List<EditorBlock> {
                             id = id,
                             name = obj.optString("name", "Mantener pulsado para editar"),
                             duration = obj.optString("duration", "02:30"),
-                            sourceUrl = obj.optString("sourceUrl", "")
+                            sourceUrl = obj.optString("sourceUrl", ""),
+                            parentToggleId = parentToggleId
                         )
                     )
                 }
@@ -2181,7 +2169,8 @@ fun parseBlocks(content: String): List<EditorBlock> {
                             length = obj.optString("length", "05:15"),
                             sourceUrl = obj.optString("sourceUrl", ""),
                             width = obj.optString("width", "Match"),
-                            height = obj.optString("height", "Wrap")
+                            height = obj.optString("height", "Wrap"),
+                            parentToggleId = parentToggleId
                         )
                     )
                 }
@@ -2191,7 +2180,8 @@ fun parseBlocks(content: String): List<EditorBlock> {
                             id = id,
                             name = obj.optString("name", "Documento"),
                             sourceUrl = obj.optString("sourceUrl", ""),
-                            size = obj.optString("size", "Desconocido")
+                            size = obj.optString("size", "Desconocido"),
+                            parentToggleId = parentToggleId
                         )
                     )
                 }
@@ -2200,7 +2190,8 @@ fun parseBlocks(content: String): List<EditorBlock> {
                         EditorBlock.Todo(
                             id = id,
                             content = obj.optString("content", ""),
-                            isChecked = obj.optBoolean("isChecked", false)
+                            isChecked = obj.optBoolean("isChecked", false),
+                            parentToggleId = parentToggleId
                         )
                     )
                 }
@@ -2212,7 +2203,8 @@ fun parseBlocks(content: String): List<EditorBlock> {
                             emoji = obj.optString("emoji", "💡"),
                             colorVariant = obj.optString("colorVariant", "Purple"),
                             bgColorHex = if (obj.has("bgColorHex")) obj.getString("bgColorHex") else null,
-                            textColorHex = if (obj.has("textColorHex")) obj.getString("textColorHex") else null
+                            textColorHex = if (obj.has("textColorHex")) obj.getString("textColorHex") else null,
+                            parentToggleId = parentToggleId
                         )
                     )
                 }
@@ -2220,7 +2212,8 @@ fun parseBlocks(content: String): List<EditorBlock> {
                     list.add(
                         EditorBlock.Quote(
                             id = id,
-                            content = obj.optString("content", "")
+                            content = obj.optString("content", ""),
+                            parentToggleId = parentToggleId
                         )
                     )
                 }
@@ -2230,7 +2223,8 @@ fun parseBlocks(content: String): List<EditorBlock> {
                             id = id,
                             style = obj.optString("style", "Solid"),
                             thickness = obj.optInt("thickness", 1),
-                            colorHex = if (obj.has("colorHex")) obj.getString("colorHex") else null
+                            colorHex = if (obj.has("colorHex")) obj.getString("colorHex") else null,
+                            parentToggleId = parentToggleId
                         )
                     )
                 }
@@ -2241,7 +2235,8 @@ fun parseBlocks(content: String): List<EditorBlock> {
                             code = obj.optString("code", ""),
                             language = obj.optString("language", "Kotlin"),
                             bgColorHex = if (obj.has("bgColorHex")) obj.getString("bgColorHex") else null,
-                            textColorHex = if (obj.has("textColorHex")) obj.getString("textColorHex") else null
+                            textColorHex = if (obj.has("textColorHex")) obj.getString("textColorHex") else null,
+                            parentToggleId = parentToggleId
                         )
                     )
                 }
@@ -2277,9 +2272,6 @@ fun serializeBlocks(blocks: List<EditorBlock>): String {
                     obj.put("isCollapsed", block.isCollapsed)
                     obj.put("isHeader", block.isHeader)
                     obj.put("indentLevel", block.indentLevel)
-                    if (block.parentToggleId != null) {
-                        obj.put("parentToggleId", block.parentToggleId)
-                    }
                 }
                 is EditorBlock.Table -> {
                     obj.put("type", "table")
@@ -2369,6 +2361,9 @@ fun serializeBlocks(blocks: List<EditorBlock>): String {
                     block.bgColorHex?.let { obj.put("bgColorHex", it) }
                     block.textColorHex?.let { obj.put("textColorHex", it) }
                 }
+            }
+            block.parentToggleId?.takeIf { it.isNotEmpty() }?.let {
+                obj.put("parentToggleId", it)
             }
             array.put(obj)
         }
@@ -4008,7 +4003,7 @@ fun NoteEditorWorkspace(
         if (index !in blocksList.indices) return null
         val b = blocksList[index]
         if (b is EditorBlock.Text) {
-            if (b.isCollapsedHeader) return null // Header itself is not inside another toggle
+            if (b.isCollapsedHeader) return b.parentToggleId
             if (b.parentToggleId != null) return b.parentToggleId
             // Fallback for legacy / indented items right below a collapsible header
             if (b.indentLevel > 0) {
@@ -4018,6 +4013,8 @@ fun NoteEditorWorkspace(
                     if (prev is EditorBlock.Text && prev.isHeader) break
                 }
             }
+        } else if (b.parentToggleId != null) {
+            return b.parentToggleId
         }
         return null
     }
@@ -4258,16 +4255,18 @@ fun NoteEditorWorkspace(
             for (i in blocks.indices) {
                 val b = blocks[i]
                 if (b is EditorBlock.Text && b.isCollapsedHeader) {
-                    collapsedHeaderMap[b.id] = b.isCollapsed
+                    val outerParentId = b.parentToggleId
+                    val isOuterCollapsed = outerParentId != null && (collapsedHeaderMap[outerParentId] == true)
+                    val effectiveCollapsed = isOuterCollapsed || b.isCollapsed
+                    collapsedHeaderMap[b.id] = effectiveCollapsed
                     currentToggleId = b.id
-                    currentToggleCollapsed = b.isCollapsed
-                    list.add(Pair(i, b))
-                } else {
-                    val toggleId = when {
-                        b is EditorBlock.Text && b.parentToggleId != null -> b.parentToggleId
-                        b is EditorBlock.Text && b.indentLevel > 0 -> currentToggleId
-                        else -> null
+                    currentToggleCollapsed = effectiveCollapsed
+                    if (!isOuterCollapsed) {
+                        list.add(Pair(i, b))
                     }
+                } else {
+                    val toggleId = b.parentToggleId
+                        ?: if (b is EditorBlock.Text && b.indentLevel > 0) currentToggleId else null
 
                     if (toggleId != null) {
                         val isParentCollapsed = collapsedHeaderMap[toggleId] ?: currentToggleCollapsed
@@ -4336,48 +4335,19 @@ fun NoteEditorWorkspace(
                     
                     if (isPdf) {
                         var totalElementsExtracted = 0
-                        val imageDir = java.io.File(context.filesDir, "extracted_pdf_images").apply { mkdirs() }
-                        
                         try {
-                            val reader = com.itextpdf.text.pdf.PdfReader(destFile.absolutePath)
-                            val numPages = reader.numberOfPages
-                            val parser = com.itextpdf.text.pdf.parser.PdfReaderContentParser(reader)
-                            
-                            for (page in 1..numPages) {
-                                inNoteImportProgress = Pair(page, numPages)
-                                inNoteImportStatusMessage = "Leyendo página $page de $numPages..."
-                                val extractor = PageElementExtractor(context, imageDir, totalElementsExtracted)
-                                parser.processContent(page, extractor)
-                                
-                                val pageBlocks = processPageElements(extractor.elements, extractor.markers)
-                                if (pageBlocks.isNotEmpty()) {
-                                    totalElementsExtracted += extractor.elements.size
-                                    val lastBlock = newExtractedBlocks.lastOrNull()
-                                    val firstBlock = pageBlocks.firstOrNull()
-                                    if (lastBlock is EditorBlock.Text && firstBlock is EditorBlock.Text &&
-                                        !lastBlock.isHeader && !firstBlock.isHeader &&
-                                        !lastBlock.isBullet && !firstBlock.isBullet &&
-                                        !lastBlock.isNumbered && !firstBlock.isNumbered &&
-                                        lastBlock.parentToggleId == firstBlock.parentToggleId &&
-                                        !lastBlock.content.trimEnd().endsWith(".") &&
-                                        !firstBlock.content.startsWith("—") &&
-                                        !firstBlock.content.startsWith("–")
-                                    ) {
-                                        val mergedText = if (lastBlock.content.endsWith("-")) {
-                                            lastBlock.content.dropLast(1) + firstBlock.content
-                                        } else {
-                                            lastBlock.content + " " + firstBlock.content
-                                        }
-                                        newExtractedBlocks[newExtractedBlocks.size - 1] = lastBlock.copy(content = mergedText)
-                                        newExtractedBlocks.addAll(pageBlocks.drop(1))
-                                    } else {
-                                        newExtractedBlocks.addAll(pageBlocks)
-                                    }
-                                }
+                            val (extractedBlocks, extractedCount) = com.example.util.PdfStructureExtractor.extractDigitalPdfBlocksFromFile(
+                                context = context,
+                                pdfFile = destFile,
+                                extractImages = true
+                            ) { cur, tot ->
+                                inNoteImportProgress = Pair(cur, tot)
+                                inNoteImportStatusMessage = "Leyendo página $cur de $tot..."
                             }
-                            reader.close()
+                            newExtractedBlocks.addAll(extractedBlocks)
+                            totalElementsExtracted = extractedCount
                         } catch (e: Exception) {
-                            android.util.Log.e("PDFImport", "Error extracting content with iTextG in-note flow", e)
+                            android.util.Log.e("PDFImport", "Error extracting content with PdfStructureExtractor in-note flow", e)
                         }
 
                         // Si el PDF es escaneado (sin texto digital), ejecutar Google ML Kit OCR página por página sin límite
@@ -6275,14 +6245,14 @@ fun NoteEditorWorkspace(
                                                               }
                                                           },
                                                           modifier = Modifier
-                                                              .size(24.dp)
-                                                              .padding(top = 2.dp)
+                                                              .minimumInteractiveComponentSize()
+                                                              .testTag("editor_collapsible_toggle_${block.id}")
                                                       ) {
                                                           Icon(
                                                               imageVector = if (block.isCollapsed) Icons.Default.ChevronRight else Icons.Default.ExpandMore,
                                                               contentDescription = if (block.isCollapsed) "Desplegar sección" else "Plegar sección",
                                                               tint = GeminiBlue,
-                                                              modifier = Modifier.size(16.dp)
+                                                              modifier = Modifier.size(18.dp)
                                                           )
                                                       }
                                                   }
@@ -6476,7 +6446,7 @@ fun NoteEditorWorkspace(
                                                              }
                                                             .testTag("text_block_$index"),
                                                         decorationBox = { innerTextField ->
-                                                            if (tfValue.text.isEmpty() || tfValue.text == "\u200B") {
+                                                            if ((tfValue.text.isEmpty() || tfValue.text == "\u200B") && (isFocused || blocks.size <= 1 || block.isCollapsedHeader)) {
                                                                 Text(
                                                                     text = if (block.isCollapsedHeader) "Título contraíble..." else "Escribe algo aquí...",
                                                                     color = TextTertiary.copy(alpha = 0.4f),
@@ -7383,7 +7353,7 @@ fun parseInlineMarkdown(
     defaultColor: Color = TextPrimary
 ): AnnotatedString {
     return buildAnnotatedString {
-        val regex = Regex("""(\*\*\*[\s\S]*?\*\*\*|\*\*[\s\S]*?\*\*|__[\s\S]*?__|<u>[\s\S]*?<\/u>|~~[\s\S]*?~~|\*[\s\S]*?\*|_[\s\S]*?_|`[\s\S]*?`|\[color:[a-zA-Z0-9#]+\][\s\S]*?\[\/color\]|@[a-zA-Z0-9áéíóúÁÉÍÓÚñÑ_]+)""")
+        val regex = Regex("""(\*\*\*[\s\S]*?\*\*\*|\*\*[\s\S]*?\*\*|__[\s\S]*?__|<u>[\s\S]*?<\/u>|~~[\s\S]*?~~|\*[\s\S]*?\*|_[\s\S]*?_|`[\s\S]*?`|\[color:[a-zA-Z0-9#]+\][\s\S]*?\[\/color\]|@"[^"]+"|@[a-zA-Z0-9áéíóúÁÉÍÓÚñÑ_]+)""")
         var lastIdx = 0
         val matches = regex.findAll(text)
         for (match in matches) {
@@ -7459,7 +7429,7 @@ fun parseInlineMarkdown(
                 }
                 // @Note link
                 token.startsWith("@") -> {
-                    val rawName = token.substring(1).trimEnd { !it.isLetterOrDigit() && it != ' ' }
+                    val rawName = token.substring(1).removeSurrounding("\"").trimEnd { !it.isLetterOrDigit() && it != ' ' }
                     val matchingNote = notesList.find { it.title.equals(rawName, ignoreCase = true) }
                     if (matchingNote != null) {
                         pushStringAnnotation(tag = "NOTE_LINK", annotation = matchingNote.id)
@@ -7676,11 +7646,14 @@ fun ThinkingAccordionCard(
         modifier = modifier
             .fillMaxWidth()
             .padding(bottom = 6.dp)
-            .clickable { expanded = !expanded }
+            .testTag("chat_thinking_card")
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .minimumInteractiveComponentSize()
+                    .clickable { expanded = !expanded },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -7939,11 +7912,162 @@ fun MarkdownChatBubble(
                 continue
             }
 
-            // 6. Headings (# Title, ## Subtitle, ### Heading, #### Minor)
+            // 6. Collapsible Sections (<details><summary>...</summary>, ▼ / ▶ / ▾ / ▸ / ► / [+], including ## ▼ Título)
+            val detailsOpenMatch = Regex("""^<details(?:\s+open[^>]*)?>(.*)$""", RegexOption.IGNORE_CASE).matchEntire(trimmed)
+            val headingStrippedForToggle = trimmed.replace(Regex("""^#{1,6}\s*"""), "").trim()
+            val arrowToggleMatch = Regex("""^(?:[▼▶▾▸►]|\[\+\])\s*(.*)""").matchEntire(headingStrippedForToggle)
+            if (detailsOpenMatch != null || arrowToggleMatch != null) {
+                var collTitle: String
+                val collBodyLines = mutableListOf<String>()
+
+                if (detailsOpenMatch != null) {
+                    var remainder = detailsOpenMatch.groupValues[1].trim()
+                    var inlineBodyAfterSummary = ""
+                    if (remainder.isEmpty() && i + 1 < lines.size && lines[i + 1].trim().contains("<summary", ignoreCase = true)) {
+                        i++
+                        remainder = lines[i].trim()
+                    }
+                    val sumInline = Regex("""<summary>(.*?)</summary>(.*)""", RegexOption.IGNORE_CASE).find(remainder)
+                    if (sumInline != null) {
+                        collTitle = sumInline.groupValues[1].trim()
+                        inlineBodyAfterSummary = sumInline.groupValues[2].trim()
+                    } else if (remainder.startsWith("<summary>", ignoreCase = true)) {
+                        val sbSum = StringBuilder(remainder.removePrefix("<summary>").removePrefix("<SUMMARY>").trim())
+                        while (i + 1 < lines.size && !sbSum.contains("</summary>", ignoreCase = true)) {
+                            i++
+                            sbSum.append(" ").append(lines[i].trim())
+                        }
+                        val fullSum = sbSum.toString()
+                        collTitle = fullSum.substringBefore("</summary>", fullSum).trim()
+                        inlineBodyAfterSummary = fullSum.substringAfter("</summary>", "").trim()
+                    } else {
+                        collTitle = remainder.replace(Regex("""</?(summary|details)>""", RegexOption.IGNORE_CASE), "").trim()
+                    }
+
+                    var closedInline = false
+                    if (inlineBodyAfterSummary.isNotEmpty()) {
+                        val closeIdx = inlineBodyAfterSummary.indexOf("</details>", ignoreCase = true)
+                        if (closeIdx != -1) {
+                            val beforeClose = inlineBodyAfterSummary.substring(0, closeIdx).trim()
+                            if (beforeClose.isNotEmpty()) collBodyLines.add(beforeClose)
+                            closedInline = true
+                        } else {
+                            collBodyLines.add(inlineBodyAfterSummary)
+                        }
+                    }
+
+                    if (!closedInline) {
+                        var depth = 1
+                        i++
+                        while (i < lines.size && depth > 0) {
+                            val cand = lines[i].trim()
+                            if (cand.startsWith("<details", ignoreCase = true)) {
+                                depth++
+                                collBodyLines.add(lines[i])
+                            } else if (cand.contains("</details>", ignoreCase = true)) {
+                                depth--
+                                if (depth == 0) {
+                                    val beforeClose = cand.substringBefore("</details>").trim()
+                                    if (beforeClose.isNotEmpty()) collBodyLines.add(beforeClose)
+                                    i++
+                                    break
+                                } else {
+                                    collBodyLines.add(lines[i])
+                                }
+                            } else {
+                                collBodyLines.add(lines[i])
+                            }
+                            i++
+                        }
+                    } else {
+                        i++
+                    }
+                } else {
+                    collTitle = arrowToggleMatch!!.groupValues[1].trim()
+                    i++
+                    while (i < lines.size) {
+                        val nextTrim = lines[i].trim()
+                        val nextArrow = Regex("""^(?:[▼▶▾▸►]|\[\+\])\s+.*""").matches(nextTrim.replace(Regex("""^#{1,6}\s*"""), "").trim())
+                        val nextMajorHeading = Regex("""^#{1,2}\s+.*""").matches(nextTrim)
+                        val isDiv = nextTrim == "---" || nextTrim == "***" || nextTrim == "___"
+                        if (nextArrow || nextMajorHeading || isDiv || nextTrim.startsWith("<details", ignoreCase = true)) {
+                            break
+                        }
+                        collBodyLines.add(lines[i])
+                        i++
+                    }
+                }
+
+                val cleanCollTitle = com.example.util.ChatNotePipeline.cleanHeadingText(
+                    collTitle.replace(Regex("""</?(summary|details|b|strong|i|em|h[1-6])>""", RegexOption.IGNORE_CASE), "")
+                ).ifBlank { "Sección desplegable" }
+                val collBodyText = collBodyLines.joinToString("\n").trim()
+                val parsedCollTitle = parseInlineMarkdown(cleanCollTitle, notesList, defaultColor = GeminiCyanAccent)
+                var isExpanded by remember(cleanCollTitle, collBodyText.length) { mutableStateOf(false) }
+
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFF221F28),
+                    border = BorderStroke(1.dp, Color(0xFF3F3B48)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .minimumInteractiveComponentSize()
+                                .clickable { isExpanded = !isExpanded }
+                                .testTag("chat_collapsible_toggle"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = parsedCollTitle,
+                                color = GeminiCyanAccent,
+                                fontSize = 14.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Icon(
+                                imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = if (isExpanded) "Contraer sección" else "Desplegar sección",
+                                tint = GeminiCyanAccent,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        AnimatedVisibility(
+                            visible = isExpanded && collBodyText.isNotEmpty(),
+                            enter = expandVertically() + fadeIn(),
+                            exit = shrinkVertically() + fadeOut()
+                        ) {
+                            Column(modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)) {
+                                HorizontalDivider(color = Color(0xFF383540), thickness = 0.5.dp)
+                                Spacer(modifier = Modifier.height(6.dp))
+                                MarkdownChatBubble(
+                                    content = collBodyText,
+                                    notesList = notesList,
+                                    onNoteClick = onNoteClick
+                                )
+                            }
+                        }
+                    }
+                }
+                continue
+            }
+
+            // Ignore stray </details> if present
+            if (trimmed.equals("</details>", ignoreCase = true)) {
+                i++
+                continue
+            }
+
+            // 7. Headings (# Title, ## Subtitle, ### Heading, #### Minor)
             val headerMatch = Regex("""^(#{1,6})\s*(.*)""").find(trimmed)
             if (headerMatch != null) {
                 val level = headerMatch.groupValues[1].length
-                val titleText = headerMatch.groupValues[2].trim()
+                val titleText = com.example.util.ChatNotePipeline.cleanHeadingText(headerMatch.groupValues[2])
                 val parsed = parseInlineMarkdown(titleText, notesList)
                 val (fontSize, col, weight, topPad) = when (level) {
                     1 -> Quad(20.sp, Color(0xFFF2E7FE), FontWeight.ExtraBold, 10.dp)
@@ -7971,7 +8095,7 @@ fun MarkdownChatBubble(
                 continue
             }
 
-            // 7. Standalone Bold Section Titles (e.g. **Resumen Ejecutivo:** or **1. Puntos Clave:**)
+            // 8. Standalone Bold Section Titles (e.g. **Resumen Ejecutivo:** or **1. Puntos Clave:**)
             val standaloneBoldMatch = Regex("""^\*\*([^*]+)\*\*[:]?$""").find(trimmed)
             if (standaloneBoldMatch != null) {
                 val titleText = standaloneBoldMatch.groupValues[1].trim()
@@ -8009,90 +8133,29 @@ fun MarkdownChatBubble(
                 continue
             }
 
-            // 8. Collapsible Sections (▶ Título, [+] Título, <details>)
-            val collapsibleMatch = Regex("""^(?:▶|\[\+\]|<details><summary>)\s*(.*)""").find(trimmed)
-            if (collapsibleMatch != null) {
-                var collTitle = collapsibleMatch.groupValues[1].removeSuffix("</summary>").trim()
-                var collBody = StringBuilder()
-                i++
-                while (i < lines.size && !lines[i].trim().startsWith("</details>") && !lines[i].trim().startsWith("▶") && !lines[i].trim().startsWith("[+]")) {
-                    collBody.append(lines[i]).append("\n")
-                    i++
-                }
-                if (i < lines.size && lines[i].trim().startsWith("</details>")) {
-                    i++
-                }
-                var isExpanded by remember(collTitle) { mutableStateOf(false) }
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF221F28),
-                    border = BorderStroke(1.dp, Color(0xFF3F3B48)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp)
-                ) {
-                    Column(modifier = Modifier.padding(10.dp)) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { isExpanded = !isExpanded },
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = collTitle.ifBlank { "Sección contraíble" },
-                                color = GeminiCyanAccent,
-                                fontSize = 14.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Icon(
-                                imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = null,
-                                tint = GeminiCyanAccent,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                        if (isExpanded) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            HorizontalDivider(color = Color(0xFF383540), thickness = 0.5.dp)
-                            Spacer(modifier = Modifier.height(6.dp))
-                            val parsedBody = parseInlineMarkdown(collBody.toString().trim(), notesList)
-                            androidx.compose.foundation.text.ClickableText(
-                                text = parsedBody,
-                                style = TextStyle(
-                                    color = TextPrimary,
-                                    fontSize = 14.sp,
-                                    lineHeight = 20.sp
-                                ),
-                                onClick = { offset ->
-                                    parsedBody.getStringAnnotations("NOTE_LINK", offset, offset)
-                                        .firstOrNull()?.let { annotation ->
-                                            notesList.find { it.id == annotation.item }?.let(onNoteClick)
-                                        }
-                                }
-                            )
-                        }
-                    }
-                }
-                continue
-            }
-
-            // 9. Bullet List Item (- item, * item, • item, + item)
-            if (trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("• ") || trimmed.startsWith("+ ")) {
-                val itemText = trimmed.removePrefix("- ").removePrefix("* ").removePrefix("• ").removePrefix("+ ").trim()
+            // 9. Bullet List Item (- item, * item, • item, + item, ◦ item, ▪ item) with indentation
+            val leadingIndentChars = line.takeWhile { it == ' ' || it == '\t' }.sumOf { if (it == '\t') 4 else 1 }
+            val listIndentLevel = (leadingIndentChars / 4).coerceIn(0, 4)
+            if (trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("• ") || trimmed.startsWith("+ ") || trimmed.startsWith("◦ ") || trimmed.startsWith("▪ ")) {
+                val itemText = trimmed.removePrefix("- ").removePrefix("* ").removePrefix("• ").removePrefix("+ ").removePrefix("◦ ").removePrefix("▪ ").trim()
                 val parsed = parseInlineMarkdown(itemText, notesList)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
+                        .padding(start = (4 + listIndentLevel * 18).dp, top = 2.dp, bottom = 2.dp),
                     verticalAlignment = Alignment.Top
                 ) {
                     Box(
                         modifier = Modifier
                             .padding(top = 7.dp, end = 8.dp)
                             .size(6.dp)
-                            .background(GeminiCyanAccent, CircleShape)
+                            .then(
+                                if (listIndentLevel == 1 || trimmed.startsWith("◦ ")) {
+                                    Modifier.border(1.5.dp, GeminiCyanAccent, CircleShape)
+                                } else {
+                                    Modifier.background(GeminiCyanAccent, CircleShape)
+                                }
+                            )
                     )
                     androidx.compose.foundation.text.ClickableText(
                         text = parsed,
@@ -8114,7 +8177,7 @@ fun MarkdownChatBubble(
                 continue
             }
 
-            // 10. Numbered List Item (1. item, 2. item, 1) item)
+            // 10. Numbered List Item (1. item, 2. item, 1) item) with indentation
             val numMatch = Regex("""^(\d+)[\.\)]\s+(.*)""").find(trimmed)
             if (numMatch != null) {
                 val num = numMatch.groupValues[1]
@@ -8123,7 +8186,7 @@ fun MarkdownChatBubble(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
+                        .padding(start = (4 + listIndentLevel * 18).dp, top = 2.dp, bottom = 2.dp),
                     verticalAlignment = Alignment.Top
                 ) {
                     Text(
@@ -8191,9 +8254,9 @@ fun MarkdownChatBubble(
                 continue
             }
 
-            // 12. Blank line
-            if (trimmed.isEmpty()) {
-                Spacer(modifier = Modifier.height(4.dp))
+            // 12. Blank line (preserve intentional spacing)
+            if (trimmed.isEmpty() || trimmed == "<br>" || trimmed == "<br/>" || trimmed == "&nbsp;") {
+                Spacer(modifier = Modifier.height(6.dp))
                 i++
                 continue
             }
@@ -8713,7 +8776,11 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                 ThinkingAccordionCard(thought = auraAction.thought)
                             }
 
-                            if (auraAction.explanation.isNotBlank() && auraAction.explanation.trim() != displayMarkdown.trim() && auraAction.explanation.length < 80) {
+                            if (auraAction.explanation.isNotBlank() &&
+                                auraAction.action != "note_created" &&
+                                auraAction.explanation.trim() != displayMarkdown.trim() &&
+                                auraAction.explanation.length < 80
+                            ) {
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
                                     color = Color(0xFF907CFF).copy(alpha = 0.15f),
@@ -8753,7 +8820,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                                 ) {
                                     IconButton(
                                         onClick = {
@@ -8764,7 +8831,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                                 Toast.makeText(context, "Desactiva el silencio para escuchar", Toast.LENGTH_SHORT).show()
                                             }
                                         },
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.minimumInteractiveComponentSize()
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.VolumeUp,
@@ -8780,7 +8847,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                             clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(displayMarkdown))
                                             Toast.makeText(context, "Contenido copiado", Toast.LENGTH_SHORT).show()
                                         },
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.minimumInteractiveComponentSize()
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.ContentCopy,
@@ -8794,7 +8861,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                         onClick = {
                                             Toast.makeText(context, "Gracias por tu reporte!", Toast.LENGTH_SHORT).show()
                                         },
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.minimumInteractiveComponentSize()
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Flag,
@@ -8806,18 +8873,11 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
 
                                     IconButton(
                                         onClick = {
-                                            var lastUserMsg: String? = null
-                                            for (i in messagesList.indices.reversed()) {
-                                                if (messagesList[i].second) {
-                                                    lastUserMsg = messagesList[i].first
-                                                    break
-                                                }
-                                            }
-                                            if (lastUserMsg != null) {
-                                                viewModel.sendChatbotMessage(lastUserMsg, lastUserMsg)
-                                            }
+                                            viewModel.regenerateLastChatbotResponse(allNotes)
                                         },
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .testTag("chat_regenerate_btn")
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Refresh,
@@ -8825,6 +8885,84 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                             tint = TextSecondary,
                                             modifier = Modifier.size(15.dp)
                                         )
+                                    }
+                                }
+
+                                if (auraAction.action == "note_created") {
+                                    val createdNote = allNotes.find { it.id == auraAction.targetScope }
+                                        ?: selectedNote?.takeIf { it.id == auraAction.targetScope }
+                                    val createdTitle = auraAction.explanation.ifBlank { createdNote?.title ?: "Nueva nota" }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = CosmicSurface,
+                                        tonalElevation = 3.dp,
+                                        border = BorderStroke(1.dp, GeminiCyanAccent.copy(alpha = 0.55f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 6.dp, bottom = 4.dp)
+                                            .testTag("chat_note_created_card")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(34.dp)
+                                                    .background(GeminiCyanAccent.copy(alpha = 0.16f), CircleShape),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.TaskAlt,
+                                                    contentDescription = null,
+                                                    tint = GeminiCyanAccent,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = "Nota creada",
+                                                    color = GeminiCyanAccent,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Text(
+                                                    text = createdTitle,
+                                                    color = TextPrimary,
+                                                    fontSize = 13.5.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            Button(
+                                                onClick = {
+                                                    if (createdNote != null) {
+                                                        viewModel.selectNote(createdNote)
+                                                        onDismiss()
+                                                    } else {
+                                                        Toast.makeText(context, "La nota ya no se encuentra en tu biblioteca", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                },
+                                                shape = RoundedCornerShape(10.dp),
+                                                colors = ButtonDefaults.buttonColors(containerColor = GeminiCyanAccent),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                                modifier = Modifier
+                                                    .minimumInteractiveComponentSize()
+                                                    .testTag("open_created_note_btn")
+                                            ) {
+                                                Text(
+                                                    text = "Abrir en editor",
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF090C15)
+                                                )
+                                            }
+                                        }
                                     }
                                 }
 
@@ -8995,12 +9133,17 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                  ) {
                                      TextButton(
                                          onClick = {
-                                             viewModel.exportMessageToNote(msg, asBlocks = false) { note ->
-                                                 Toast.makeText(context, "✨ Nueva nota \"${note.title}\" guardada en tu biblioteca", Toast.LENGTH_SHORT).show()
+                                             viewModel.exportMessageToNote(displayMarkdown, asBlocks = false) { note ->
+                                                 Toast.makeText(context, "✨ Nueva nota \"${note.title}\" abierta en el editor", Toast.LENGTH_SHORT).show()
+                                                 viewModel.selectNote(note)
+                                                 onDismiss()
                                              }
                                          },
-                                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                                         colors = ButtonDefaults.textButtonColors(contentColor = GeminiCyanAccent)
+                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                         colors = ButtonDefaults.textButtonColors(contentColor = GeminiCyanAccent),
+                                         modifier = Modifier
+                                             .minimumInteractiveComponentSize()
+                                             .testTag("export_new_note_btn")
                                      ) {
                                          Icon(Icons.Default.NoteAdd, contentDescription = null, modifier = Modifier.size(13.dp))
                                          Spacer(modifier = Modifier.width(3.dp))
@@ -9009,12 +9152,17 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
 
                                      TextButton(
                                          onClick = {
-                                             viewModel.exportMessageToNote(msg, asBlocks = true) { note ->
-                                                 Toast.makeText(context, "✨ Nota estructurada \"${note.title}\" creada en bloques", Toast.LENGTH_SHORT).show()
+                                             viewModel.exportMessageToNote(displayMarkdown, asBlocks = true) { note ->
+                                                 Toast.makeText(context, "✨ Nota estructurada \"${note.title}\" abierta en el editor", Toast.LENGTH_SHORT).show()
+                                                 viewModel.selectNote(note)
+                                                 onDismiss()
                                              }
                                          },
-                                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                                         colors = ButtonDefaults.textButtonColors(contentColor = GeminiBlue)
+                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                         colors = ButtonDefaults.textButtonColors(contentColor = GeminiBlue),
+                                         modifier = Modifier
+                                             .minimumInteractiveComponentSize()
+                                             .testTag("export_blocks_note_btn")
                                      ) {
                                          Icon(Icons.Default.Dashboard, contentDescription = null, modifier = Modifier.size(13.dp))
                                          Spacer(modifier = Modifier.width(3.dp))
@@ -9481,1069 +9629,3 @@ fun renderPdfFirstPage(context: android.content.Context, pdfFile: java.io.File):
     }
     return null
 }
-
-sealed class ExtractedMarker {
-    abstract val x: Float
-    abstract val y: Float
-    data class Bullet(override val x: Float, override val y: Float) : ExtractedMarker()
-    data class ToggleArrow(override val x: Float, override val y: Float) : ExtractedMarker()
-    data class QuoteBar(override val x: Float, override val y: Float) : ExtractedMarker()
-}
-
-sealed class ExtractedElement {
-    abstract val y: Float
-    
-    data class Text(
-        val text: String,
-        val x: Float,
-        override val y: Float,
-        val fontSize: Float = 12f,
-        val isBold: Boolean = false
-    ) : ExtractedElement()
-    
-    data class Image(
-        val imagePath: String,
-        override val y: Float
-    ) : ExtractedElement()
-}
-
-class PageElementExtractor(
-    private val context: android.content.Context,
-    private val imageDir: java.io.File,
-    private var imgCounter: Int = 0
-) : com.itextpdf.text.pdf.parser.ExtRenderListener {
-    
-    val elements = mutableListOf<ExtractedElement>()
-    val markers = mutableListOf<ExtractedMarker>()
-    private val currentPathPoints = mutableListOf<Pair<Float, Float>>()
-    
-    override fun beginTextBlock() {}
-    
-    override fun renderText(renderInfo: com.itextpdf.text.pdf.parser.TextRenderInfo) {
-        val text = renderInfo.getText()
-        if (!text.isNullOrEmpty()) {
-            val startPoint = renderInfo.getBaseline()?.getStartPoint()
-            val x = startPoint?.get(0) ?: 0f
-            val y = startPoint?.get(1) ?: 0f
-
-            val fontHeight = try {
-                val ascent = renderInfo.getAscentLine()?.getStartPoint()?.get(1) ?: 0f
-                val descent = renderInfo.getDescentLine()?.getStartPoint()?.get(1) ?: 0f
-                Math.abs(ascent - descent)
-            } catch (e: Exception) { 12f }
-
-            val fontName = try {
-                renderInfo.getFont()?.getPostscriptFontName() ?: ""
-            } catch (e: Exception) { "" }
-
-            val isBold = fontName.contains("bold", ignoreCase = true) ||
-                         fontName.contains("black", ignoreCase = true) ||
-                         fontName.contains("heavy", ignoreCase = true)
-
-            elements.add(ExtractedElement.Text(text, x, y, fontHeight, isBold))
-        }
-    }
-    
-    override fun endTextBlock() {}
-    
-    override fun renderImage(renderInfo: com.itextpdf.text.pdf.parser.ImageRenderInfo) {
-        try {
-            val imageObj = renderInfo.getImage()
-            if (imageObj != null) {
-                val imageBytes = imageObj.getImageAsBytes()
-                if (imageBytes != null && imageBytes.size >= 800) {
-                    val fileType = imageObj.getFileType() ?: "png"
-                    val ext = if (fileType.equals("jpg", ignoreCase = true) || fileType.equals("jpeg", ignoreCase = true)) "jpg" else "png"
-                    
-                    val imageFile = java.io.File(imageDir, "img_${System.currentTimeMillis()}_${imgCounter++}.$ext")
-                    java.io.FileOutputStream(imageFile).use { out ->
-                        out.write(imageBytes)
-                    }
-                    
-                    val startPoint = renderInfo.getStartPoint()
-                    val y = startPoint?.get(1) ?: 0f
-                    
-                    elements.add(ExtractedElement.Image(imageFile.absolutePath, y))
-                }
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("PDFImport", "Error extracting image in PageElementExtractor", e)
-        }
-    }
-
-    override fun modifyPath(renderInfo: com.itextpdf.text.pdf.parser.PathConstructionRenderInfo) {
-        val segmentData = renderInfo.segmentData
-        val ctm = renderInfo.ctm
-        if (segmentData != null && segmentData.size >= 2) {
-            val rawX = segmentData[segmentData.size - 2]
-            val rawY = segmentData[segmentData.size - 1]
-            val p = if (ctm != null) {
-                val tx = ctm.get(com.itextpdf.text.pdf.parser.Matrix.I11) * rawX + ctm.get(com.itextpdf.text.pdf.parser.Matrix.I21) * rawY + ctm.get(com.itextpdf.text.pdf.parser.Matrix.I31)
-                val ty = ctm.get(com.itextpdf.text.pdf.parser.Matrix.I12) * rawX + ctm.get(com.itextpdf.text.pdf.parser.Matrix.I22) * rawY + ctm.get(com.itextpdf.text.pdf.parser.Matrix.I32)
-                Pair(tx, ty)
-            } else {
-                Pair(rawX, rawY)
-            }
-            currentPathPoints.add(p)
-        }
-    }
-
-    override fun clipPath(rule: Int) {
-        currentPathPoints.clear()
-    }
-
-    override fun renderPath(renderInfo: com.itextpdf.text.pdf.parser.PathPaintingRenderInfo): com.itextpdf.text.pdf.parser.Path? {
-        if (currentPathPoints.isNotEmpty()) {
-            val minX = currentPathPoints.minOf { it.first }
-            val maxX = currentPathPoints.maxOf { it.first }
-            val minY = currentPathPoints.minOf { it.second }
-            val maxY = currentPathPoints.maxOf { it.second }
-            val w = maxX - minX
-            val h = maxY - minY
-            val cx = (minX + maxX) / 2f
-            val cy = (minY + maxY) / 2f
-
-            if (w in 1.5f..9f && h in 1.5f..9f) {
-                if (currentPathPoints.size in 3..4) {
-                    markers.add(ExtractedMarker.ToggleArrow(cx, cy))
-                } else {
-                    markers.add(ExtractedMarker.Bullet(cx, cy))
-                }
-            } else if (w in 4f..14f && h in 4f..14f && (currentPathPoints.size in 3..5)) {
-                markers.add(ExtractedMarker.ToggleArrow(cx, cy))
-            } else if (w in 1f..6f && h >= 12f) {
-                markers.add(ExtractedMarker.QuoteBar(cx, cy))
-            }
-            currentPathPoints.clear()
-        }
-        return null
-    }
-}
-
-fun processPageElements(elements: List<ExtractedElement>, markers: List<ExtractedMarker> = emptyList()): List<EditorBlock> {
-    val textElements = elements.filterIsInstance<ExtractedElement.Text>()
-    val imageElements = elements.filterIsInstance<ExtractedElement.Image>()
-    
-    val lines = mutableListOf<ExtractedElement.Text>()
-    val sortedTexts = textElements.sortedWith(compareByDescending<ExtractedElement.Text> { it.y }.thenBy { it.x })
-    
-    val currentLineChunks = mutableListOf<ExtractedElement.Text>()
-    for (chunk in sortedTexts) {
-        if (currentLineChunks.isEmpty()) {
-            currentLineChunks.add(chunk)
-        } else {
-            val lastY = currentLineChunks.last().y
-            if (Math.abs(lastY - chunk.y) < 4.5f) {
-                currentLineChunks.add(chunk)
-            } else {
-                lines.add(mergeChunksToLine(currentLineChunks))
-                currentLineChunks.clear()
-                currentLineChunks.add(chunk)
-            }
-        }
-    }
-    if (currentLineChunks.isNotEmpty()) {
-        lines.add(mergeChunksToLine(currentLineChunks))
-    }
-    
-    val combinedList = mutableListOf<ExtractedElement>()
-    combinedList.addAll(lines)
-    combinedList.addAll(imageElements)
-    
-    val sortedCombined = combinedList.sortedByDescending { it.y }
-    val blocks = mutableListOf<EditorBlock>()
-    
-    var activeImportToggleId: String? = null
-    var activeImportToggleIndent: Int = 0
-    
-    // Determine the base left margin of text content
-    val validTexts = lines.filter { it.text.trim().isNotEmpty() }
-    val baseMarginX = validTexts.minOfOrNull { it.x } ?: 50f
-    
-    // Compute page typographic metrics
-    val bodyFontSize = if (validTexts.isNotEmpty()) {
-        val sortedSizes = validTexts.map { it.fontSize }.sorted()
-        sortedSizes[sortedSizes.size / 2]
-    } else 14f
-
-    val lineSpacings = mutableListOf<Float>()
-    for (i in 0 until lines.size - 1) {
-        val dy = lines[i].y - lines[i + 1].y
-        if (dy in 6f..45f) {
-            lineSpacings.add(dy)
-        }
-    }
-    val typicalLineSpacing = if (lineSpacings.isNotEmpty()) {
-        val sortedSpacings = lineSpacings.sorted()
-        sortedSpacings[sortedSpacings.size / 2]
-    } else (bodyFontSize * 1.4f).coerceAtLeast(16f)
-
-    val typicalLineLen = if (validTexts.isNotEmpty()) {
-        val sortedLens = validTexts.map { it.text.trim().length }.sorted()
-        sortedLens[sortedLens.size / 2]
-    } else 50
-    
-    val currentParagraph = java.lang.StringBuilder()
-    var currentParagraphIndent = 0
-    var currentParagraphFontSize = 14f
-    var currentParagraphIsBold = false
-    var lastLineY: Float? = null
-    var lastLineFontSize = 12f
-    var prevLastLineLen = 0
-    var inDigitalBullet = false
-    var inDigitalNumbered = false
-    var digitalListIndent = 0
-
-    fun flushParagraph() {
-        if (currentParagraph.isNotEmpty()) {
-            val pText = currentParagraph.toString().trim()
-            if (pText.isNotEmpty()) {
-                val toggleParent = if (activeImportToggleId != null && currentParagraphIndent >= activeImportToggleIndent) {
-                    activeImportToggleId
-                } else {
-                    activeImportToggleId = null
-                    null
-                }
-                blocks.add(
-                    EditorBlock.Text(
-                        content = pText,
-                        fontSize = currentParagraphFontSize.toInt().coerceIn(12, 18),
-                        isBold = currentParagraphIsBold,
-                        indentLevel = currentParagraphIndent,
-                        parentToggleId = toggleParent
-                    )
-                )
-            }
-            currentParagraph.setLength(0)
-            prevLastLineLen = 0
-        }
-    }
-
-    for (element in sortedCombined) {
-        when (element) {
-            is ExtractedElement.Text -> {
-                val rawText = element.text.trim()
-                if (rawText.isEmpty()) continue
-
-                // 1. Eliminar subtítulos de encabezado y pie de página del visor/exportador
-                if (rawText.startsWith("PDF Importado", ignoreCase = true) ||
-                    rawText.startsWith("PDF importado", ignoreCase = true) ||
-                    rawText.equals("PDF Importado:", ignoreCase = true)) {
-                    continue
-                }
-
-                if (rawText.contains(Regex("contenido extra[íi]do del PDF", RegexOption.IGNORE_CASE))) {
-                    continue
-                }
-
-                val isFooterZone = element.y < 50f
-                val isHeaderZone = element.y > 760f
-                val isPureNumberOrQuoted = rawText.matches(Regex("^['\"`´«»\\[\\(\\-—–~]*\\s*\\d+\\s*['\"`´»\\]\\)\\-—–~]*$"))
-                val isTitlePlusPage = rawText.matches(Regex("^[a-zA-Z0-9_áéíóúñÁÉÍÓÚÑ\\s.\\-]{1,35}\\s*\\d+$", RegexOption.IGNORE_CASE)) && (isFooterZone || isHeaderZone || rawText.length < 25)
-                val isPageKeyword = rawText.matches(Regex("^(p[aá]g(ina)?\\.?|page)\\s*\\d+.*", RegexOption.IGNORE_CASE)) ||
-                                    rawText.matches(Regex("^[–—\\-~]*\\s*P[aá]gina\\s+\\d+.*", RegexOption.IGNORE_CASE))
-
-                if (isPureNumberOrQuoted || isTitlePlusPage || isPageKeyword || (isFooterZone && (rawText.any { it.isDigit() } || rawText.length < 20))) {
-                    continue
-                }
-
-                val fSize = element.fontSize
-                val bold = element.isBold
-                
-                // Calculate tab/indentation level based on X offset from page base margin
-                val deltaX = (element.x - baseMarginX).coerceAtLeast(0f)
-                val indentLevel = ((deltaX + 4f) / 18f).toInt().coerceIn(0, 5)
-
-                // Check for vector markers on this horizontal baseline (PDF graphics)
-                val nearbyMarker = markers.firstOrNull { Math.abs(it.y - element.y) < 10f && it.x < element.x + 5f }
-
-                // 2. Menús desplegables / Secciones contraíbles (ej. "▼ Una nueva vida.")
-                val isDropdownText = rawText.startsWith("▼") || rawText.startsWith("▶") || rawText.startsWith("▾") || rawText.startsWith("▸") || rawText.startsWith("►")
-                val isDropdownMarker = nearbyMarker is ExtractedMarker.ToggleArrow
-                
-                // Detection of toggle headers in Notion PDFs (e.g. "Una nueva vida.", "Un último acto de amor.", "Tu voluntad vive conmigo.")
-                val isHeadingSize = fSize >= 17.5f || (bold && fSize >= 16f)
-                val isToggleHeadingCandidate = isHeadingSize && (
-                    isDropdownText || isDropdownMarker ||
-                    rawText.equals("Una nueva vida.", ignoreCase = true) ||
-                    rawText.equals("Un último acto de amor.", ignoreCase = true) ||
-                    rawText.equals("Tu voluntad vive conmigo.", ignoreCase = true) ||
-                    rawText.startsWith("▼")
-                )
-
-                if (isDropdownText || isDropdownMarker || isToggleHeadingCandidate) {
-                    flushParagraph()
-                    inDigitalBullet = false
-                    inDigitalNumbered = false
-                    val cleanDropdown = rawText
-                        .removePrefix("▼").removePrefix("▶").removePrefix("▾").removePrefix("▸").removePrefix("►")
-                        .trim()
-                    val toggleHeaderId = UUID.randomUUID().toString()
-                    blocks.add(
-                        EditorBlock.Text(
-                            id = toggleHeaderId,
-                            content = cleanDropdown,
-                            fontSize = if (fSize >= 18f) 20 else 18,
-                            isBold = true,
-                            isHeader = true,
-                            isCollapsedHeader = true,
-                            isCollapsed = false,
-                            indentLevel = indentLevel
-                        )
-                    )
-                    activeImportToggleId = toggleHeaderId
-                    activeImportToggleIndent = indentLevel
-                    lastLineY = element.y
-                    lastLineFontSize = fSize
-                    continue
-                }
-
-                // 3. Citas o líneas destacadas (ej. "| Cuida y protege...")
-                val isQuoteText = rawText.startsWith("| ") || rawText.startsWith("|") || rawText.startsWith("> ")
-                val isQuoteMarker = nearbyMarker is ExtractedMarker.QuoteBar
-                if (isQuoteText || isQuoteMarker) {
-                    flushParagraph()
-                    val cleanQuote = rawText.removePrefix("|").removePrefix(">").trim()
-                    blocks.add(EditorBlock.Quote(content = cleanQuote))
-                    lastLineY = element.y
-                    lastLineFontSize = fSize
-                    continue
-                }
-
-                // 4. Viñetas anidadas y viñetas estándar (•, ◦, ▪, o, -, *) o detectadas por vector bullet marker
-                val isSubBulletCircle = rawText.startsWith("◦") || rawText.startsWith("  ◦") || rawText.startsWith("\t◦") ||
-                                        (rawText.startsWith("o ") && rawText.length > 3)
-                val isSubBulletSquare = rawText.startsWith("▪") || rawText.startsWith("  ▪") || rawText.startsWith("\t▪")
-                val isStandardBulletText = rawText.startsWith("•") || rawText.startsWith("– ") || rawText.startsWith("- ") || rawText.startsWith("* ")
-                val isBulletMarker = nearbyMarker is ExtractedMarker.Bullet
-                
-                // In Notion, Page 1 list items ("Los elfos, son...", "Y aún no haz visto nada.") are indented at x ≈ baseMarginX + 16f
-                val isGutterBulletCandidate = (deltaX in 12f..24f) && (
-                    rawText.startsWith("Los elfos, son", ignoreCase = true) ||
-                    rawText.startsWith("Y aún no haz visto nada", ignoreCase = true)
-                )
-
-                if (isSubBulletCircle || isSubBulletSquare || isStandardBulletText || isBulletMarker || isGutterBulletCandidate) {
-                    flushParagraph()
-                    val cleanBullet = when {
-                        isSubBulletCircle -> rawText.removePrefix("◦").removePrefix("  ◦").removePrefix("\t◦").removePrefix("o ").trim()
-                        isSubBulletSquare -> rawText.removePrefix("▪").removePrefix("  ▪").removePrefix("\t▪").trim()
-                        else -> rawText.removePrefix("•").removePrefix("– ").removePrefix("- ").removePrefix("* ").trim()
-                    }
-                    val itemIndent = when {
-                        isSubBulletSquare -> maxOf(2, indentLevel)
-                        isSubBulletCircle -> maxOf(1, indentLevel)
-                        else -> indentLevel
-                    }
-                    val toggleParent = if (activeImportToggleId != null && itemIndent >= activeImportToggleIndent) {
-                        activeImportToggleId
-                    } else null
-                    blocks.add(
-                        EditorBlock.Text(
-                            content = cleanBullet,
-                            fontSize = 14,
-                            isBullet = true,
-                            indentLevel = itemIndent,
-                            parentToggleId = toggleParent
-                        )
-                    )
-                    inDigitalBullet = true
-                    inDigitalNumbered = false
-                    digitalListIndent = itemIndent
-                    lastLineY = element.y
-                    lastLineFontSize = fSize
-                    continue
-                }
-
-                // 5. Listas numeradas (1., 1.1., 1.1.1., 1.1.1.1., 1), (1), etc.)
-                // NO capturar diálogos numerados de personajes como "1 Presentate...", "2 A que te refieres...", "1- Presentate..."
-                val isCharacterDialogueNumber = Regex("^\\d+\\s+[-—–]?\\s*[A-ZÁÉÍÓÚÑ¡¿\"]").find(rawText) != null ||
-                                                Regex("^\\d+-\\s*[A-ZÁÉÍÓÚÑ¡¿\"]").find(rawText) != null
-                val numberedMatch = if (!isCharacterDialogueNumber) Regex("^(?:(?:\\d+\\.){1,4}\\d*|(?:\\d+\\.)*\\d+[\\.\\)]|\\([0-9]+\\))\\s*(.*)").matchEntire(rawText) else null
-                if (numberedMatch != null) {
-                    flushParagraph()
-                    val cleanNumbered = numberedMatch.groupValues[1].trim().ifEmpty { rawText }
-                    val fullyCleaned = Regex("^(?:(?:\\d+\\.){1,4}\\d*|(?:\\d+\\.)*\\d+[\\.\\)]|\\([0-9]+\\))\\s*").replace(cleanNumbered, "").trim().ifEmpty { cleanNumbered }
-                    
-                    val rawPrefixMatch = Regex("^(?:(?:\\d+\\.){1,4}\\d*|(?:\\d+\\.)*\\d+[\\.\\)]|\\([0-9]+\\))").find(rawText)
-                    val rawPrefix = rawPrefixMatch?.value?.trim() ?: ""
-                    val dotCountLevel = if (rawPrefix.contains(".")) {
-                        val trimmedPrefix = rawPrefix.trimEnd('.', '-', ')', ' ')
-                        val segments = trimmedPrefix.split(".")
-                        if (segments.size > 1) segments.size - 1 else 0
-                    } else 0
-                    val finalIndentLevel = maxOf(indentLevel, dotCountLevel).coerceIn(0, 4)
-
-                    val toggleParent = if (activeImportToggleId != null && finalIndentLevel > activeImportToggleIndent) {
-                        activeImportToggleId
-                    } else null
-                    blocks.add(
-                        EditorBlock.Text(
-                            content = fullyCleaned,
-                            fontSize = 14,
-                            isNumbered = true,
-                            indentLevel = finalIndentLevel,
-                            parentToggleId = toggleParent
-                        )
-                    )
-                    inDigitalNumbered = true
-                    inDigitalBullet = false
-                    digitalListIndent = finalIndentLevel
-                    lastLineY = element.y
-                    lastLineFontSize = fSize
-                    continue
-                }
-
-                // 6. Tareas / Checkboxes
-                val todoMatch = REGEX_TODO.matchEntire(rawText)
-                val isUnicodeCheckbox = rawText.startsWith("☐") || rawText.startsWith("☑")
-                if (todoMatch != null || isUnicodeCheckbox) {
-                    inDigitalBullet = false
-                    inDigitalNumbered = false
-                    flushParagraph()
-                    val checked = todoMatch?.groupValues?.get(1)?.equals("x", ignoreCase = true) == true || rawText.startsWith("☑")
-                    val cleanTodo = if (todoMatch != null) todoMatch.groupValues[2].trim() else rawText.removePrefix("☐").removePrefix("☑").trim()
-                    blocks.add(
-                        EditorBlock.Todo(
-                            content = cleanTodo,
-                            isChecked = checked
-                        )
-                    )
-                    lastLineY = element.y
-                    lastLineFontSize = fSize
-                    continue
-                }
-
-                // 7. Heading hierarchy detection (preservar títulos, subtítulos, encabezados)
-                val isTitle = rawText.startsWith("# ") || rawText.startsWith("Título:", ignoreCase = true) ||
-                              (rawText.length < 100 && (fSize >= maxOf(22f, bodyFontSize + 6f) || (bold && fSize >= maxOf(19f, bodyFontSize + 4.5f))))
-                val isSubtitle = !isTitle && (rawText.startsWith("## ") || rawText.startsWith("Subtítulo:", ignoreCase = true) ||
-                                 Regex("^(Capítulo|Capitulo|Chapter)\\s+[\\dA-Za-z]+", RegexOption.IGNORE_CASE).find(rawText) != null ||
-                                 (bold && rawText.length < 90 && fSize >= maxOf(17f, bodyFontSize + 2.5f)))
-                val isHeading = !isTitle && !isSubtitle && (rawText.startsWith("### ") ||
-                                (listOf("Introducción", "Resumen", "Abstract", "Metodología", "Resultados", "Conclusiones", "Discusión", "Referencias", "Bibliografía", "Objetivos", "Marco Teórico", "Antecedentes", "Requisitos", "Temario", "Índice", "Narrador").any { (rawText.equals(it, ignoreCase = true) || rawText.startsWith("$it:", ignoreCase = true)) && rawText.length < 50 }) ||
-                                (bold && rawText.length < 75 && (fSize >= maxOf(15f, bodyFontSize + 1.5f) || Regex("^\\d+(\\.\\d+)*\\s+[A-ZÁÉÍÓÚÑ]").find(rawText) != null || (rawText.length in 4..60 && rawText.all { it.isUpperCase() || !it.isLetter() }))))
-                val isMinorSection = !isTitle && !isSubtitle && !isHeading && (
-                                     rawText.startsWith("#### ") ||
-                                     (bold && rawText.length < 60 && Regex("^\\d+\\.\\d+\\.\\d+\\s+").find(rawText) != null))
-
-                if (isTitle || isSubtitle || isHeading || isMinorSection) {
-                    inDigitalBullet = false
-                    inDigitalNumbered = false
-                    activeImportToggleId = null
-                    flushParagraph()
-                    val targetSize = when {
-                        isTitle -> 24
-                        isSubtitle -> 20
-                        isHeading -> 18
-                        else -> 16
-                    }
-                    val cleanText = rawText.removePrefix("#").removePrefix("#").removePrefix("#").removePrefix("#").removeSuffix("**").trim()
-                    blocks.add(
-                        EditorBlock.Text(
-                            content = cleanText,
-                            fontSize = targetSize,
-                            isBold = true,
-                            isHeader = true,
-                            indentLevel = indentLevel
-                        )
-                    )
-                    lastLineY = element.y
-                    lastLineFontSize = fSize
-                    continue
-                }
-
-                // 8. Normal Paragraph Text (Agrupación continua estilo Notion)
-                val cleanLine = rawText.replace(Regex("\\s+"), " ")
-                val prevY = lastLineY
-                val deltaY = if (prevY != null) Math.abs(prevY - element.y) else 0f
-                
-                // Reseteo categórico del estado de lista al procesar renglones de texto normal
-                inDigitalBullet = false
-                inDigitalNumbered = false
-
-                // Un nuevo turno de diálogo (—, –, o guion seguido de letra) siempre inicia un párrafo nuevo
-                val isNewDialogueTurn = rawText.startsWith("—") || rawText.startsWith("–") ||
-                        (rawText.startsWith("-") && rawText.length > 2 && rawText[1] == ' ' && rawText[2].isLetter())
-                
-                // Punto y aparte real: el renglón anterior terminó con signo de puntuación de cierre
-                val prevText = currentParagraph.toString().trimEnd()
-                val prevEndsSentence = prevText.endsWith(".") || prevText.endsWith(".\"") || prevText.endsWith(".”") ||
-                        prevText.endsWith("!") || prevText.endsWith("?") || prevText.endsWith(":") ||
-                        prevText.endsWith("»") || prevText.endsWith(")")
-                
-                // Separación vertical real entre párrafos: requiere cierre de oración previo Y salto vertical real
-                val isVerticalParagraphBreak = prevEndsSentence && prevY != null && (deltaY > (typicalLineSpacing * 1.35f).coerceAtLeast(17f))
-                // Salto enorme de sección independiente de puntuación
-                val isMassiveSectionJump = prevY != null && deltaY > (typicalLineSpacing * 2.3f).coerceAtLeast(32f)
-                // Cambio explícito de sangría estructural
-                val isIndentChange = currentParagraph.isNotEmpty() && (indentLevel != currentParagraphIndent)
-                // Salto brusco de tipografía (ej. notas o encabezados)
-                val isFontSizeJump = currentParagraph.isNotEmpty() && Math.abs(fSize - currentParagraphFontSize) > 4f
-
-                if (isNewDialogueTurn || isVerticalParagraphBreak || isMassiveSectionJump || isIndentChange || isFontSizeJump) {
-                    flushParagraph()
-                }
-
-                if (currentParagraph.isEmpty()) {
-                    currentParagraph.append(cleanLine)
-                    currentParagraphIndent = indentLevel
-                    currentParagraphFontSize = fSize
-                    currentParagraphIsBold = bold
-                } else {
-                    if (currentParagraph.endsWith("-") && currentParagraph.length >= 2 && currentParagraph[currentParagraph.length - 2].isLetter()) {
-                        currentParagraph.deleteCharAt(currentParagraph.length - 1)
-                        currentParagraph.append(cleanLine)
-                    } else {
-                        currentParagraph.append(" ").append(cleanLine)
-                    }
-                }
-                lastLineY = element.y
-                lastLineFontSize = fSize
-                prevLastLineLen = cleanLine.length
-            }
-            is ExtractedElement.Image -> {
-                flushParagraph()
-                blocks.add(
-                    EditorBlock.Image(
-                        urlOrPath = element.imagePath,
-                        caption = "",
-                        width = "Match",
-                        height = "Wrap"
-                    )
-                )
-                lastLineY = null
-            }
-        }
-    }
-    
-    flushParagraph()
-    // Quitar los dos tabuladores iniciales (2 niveles de indentación) en cada párrafo importado
-    // preservando cualquier nivel de sangría posterior (por ejemplo sublistas o sangrías mayores)
-    val normalizedBlocks = blocks.map { b ->
-        if (b is EditorBlock.Text) {
-            b.copy(indentLevel = (b.indentLevel - 2).coerceAtLeast(0))
-        } else {
-            b
-        }
-    }
-    return normalizedBlocks
-}
-
-private fun mergeChunksToLine(chunks: List<ExtractedElement.Text>): ExtractedElement.Text {
-    val sortedChunks = chunks.sortedBy { it.x }
-    val lineText = sortedChunks.joinToString("") { it.text }
-    val avgY = sortedChunks.map { it.y }.average().toFloat()
-    val minX = sortedChunks.minOfOrNull { it.x } ?: 0f
-    val maxFontSize = sortedChunks.maxOfOrNull { it.fontSize } ?: 12f
-    val anyBold = sortedChunks.any { it.isBold }
-    return ExtractedElement.Text(lineText, minX, avgY, maxFontSize, anyBold)
-}
-
-fun isSupportedTextExtension(fileName: String, mimeType: String): Boolean {
-    val textExtensions = setOf(
-        "txt", "text", "md", "markdown", "ini", "cfg", "conf", "json", "jsonc", "xml", "yaml", "yml", "toml", "csv", "tsv", "log", "err", "bak", "rtf", "doc", "docx", "docm", "dot", "dotx", "dotm", "wps", "wpd", "msg", "eml",
-        "bat", "cmd", "ps1", "psm1", "psd1", "vbs", "vbe", "reg", "inf", "config", "resx", "sln", "csproj", "vbproj", "vba", "bas", "cls", "frm",
-        "html", "htm", "xhtml", "css", "scss", "sass", "less", "js", "jsx", "ts", "tsx", "c", "cpp", "h", "hpp", "cs", "java", "kt", "kts", "py",
-        "rb", "pl", "sh", "bash", "zsh", "sql", "php", "asp", "aspx", "jsp", "go", "rs", "lua", "r", "swift", "asc", "nfo", "diz", "srt", "vtt",
-        "sub", "cue", "m3u", "m3u8", "diff", "patch", "rst", "tex", "ltx", "sty", "bib", "asciidoc", "adoc", "env", "dist", "properties",
-        "gitignore", "gitconfig", "dockerfile", "makefile", "po", "pot", "readme", "ans", "1st", "me"
-    )
-    val ext = fileName.substringAfterLast('.', "").lowercase()
-    return textExtensions.contains(ext) || 
-           mimeType.startsWith("text/", ignoreCase = true) || 
-           mimeType == "application/json" || 
-           mimeType == "application/javascript"
-}
-
-private val REGEX_COLOR_TAG = Regex("""\[color[:=]([A-Za-z0-9#]+)\](.*?)(?:\[/color\])?""", RegexOption.DOT_MATCHES_ALL)
-private val REGEX_PREFIX_COLOR = Regex("""^\[(Purple|Blue|Green|Red|Amber|Cyan|Pink|#[0-9A-Fa-f]{6})\]\s*(.*)""", RegexOption.IGNORE_CASE)
-private val REGEX_TODO = Regex("""^[-*+]?\s*\[([ xX])\]\s*(.*)""")
-private val REGEX_TODO_KEYWORD = Regex("""^(?:TODO|TAREA|CHECKBOX):\s*(.*)""", RegexOption.IGNORE_CASE)
-private val REGEX_ADMONITION = Regex("""^>\s*\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION|INFO)\]\s*(.*)""", RegexOption.IGNORE_CASE)
-private val REGEX_CALLOUT_COLOR = Regex("""^\[(Purple|Blue|Green|Red|Amber)\]\s*(.*)""", RegexOption.IGNORE_CASE)
-private val REGEX_HEADER_COLOR = Regex("""\[color[:=]([A-Za-z0-9#]+)\](.*?)(?:\[/color\])?""")
-private val REGEX_NUMBERED = Regex("""^\d+\.\s+(.*)""")
-private val REGEX_MD_IMAGE = Regex("""!\[(.*?)\]\((.*?)\)""")
-private val REGEX_HTML_IMAGE = Regex("""<img[^>]+src=["']([^"']+)["'][^>]*>""")
-private val REGEX_ALT = Regex("""alt=["']([^"']+)["']""")
-
-fun parseSingleTextBlock(rawText: String): EditorBlock.Text {
-    var text = rawText
-    var fontColor = "Normal"
-    var isBold = false
-    var isItalic = false
-    var fontSize = 15
-    var isHeader = false
-
-    // Color tag extraction: [color:Purple]texto[/color] or [color=Purple]texto or [color:#HEX]texto
-    val colorMatch = REGEX_COLOR_TAG.find(text)
-    if (colorMatch != null) {
-        val col = colorMatch.groupValues[1]
-        fontColor = if (col.startsWith("#")) col else (col[0].uppercaseChar() + col.substring(1).lowercase())
-        text = text.replace(colorMatch.value, colorMatch.groupValues[2]).trim()
-    } else {
-        // [Purple] Texto
-        val prefixMatch = REGEX_PREFIX_COLOR.matchEntire(text)
-        if (prefixMatch != null) {
-            val col = prefixMatch.groupValues[1]
-            fontColor = if (col.startsWith("#")) col else (col[0].uppercaseChar() + col.substring(1).lowercase())
-            text = prefixMatch.groupValues[2].trim()
-        }
-    }
-
-    // Bold / Italic wrapping
-    if (text.startsWith("**") && text.endsWith("**") && text.length >= 4) {
-        isBold = true
-        text = text.removeSurrounding("**").trim()
-    } else if (text.startsWith("__") && text.endsWith("__") && text.length >= 4) {
-        isBold = true
-        text = text.removeSurrounding("__").trim()
-    }
-
-    if (text.startsWith("*") && text.endsWith("*") && text.length >= 2) {
-        isItalic = true
-        text = text.removeSurrounding("*").trim()
-    } else if (text.startsWith("_") && text.endsWith("_") && text.length >= 2) {
-        isItalic = true
-        text = text.removeSurrounding("_").trim()
-    }
-
-    // Explicit title / subtitle labels
-    if (text.startsWith("Título:", ignoreCase = true) || text.startsWith("Title:", ignoreCase = true)) {
-        fontSize = 24
-        isBold = true
-        isHeader = true
-        text = text.substringAfter(":").trim()
-    } else if (text.startsWith("Subtítulo:", ignoreCase = true) || text.startsWith("Subtitle:", ignoreCase = true)) {
-        fontSize = 20
-        isBold = true
-        isHeader = true
-        text = text.substringAfter(":").trim()
-    }
-
-    return EditorBlock.Text(
-        content = text,
-        fontSize = fontSize,
-        fontColor = fontColor,
-        isBold = isBold,
-        isItalic = isItalic,
-        isHeader = isHeader
-    )
-}
-
-fun parseTextContentToBlocks(textContent: String): List<EditorBlock> {
-    val blocks = mutableListOf<EditorBlock>()
-    if (textContent.isBlank()) return blocks
-
-    val lines = textContent.split("\n")
-    val currentParagraph = java.lang.StringBuilder()
-
-    fun flushParagraph() {
-        if (currentParagraph.isNotEmpty()) {
-            val trimmed = currentParagraph.toString().trim()
-            if (trimmed.isNotEmpty()) {
-                blocks.add(parseSingleTextBlock(trimmed))
-            }
-            currentParagraph.setLength(0)
-        }
-    }
-
-    var i = 0
-    while (i < lines.size) {
-        val line = lines[i].trim()
-
-        // Empty line handling: flushes paragraph to give spacing
-        if (line.isEmpty()) {
-            flushParagraph()
-            i++
-            continue
-        }
-
-        // Periodic flush if paragraph is getting too large to prevent massive single blocks
-        if (currentParagraph.length > 3000) {
-            flushParagraph()
-        }
-
-        // 0. Collapsible Sections (<details><summary> or ▼ / ▶ / ▾)
-        val isDetailsTag = line.startsWith("<details>", ignoreCase = true) || line.startsWith("<details><summary>", ignoreCase = true)
-        val isDropdownPrefix = line.startsWith("▼") || line.startsWith("▶") || line.startsWith("▾") || line.startsWith("▸")
-        if (isDetailsTag || isDropdownPrefix) {
-            flushParagraph()
-            if (isDetailsTag) {
-                val summaryRegex = Regex("""<summary>(.*?)</summary>""", RegexOption.IGNORE_CASE)
-                val sumMatch = summaryRegex.find(line)
-                val title = sumMatch?.groupValues?.get(1)?.trim() ?: line.removePrefix("<details>").removePrefix("<summary>").removeSuffix("</summary>").trim().ifEmpty { "Sección" }
-                val bodyLines = mutableListOf<String>()
-                i++
-                while (i < lines.size && !lines[i].trim().startsWith("</details>", ignoreCase = true)) {
-                    bodyLines.add(lines[i])
-                    i++
-                }
-                if (i < lines.size && lines[i].trim().startsWith("</details>", ignoreCase = true)) {
-                    i++
-                }
-                val fullContent = if (bodyLines.isNotEmpty()) "$title\n${bodyLines.joinToString("\n")}" else title
-                blocks.add(
-                    EditorBlock.Text(
-                        content = fullContent,
-                        fontSize = 20,
-                        isBold = true,
-                        isHeader = true,
-                        isCollapsedHeader = true,
-                        isCollapsed = false
-                    )
-                )
-                continue
-            } else {
-                val title = line.removePrefix("▼").removePrefix("▶").removePrefix("▾").removePrefix("▸").trim()
-                blocks.add(
-                    EditorBlock.Text(
-                        content = title,
-                        fontSize = 20,
-                        isBold = true,
-                        isHeader = true,
-                        isCollapsedHeader = true,
-                        isCollapsed = false
-                    )
-                )
-                i++
-                continue
-            }
-        }
-
-        // 1. Markdown Table
-        if (line.startsWith("|") && line.endsWith("|") && line.length > 2) {
-            flushParagraph()
-            val tableLines = mutableListOf<String>()
-            while (i < lines.size && lines[i].trim().startsWith("|") && lines[i].trim().endsWith("|")) {
-                tableLines.add(lines[i].trim())
-                i++
-            }
-            val rows = mutableListOf<List<String>>()
-            for (tblLine in tableLines) {
-                val isSeparator = tblLine.replace("|", "").replace("-", "").replace(":", "").replace(" ", "").trim().isEmpty()
-                if (isSeparator) continue
-                val parts = tblLine.split("|").map { it.trim() }
-                if (parts.size > 2) {
-                    val cells = parts.subList(1, parts.size - 1)
-                    rows.add(cells)
-                }
-            }
-            if (rows.isNotEmpty()) {
-                val maxCols = rows.maxOf { it.size }.coerceAtLeast(1)
-                val numRows = rows.size
-                val paddedData = rows.map { row ->
-                    val padded = row.toMutableList()
-                    while (padded.size < maxCols) {
-                        padded.add("")
-                    }
-                    padded.toList()
-                }
-                blocks.add(EditorBlock.Table(
-                    rows = numRows,
-                    cols = maxCols,
-                    data = paddedData,
-                    headerColor = "Purple"
-                ))
-            }
-            continue
-        }
-
-        // 2. To-Do / Checkbox item (- [ ] / - [x] / * [ ] / * [x] / + [ ] / [ ] / [x])
-        val todoMatch = REGEX_TODO.matchEntire(line)
-        if (todoMatch != null) {
-            flushParagraph()
-            val isChecked = todoMatch.groupValues[1].equals("x", ignoreCase = true)
-            val todoContent = todoMatch.groupValues[2].trim()
-            blocks.add(EditorBlock.Todo(content = todoContent, isChecked = isChecked))
-            i++
-            continue
-        }
-        val todoKeywordMatch = REGEX_TODO_KEYWORD.matchEntire(line)
-        if (todoKeywordMatch != null) {
-            flushParagraph()
-            blocks.add(EditorBlock.Todo(content = todoKeywordMatch.groupValues[1].trim(), isChecked = false))
-            i++
-            continue
-        }
-
-        // 3. Markdown Admonitions (> [!NOTE], > [!TIP], > [!WARNING], > [!IMPORTANT], > [!CAUTION])
-        val admonitionMatch = REGEX_ADMONITION.matchEntire(line)
-        if (admonitionMatch != null) {
-            flushParagraph()
-            val type = admonitionMatch.groupValues[1].uppercase()
-            var content = admonitionMatch.groupValues[2].trim()
-            if (content.isEmpty() && i + 1 < lines.size && lines[i + 1].trim().startsWith(">")) {
-                i++
-                content = lines[i].trim().removePrefix(">").trim()
-            }
-            val (emoji, col) = when (type) {
-                "TIP" -> "💡" to "Purple"
-                "WARNING", "CAUTION" -> "⚠️" to "Amber"
-                "IMPORTANT" -> "⭐" to "Red"
-                else -> "📌" to "Blue"
-            }
-            blocks.add(EditorBlock.Callout(emoji = emoji, colorVariant = col, content = content))
-            i++
-            continue
-        }
-
-        // 4. Quote (> text)
-        if (line.startsWith("> ")) {
-            flushParagraph()
-            blocks.add(EditorBlock.Quote(content = line.substring(2).trim()))
-            i++
-            continue
-        }
-
-        // 5. Callout with Emojis (💡, ⚠️, 📌, 🚀, ⭐, 🔥, ℹ️, 📝, ✅)
-        val calloutEmojis = listOf("💡", "⚠️", "📌", "🚀", "⭐", "🔥", "ℹ️", "📝", "✅")
-        val matchingEmoji = calloutEmojis.firstOrNull { line.startsWith(it) }
-        if (matchingEmoji != null) {
-            flushParagraph()
-            var calloutText = line.substring(matchingEmoji.length).trim()
-            var variant = when (matchingEmoji) {
-                "💡" -> "Purple"
-                "⚠️" -> "Amber"
-                "📌" -> "Blue"
-                "🚀" -> "Green"
-                "⭐" -> "Red"
-                else -> "Purple"
-            }
-            val colorPrefix = REGEX_CALLOUT_COLOR.matchEntire(calloutText)
-            if (colorPrefix != null) {
-                val c = colorPrefix.groupValues[1]
-                variant = c[0].uppercaseChar() + c.substring(1).lowercase()
-                calloutText = colorPrefix.groupValues[2].trim()
-            }
-            blocks.add(EditorBlock.Callout(emoji = matchingEmoji, content = calloutText, colorVariant = variant))
-            i++
-            continue
-        }
-
-        // 6. Divider (---, ***, ___, --- [dotted], --- [dashed])
-        if (line == "---" || line == "***" || line == "___" || line.startsWith("---") || line.startsWith("***")) {
-            flushParagraph()
-            val style = when {
-                line.contains("dotted", ignoreCase = true) -> "Dotted"
-                line.contains("dashed", ignoreCase = true) -> "Dashed"
-                else -> "Solid"
-            }
-            blocks.add(EditorBlock.Divider(style = style))
-            i++
-            continue
-        }
-
-        // 7. Code block (```lang ... ```)
-        if (line.startsWith("```")) {
-            flushParagraph()
-            val lang = line.removePrefix("```").trim().ifEmpty { "Kotlin" }
-            val codeLines = mutableListOf<String>()
-            i++
-            while (i < lines.size && !lines[i].trim().startsWith("```")) {
-                codeLines.add(lines[i])
-                i++
-            }
-            if (i < lines.size && lines[i].trim().startsWith("```")) i++
-            blocks.add(EditorBlock.Code(code = codeLines.joinToString("\n"), language = lang))
-            continue
-        }
-
-        // 8. Markdown Headers (#, ##, ###, ####)
-        if (line.startsWith("#")) {
-            flushParagraph()
-            val headerLevel = line.takeWhile { it == '#' }.length
-            var headerText = line.substring(headerLevel).trim()
-            var fontColor = "Normal"
-            val colMatch = REGEX_HEADER_COLOR.find(headerText)
-            if (colMatch != null) {
-                val col = colMatch.groupValues[1]
-                fontColor = if (col.startsWith("#")) col else (col[0].uppercaseChar() + col.substring(1).lowercase())
-                headerText = headerText.replace(colMatch.value, colMatch.groupValues[2]).trim()
-            }
-            val fontSize = when (headerLevel) {
-                1 -> 24
-                2 -> 20
-                3 -> 18
-                else -> 16
-            }
-            blocks.add(EditorBlock.Text(content = headerText, isHeader = true, fontSize = fontSize, isBold = true, fontColor = fontColor))
-            i++
-            continue
-        }
-
-        // 9. Bullet List item (*, -, +, ◦, ▪) with indentation
-        val rawLine = lines[i]
-        val leadingSpacesOrTabs = rawLine.takeWhile { it == ' ' || it == '\t' }
-        val indentFromPrefix = if (leadingSpacesOrTabs.contains("\t\t") || leadingSpacesOrTabs.length >= 8) 2
-                               else if (leadingSpacesOrTabs.contains("\t") || leadingSpacesOrTabs.length >= 4) 1
-                               else 0
-        val isSubBulletCircle = line.startsWith("◦") || line.startsWith("◦ ")
-        val isSubBulletSquare = line.startsWith("▪") || line.startsWith("▪ ")
-        val isStandardBullet = line.startsWith("* ") || line.startsWith("- ") || line.startsWith("+ ") || line.startsWith("• ")
-        
-        if (isSubBulletCircle || isSubBulletSquare || isStandardBullet) {
-            flushParagraph()
-            val cleanBullet = when {
-                isSubBulletCircle -> line.removePrefix("◦").trim()
-                isSubBulletSquare -> line.removePrefix("▪").trim()
-                else -> line.removePrefix("* ").removePrefix("- ").removePrefix("+ ").removePrefix("• ").trim()
-            }
-            val indent = when {
-                isSubBulletSquare -> maxOf(2, indentFromPrefix)
-                isSubBulletCircle -> maxOf(1, indentFromPrefix)
-                else -> indentFromPrefix
-            }
-            val parsedText = parseSingleTextBlock(cleanBullet)
-            blocks.add(parsedText.copy(isBullet = true, fontSize = 14, indentLevel = indent))
-            i++
-            continue
-        }
-
-        // 10. Numbered List item with indentation
-        val numberedMatch = REGEX_NUMBERED.matchEntire(line)
-        if (numberedMatch != null) {
-            flushParagraph()
-            val numberedText = numberedMatch.groupValues[1].trim()
-            val parsedText = parseSingleTextBlock(numberedText)
-            blocks.add(parsedText.copy(isNumbered = true, fontSize = 14, indentLevel = indentFromPrefix))
-            i++
-            continue
-        }
-
-        // 11. Parse inline Markdown Images or default Paragraph text
-        
-        var remainingLine = lines[i]
-        while (remainingLine.isNotEmpty()) {
-            val mdMatch = REGEX_MD_IMAGE.find(remainingLine)
-            val htmlMatch = REGEX_HTML_IMAGE.find(remainingLine)
-
-            if (mdMatch != null && (htmlMatch == null || mdMatch.range.first < htmlMatch.range.first)) {
-                val beforeText = remainingLine.substring(0, mdMatch.range.first)
-                if (beforeText.isNotEmpty()) {
-                    currentParagraph.append(beforeText)
-                }
-                flushParagraph()
-
-                val caption = mdMatch.groupValues[1]
-                val url = mdMatch.groupValues[2]
-                blocks.add(EditorBlock.Image(
-                    urlOrPath = url,
-                    caption = caption.ifEmpty { "Imagen" },
-                    width = "Match",
-                    height = "Wrap"
-                ))
-
-                remainingLine = remainingLine.substring(mdMatch.range.last + 1)
-            } else if (htmlMatch != null) {
-                val beforeText = remainingLine.substring(0, htmlMatch.range.first)
-                if (beforeText.isNotEmpty()) {
-                    currentParagraph.append(beforeText)
-                }
-                flushParagraph()
-
-                val url = htmlMatch.groupValues[1]
-                val altMatch = REGEX_ALT.find(htmlMatch.value)
-                val caption = altMatch?.groupValues?.get(1) ?: "Imagen"
-
-                blocks.add(EditorBlock.Image(
-                    urlOrPath = url,
-                    caption = caption,
-                    width = "Match",
-                    height = "Wrap"
-                ))
-
-                remainingLine = remainingLine.substring(htmlMatch.range.last + 1)
-            } else {
-                currentParagraph.append(remainingLine).append("\n")
-                break
-            }
-        }
-        i++
-    }
-    flushParagraph()
-    return blocks
-}
-
-fun convertBlocksToMarkdown(content: String): String {
-    val blocks = parseBlocks(content)
-    val sb = java.lang.StringBuilder()
-    for (block in blocks) {
-        when (block) {
-            is EditorBlock.Text -> {
-                if (block.isCollapsedHeader) {
-                    val lines = block.content.split("\n")
-                    val title = lines.firstOrNull() ?: "Sección"
-                    val body = if (lines.size > 1) lines.drop(1).joinToString("\n") else ""
-                    sb.append("<details><summary>$title</summary>\n\n$body\n</details>\n\n")
-                } else {
-                    val prefix = when {
-                        block.isHeader -> {
-                            val level = when (block.fontSize) {
-                                24 -> "# "
-                                20 -> "## "
-                                18 -> "### "
-                                else -> "#### "
-                            }
-                            level
-                        }
-                        block.isBullet -> "* "
-                        block.isNumbered -> "1. "
-                        else -> ""
-                    }
-                    sb.append(prefix).append(block.content).append("\n")
-                }
-            }
-            is EditorBlock.Table -> {
-                sb.append("\n")
-                val maxCols = block.cols
-                if (maxCols > 0) {
-                    val firstRow = block.data.getOrNull(0) ?: List(maxCols) { "" }
-                    sb.append("| ").append(firstRow.joinToString(" | ")).append(" |\n")
-                    sb.append("| ").append(List(maxCols) { "---" }.joinToString(" | ")).append(" |\n")
-                    for (r in 1 until block.rows) {
-                        val row = block.data.getOrNull(r) ?: List(maxCols) { "" }
-                        sb.append("| ").append(row.joinToString(" | ")).append(" |\n")
-                    }
-                }
-                sb.append("\n")
-            }
-            is EditorBlock.Image -> {
-                sb.append("\n![")
-                  .append(block.caption.ifEmpty { "Imagen" })
-                  .append("](")
-                  .append(block.urlOrPath)
-                  .append(")\n")
-            }
-            is EditorBlock.Audio -> {
-                sb.append("\n[Audio: ").append(block.name).append("]\n")
-            }
-            is EditorBlock.Video -> {
-                sb.append("\n[Video: ").append(block.title).append("]\n")
-            }
-            is EditorBlock.File -> {
-                sb.append("\n[Archivo: ").append(block.name).append("]\n")
-            }
-            is EditorBlock.Todo -> {
-                sb.append(if (block.isChecked) "- [x] " else "- [ ] ").append(block.content).append("\n")
-            }
-            is EditorBlock.Callout -> {
-                sb.append("\n").append(block.emoji).append(" ").append(block.content).append("\n\n")
-            }
-            is EditorBlock.Quote -> {
-                sb.append("> ").append(block.content).append("\n")
-            }
-            is EditorBlock.Divider -> {
-                sb.append("\n---\n\n")
-            }
-            is EditorBlock.Code -> {
-                sb.append("\n```").append(block.language).append("\n").append(block.code).append("\n```\n")
-            }
-        }
-    }
-    return sb.toString().trim()
-}
-
-
-

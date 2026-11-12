@@ -107,9 +107,11 @@ class NotesRepository(private val notesDao: NotesDao) {
         tags: String = "",
         attachments: String = "[]",
         reminderTime: Long? = null,
-        userEmail: String = "offline"
+        userEmail: String = "offline",
+        id: String = UUID.randomUUID().toString()
     ): NoteEntity {
         val note = NoteEntity(
+            id = id,
             pageId = pageId,
             title = title,
             content = content,

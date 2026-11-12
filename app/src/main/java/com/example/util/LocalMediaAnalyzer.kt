@@ -449,7 +449,24 @@ object LocalMediaAnalyzer {
             return "No se pudo leer el archivo PDF \"$fileName\" o el archivo está vacío."
         }
 
-        // 1. Intento con iText (Extracción de texto digital rápido para todas las páginas)
+        // 1. Intento estructurado con PdfStructureExtractor (preserva títulos, desplegables, viñetas, citas y espaciado)
+        val structuredResult = try {
+            val (structuredBlocks, _) = PdfStructureExtractor.extractDigitalPdfBlocksFromBytes(
+                context = context,
+                pdfBytes = bytes,
+                onProgress = onProgress
+            )
+            com.example.formatBlocksListToMarkdown(structuredBlocks).trim()
+        } catch (e: Exception) {
+            Log.w(TAG, "PdfStructureExtractor falló al leer el PDF, intentando extracción por página", e)
+            ""
+        }
+
+        if (structuredResult.length >= 80) {
+            return structuredResult
+        }
+
+        // 2. Fallback digital preservando saltos de línea reales (sin aplastar párrafos con joinToString(" "))
         val itextSb = StringBuilder()
         var totalPages = 0
         try {
@@ -463,12 +480,14 @@ object LocalMediaAnalyzer {
                     ""
                 }
                 if (!pageText.isNullOrBlank()) {
-                    // Limpieza y unificación básica de líneas del PDF digital
-                    val cleanedPage = pageText.lines()
-                        .map { it.trim() }
-                        .filter { it.isNotEmpty() }
-                        .joinToString(" ")
-                    itextSb.append(cleanedPage).append("\n\n")
+                    val preservedPage = pageText.replace("\r\n", "\n").replace("\r", "\n")
+                        .lines()
+                        .joinToString("\n") { it.replace(Regex("[ \\t]+"), " ").trimEnd() }
+                        .replace(Regex("\n{3,}"), "\n\n")
+                        .trim()
+                    if (preservedPage.isNotEmpty()) {
+                        itextSb.append(preservedPage).append("\n\n")
+                    }
                 }
             }
             reader.close()
@@ -477,12 +496,11 @@ object LocalMediaAnalyzer {
         }
 
         val itextResult = itextSb.toString().trim()
-        // Si iText extrajo texto digital significativo (promedio de más de 60 caracteres), lo devolvemos
         if (itextResult.length >= 80) {
             return itextResult
         }
 
-        // 2. Fallback: El PDF es escaneado o tiene imágenes. Usamos PdfRenderer + Google ML Kit OCR para todas las páginas
+        // 3. Fallback: El PDF es escaneado o tiene imágenes. Usamos PdfRenderer + Google ML Kit OCR para todas las páginas
         return try {
             val tempFile = File.createTempFile("pdf_ocr_", ".pdf", context.cacheDir)
             FileOutputStream(tempFile).use { it.write(bytes) }
@@ -490,29 +508,20 @@ object LocalMediaAnalyzer {
             val blocks = extractPdfWithMlKit(context, tempFile, onProgress)
             tempFile.delete()
 
-            if (blocks.isNotEmpty()) {
-                val ocrSb = StringBuilder()
-                for (b in blocks) {
-                    when (b) {
-                        is EditorBlock.Text -> {
-                            if (b.isHeader) ocrSb.append("### ").append(b.content).append("\n\n")
-                            else if (b.isBullet) ocrSb.append("• ").append(b.content).append("\n")
-                            else if (b.isNumbered) ocrSb.append("1. ").append(b.content).append("\n")
-                            else ocrSb.append(b.content).append("\n\n")
-                        }
-                        is EditorBlock.Todo -> ocrSb.append(if (b.isChecked) "[x] " else "[ ] ").append(b.content).append("\n")
-                        else -> {}
-                    }
-                }
-                ocrSb.toString().trim()
-            } else if (itextResult.isNotBlank()) {
-                itextResult
-            } else {
-                "El documento PDF no contiene texto digital ni texto legible mediante escaneo óptico."
+            val ocrFormatted = com.example.formatBlocksListToMarkdown(blocks).trim()
+            when {
+                ocrFormatted.isNotBlank() -> ocrFormatted
+                structuredResult.isNotBlank() -> structuredResult
+                itextResult.isNotBlank() -> itextResult
+                else -> "El documento PDF no contiene texto digital ni texto legible mediante escaneo óptico."
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error ejecutando OCR en páginas del PDF", e)
-            if (itextResult.isNotBlank()) itextResult else "No se pudo extraer texto del PDF \"$fileName\": ${e.localizedMessage ?: e.message}"
+            when {
+                structuredResult.isNotBlank() -> structuredResult
+                itextResult.isNotBlank() -> itextResult
+                else -> "No se pudo extraer texto del PDF \"$fileName\": ${e.localizedMessage ?: e.message}"
+            }
         }
     }
 
