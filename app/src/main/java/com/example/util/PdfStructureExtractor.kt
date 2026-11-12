@@ -21,8 +21,14 @@ sealed class ExtractedMarker {
     abstract val y: Float
     data class Bullet(override val x: Float, override val y: Float) : ExtractedMarker()
     data class ToggleArrow(override val x: Float, override val y: Float) : ExtractedMarker()
-    data class QuoteBar(override val x: Float, override val y: Float) : ExtractedMarker()
+    data class QuoteBar(override val x: Float, override val y: Float, val height: Float = 0f) : ExtractedMarker()
+    data class HollowBullet(override val x: Float, override val y: Float) : ExtractedMarker()
 }
+
+data class PdfMultiPageState(
+    var activeToggleId: String? = null,
+    var activeToggleIndent: Int = 0
+)
 
 sealed class ExtractedElement {
     abstract val y: Float
@@ -32,7 +38,8 @@ sealed class ExtractedElement {
         val x: Float,
         override val y: Float,
         val fontSize: Float = 12f,
-        val isBold: Boolean = false
+        val isBold: Boolean = false,
+        val isItalic: Boolean = false
     ) : ExtractedElement()
 
     data class Image(
@@ -79,8 +86,11 @@ class PageElementExtractor(
                 fontName.contains("black", ignoreCase = true) ||
                 fontName.contains("heavy", ignoreCase = true) ||
                 fontName.contains("semibold", ignoreCase = true)
+            val isItalic = fontName.contains("italic", ignoreCase = true) ||
+                fontName.contains("oblique", ignoreCase = true) ||
+                fontName.contains("slant", ignoreCase = true)
 
-            elements.add(ExtractedElement.Text(text, x, y, fontHeight, isBold))
+            elements.add(ExtractedElement.Text(text, x, y, fontHeight, isBold, isItalic))
         }
     }
 
@@ -142,17 +152,20 @@ class PageElementExtractor(
             val h = maxY - minY
             val cx = (minX + maxX) / 2f
             val cy = (minY + maxY) / 2f
+            val isStroked = renderInfo.operation == PathPaintingRenderInfo.STROKE
 
             if (w in 1.5f..9f && h in 1.5f..9f) {
                 if (currentPathPoints.size in 3..4) {
                     markers.add(ExtractedMarker.ToggleArrow(cx, cy))
+                } else if (isStroked) {
+                    markers.add(ExtractedMarker.HollowBullet(cx, cy))
                 } else {
                     markers.add(ExtractedMarker.Bullet(cx, cy))
                 }
             } else if (w in 4f..14f && h in 4f..14f && (currentPathPoints.size in 3..5)) {
                 markers.add(ExtractedMarker.ToggleArrow(cx, cy))
-            } else if (w in 1f..6f && h >= 12f) {
-                markers.add(ExtractedMarker.QuoteBar(cx, cy))
+            } else if (w in 0.5f..8f && h >= 10f) {
+                markers.add(ExtractedMarker.QuoteBar(cx, cy, h))
             }
             currentPathPoints.clear()
         }
@@ -206,12 +219,13 @@ object PdfStructureExtractor {
         val numPages = reader.numberOfPages
         val parser = PdfReaderContentParser(reader)
 
+        val multiPageState = PdfMultiPageState()
         for (page in 1..numPages) {
             onProgress?.invoke(page, numPages)
             val extractor = PageElementExtractor(context, imageDir, totalElementsExtracted, extractImages)
             parser.processContent(page, extractor)
 
-            val pageBlocks = processPageElements(extractor.elements, extractor.markers)
+            val pageBlocks = processPageElements(extractor.elements, extractor.markers, multiPageState)
             if (pageBlocks.isNotEmpty()) {
                 totalElementsExtracted += extractor.elements.size
                 val lastBlock = extractedBlocks.lastOrNull()
@@ -224,6 +238,10 @@ object PdfStructureExtractor {
                     lastBlock.parentToggleId == firstBlock.parentToggleId &&
                     lastBlock.content.isNotBlank() && firstBlock.content.isNotBlank() &&
                     !lastBlock.content.trimEnd().endsWith(".") &&
+                    !lastBlock.content.trimEnd().endsWith("!") &&
+                    !lastBlock.content.trimEnd().endsWith("?") &&
+                    !lastBlock.content.trimEnd().endsWith(":") &&
+                    !lastBlock.content.trimEnd().endsWith(";") &&
                     !firstBlock.content.startsWith("—") &&
                     !firstBlock.content.startsWith("–")
                 ) {
@@ -244,7 +262,8 @@ object PdfStructureExtractor {
 
     fun processPageElements(
         elements: List<ExtractedElement>,
-        markers: List<ExtractedMarker> = emptyList()
+        markers: List<ExtractedMarker> = emptyList(),
+        multiPageState: PdfMultiPageState = PdfMultiPageState()
     ): List<EditorBlock> {
         val textElements = elements.filterIsInstance<ExtractedElement.Text>()
         val imageElements = elements.filterIsInstance<ExtractedElement.Image>()
@@ -278,8 +297,8 @@ object PdfStructureExtractor {
         val sortedCombined = combinedList.sortedByDescending { it.y }
         val blocks = mutableListOf<EditorBlock>()
 
-        var activeImportToggleId: String? = null
-        var activeImportToggleIndent: Int = 0
+        var activeImportToggleId: String? = multiPageState.activeToggleId
+        var activeImportToggleIndent: Int = multiPageState.activeToggleIndent
 
         val validTexts = lines.filter { it.text.trim().isNotEmpty() }
         val baseMarginX = validTexts.minOfOrNull { it.x } ?: 50f
@@ -305,6 +324,7 @@ object PdfStructureExtractor {
         var currentParagraphIndent = 0
         var currentParagraphFontSize = 14f
         var currentParagraphIsBold = false
+        var currentParagraphIsItalic = false
         var lastLineY: Float? = null
 
         fun flushParagraph() {
@@ -313,8 +333,11 @@ object PdfStructureExtractor {
                 if (pText.isNotEmpty()) {
                     val toggleParent = if (activeImportToggleId != null && currentParagraphIndent >= activeImportToggleIndent) {
                         activeImportToggleId
-                    } else {
+                    } else if (activeImportToggleId != null && currentParagraphIndent < activeImportToggleIndent) {
                         activeImportToggleId = null
+                        multiPageState.activeToggleId = null
+                        null
+                    } else {
                         null
                     }
                     blocks.add(
@@ -322,6 +345,7 @@ object PdfStructureExtractor {
                             content = pText,
                             fontSize = currentParagraphFontSize.toInt().coerceIn(12, 18),
                             isBold = currentParagraphIsBold,
+                            isItalic = currentParagraphIsItalic,
                             indentLevel = currentParagraphIndent,
                             parentToggleId = toggleParent
                         )
@@ -385,18 +409,23 @@ object PdfStructureExtractor {
                                 isBold = true,
                                 isHeader = true,
                                 isCollapsedHeader = true,
-                                isCollapsed = false,
+                                isCollapsed = true,
                                 indentLevel = indentLevel
                             )
                         )
                         activeImportToggleId = toggleHeaderId
                         activeImportToggleIndent = indentLevel
+                        multiPageState.activeToggleId = toggleHeaderId
+                        multiPageState.activeToggleIndent = indentLevel
                         lastLineY = element.y
                         continue
                     }
 
+                    val nearbyQuoteMarker = markers.filterIsInstance<ExtractedMarker.QuoteBar>().firstOrNull { marker ->
+                        marker.x < element.x + 8f && (Math.abs(marker.y - element.y) <= (marker.height / 2f + 12f).coerceAtLeast(18f))
+                    }
                     val isQuoteText = rawText.startsWith("| ") || rawText.startsWith("|") || rawText.startsWith("> ")
-                    val isQuoteMarker = nearbyMarker is ExtractedMarker.QuoteBar
+                    val isQuoteMarker = nearbyQuoteMarker != null
                     if (isQuoteText || isQuoteMarker) {
                         flushParagraph()
                         val cleanQuote = rawText.removePrefix("|").removePrefix(">").trim()
@@ -406,7 +435,8 @@ object PdfStructureExtractor {
                         continue
                     }
 
-                    val isSubBulletCircle = rawText.startsWith("◦") || rawText.startsWith("  ◦") || rawText.startsWith("\t◦") ||
+                    val isHollowMarker = nearbyMarker is ExtractedMarker.HollowBullet
+                    val isSubBulletCircle = isHollowMarker || rawText.startsWith("◦") || rawText.startsWith("  ◦") || rawText.startsWith("\t◦") ||
                         (rawText.startsWith("o ") && rawText.length > 3)
                     val isSubBulletSquare = rawText.startsWith("▪") || rawText.startsWith("  ▪") || rawText.startsWith("\t▪")
                     val isStandardBulletText = rawText.startsWith("•") || rawText.startsWith("– ") || rawText.startsWith("- ") || rawText.startsWith("* ")
@@ -495,13 +525,30 @@ object PdfStructureExtractor {
                         continue
                     }
 
+                    val isNarradorCue = rawText.equals("Narrador**", ignoreCase = true) || rawText.startsWith("Narrador**", ignoreCase = true)
+                    if (isNarradorCue) {
+                        flushParagraph()
+                        val toggleParent = if (activeImportToggleId != null && indentLevel >= activeImportToggleIndent) activeImportToggleId else null
+                        blocks.add(
+                            EditorBlock.Text(
+                                content = rawText,
+                                fontSize = 15,
+                                isBold = true,
+                                indentLevel = indentLevel,
+                                parentToggleId = toggleParent
+                            )
+                        )
+                        lastLineY = element.y
+                        continue
+                    }
+
                     val isTitle = rawText.startsWith("# ") || rawText.startsWith("Título:", ignoreCase = true) ||
                         (rawText.length < 100 && (fSize >= maxOf(22f, bodyFontSize + 6f) || (bold && fSize >= maxOf(19f, bodyFontSize + 4.5f))))
                     val isSubtitle = !isTitle && (rawText.startsWith("## ") || rawText.startsWith("Subtítulo:", ignoreCase = true) ||
                         Regex("^(Capítulo|Capitulo|Chapter)\\s+[\\dA-Za-z]+", RegexOption.IGNORE_CASE).find(rawText) != null ||
                         (bold && rawText.length < 90 && fSize >= maxOf(17f, bodyFontSize + 2.5f)))
                     val isHeading = !isTitle && !isSubtitle && (rawText.startsWith("### ") ||
-                        (listOf("Introducción", "Resumen", "Abstract", "Metodología", "Resultados", "Conclusiones", "Discusión", "Referencias", "Bibliografía", "Objetivos", "Marco Teórico", "Antecedentes", "Requisitos", "Temario", "Índice", "Narrador").any { (rawText.equals(it, ignoreCase = true) || rawText.startsWith("$it:", ignoreCase = true)) && rawText.length < 50 }) ||
+                        (listOf("Introducción", "Resumen", "Abstract", "Metodología", "Resultados", "Conclusiones", "Discusión", "Referencias", "Bibliografía", "Objetivos", "Marco Teórico", "Antecedentes", "Requisitos", "Temario", "Índice").any { (rawText.equals(it, ignoreCase = true) || rawText.startsWith("$it:", ignoreCase = true)) && rawText.length < 50 }) ||
                         (bold && rawText.length < 75 && (fSize >= maxOf(15f, bodyFontSize + 1.5f) || Regex("^\\d+(\\.\\d+)*\\s+[A-ZÁÉÍÓÚÑ]").find(rawText) != null || (rawText.length in 4..60 && rawText.all { it.isUpperCase() || !it.isLetter() }))))
                     val isMinorSection = !isTitle && !isSubtitle && !isHeading && (
                         rawText.startsWith("#### ") ||
@@ -511,6 +558,7 @@ object PdfStructureExtractor {
                     if (isTitle || isSubtitle || isHeading || isMinorSection) {
                         if (isTitle || isSubtitle) {
                             activeImportToggleId = null
+                            multiPageState.activeToggleId = null
                         }
                         flushParagraph()
                         val targetSize = when {
@@ -520,7 +568,7 @@ object PdfStructureExtractor {
                             else -> 16
                         }
                         val cleanText = ChatNotePipeline.cleanHeadingText(
-                            rawText.replace(Regex("""^#{1,6}\s*"""), "").removeSuffix("**").trim()
+                            rawText.replace(Regex("""^#{1,6}\s*"""), "").trim()
                         )
                         val headingParent = if (!isTitle && !isSubtitle && activeImportToggleId != null && indentLevel >= activeImportToggleIndent) {
                             activeImportToggleId
@@ -578,6 +626,7 @@ object PdfStructureExtractor {
                         currentParagraphIndent = indentLevel
                         currentParagraphFontSize = fSize
                         currentParagraphIsBold = bold
+                        currentParagraphIsItalic = element.isItalic
                     } else {
                         if (currentParagraph.endsWith("-") && currentParagraph.length >= 2 && currentParagraph[currentParagraph.length - 2].isLetter()) {
                             currentParagraph.deleteCharAt(currentParagraph.length - 1)
@@ -621,6 +670,7 @@ object PdfStructureExtractor {
         val minX = sortedChunks.minOfOrNull { it.x } ?: 0f
         val maxFontSize = sortedChunks.maxOfOrNull { it.fontSize } ?: 12f
         val anyBold = sortedChunks.any { it.isBold }
-        return ExtractedElement.Text(lineText, minX, avgY, maxFontSize, anyBold)
+        val anyItalic = sortedChunks.any { it.isItalic }
+        return ExtractedElement.Text(lineText, minX, avgY, maxFontSize, anyBold, anyItalic)
     }
 }

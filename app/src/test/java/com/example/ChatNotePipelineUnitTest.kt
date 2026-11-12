@@ -269,4 +269,103 @@ class ChatNotePipelineUnitTest {
         assertTrue(formatted.contains("</details>"))
     }
 
+    @Test
+    fun `parseTextContentToBlocks initializes collapsible sections as isCollapsed = true`() {
+        val md = """
+            <details><summary>Un último acto de amor.</summary>
+
+            Párrafo interno.
+
+            </details>
+
+            ## ▼ Tu voluntad vive conmigo.
+            Texto con flecha.
+        """.trimIndent()
+        val blocks = parseTextContentToBlocks(md)
+        val detailsHeader = blocks.first { it is EditorBlock.Text && it.content == "Un último acto de amor." } as EditorBlock.Text
+        assertTrue(detailsHeader.isCollapsedHeader)
+        assertTrue("Details section must be collapsed initially", detailsHeader.isCollapsed)
+
+        val arrowHeader = blocks.first { it is EditorBlock.Text && it.content == "Tu voluntad vive conmigo." } as EditorBlock.Text
+        assertTrue(arrowHeader.isCollapsedHeader)
+        assertTrue("Arrow section must be collapsed initially", arrowHeader.isCollapsed)
+    }
+
+    @Test
+    fun `parseTextContentToBlocks parses pipe quote lines as EditorBlock Quote`() {
+        val md = """
+            ## ▼ Subtítulo
+            | Cuida y protege a los seres que aún quedan en este mundo.
+            > Otra cita normal.
+        """.trimIndent()
+        val blocks = parseTextContentToBlocks(md)
+        val quotes = blocks.filterIsInstance<EditorBlock.Quote>()
+        assertEquals(2, quotes.size)
+        assertEquals("Cuida y protege a los seres que aún quedan en este mundo.", quotes[0].content)
+        assertNotNull(quotes[0].parentToggleId)
+        assertEquals("Otra cita normal.", quotes[1].content)
+    }
+
+    @Test
+    fun `PdfStructureExtractor processPageElements maintains parent toggle across pages and marks collapsed`() {
+        val pageState = com.example.util.PdfMultiPageState()
+
+        // Page 1: Dropdown heading starts
+        val p1Elements = listOf(
+            com.example.util.ExtractedElement.Text("▼ Un último acto de amor.", 50f, 700f, 18f, isBold = true),
+            com.example.util.ExtractedElement.Text("Párrafo en página 3.", 50f, 650f, 14f)
+        )
+        val p1Blocks = com.example.util.PdfStructureExtractor.processPageElements(p1Elements, emptyList(), pageState)
+        val toggleBlock = p1Blocks.first { it is EditorBlock.Text && it.isCollapsedHeader } as EditorBlock.Text
+        assertTrue("Toggle header must start collapsed", toggleBlock.isCollapsed)
+        assertNotNull("PageState must retain activeToggleId", pageState.activeToggleId)
+        assertEquals(toggleBlock.id, pageState.activeToggleId)
+
+        // Page 2: Continuation on page 4 without repeating toggle header
+        val p2Elements = listOf(
+            com.example.util.ExtractedElement.Text("• Diálogo continuo en página 4", 65f, 700f, 14f)
+        )
+        val p2Blocks = com.example.util.PdfStructureExtractor.processPageElements(p2Elements, emptyList(), pageState)
+        assertEquals(1, p2Blocks.size)
+        val childBullet = p2Blocks[0] as EditorBlock.Text
+        assertTrue(childBullet.isBullet)
+        assertEquals("Child on page 2 must belong to parent toggle from page 1", toggleBlock.id, childBullet.parentToggleId)
+
+        // Page 3: QuoteBar on page 8
+        val quoteBarMarker = com.example.util.ExtractedMarker.QuoteBar(45f, 600f, height = 30f)
+        val p3Elements = listOf(
+            com.example.util.ExtractedElement.Text("Cuida y protege a las criaturas...", 55f, 600f, 14f)
+        )
+        val p3Blocks = com.example.util.PdfStructureExtractor.processPageElements(p3Elements, listOf(quoteBarMarker), pageState)
+        assertEquals(1, p3Blocks.size)
+        assertTrue("Element next to quote bar must be an EditorBlock.Quote", p3Blocks[0] is EditorBlock.Quote)
+        assertEquals(toggleBlock.id, p3Blocks[0].parentToggleId)
+    }
+
+    @Test
+    fun `PdfStructureExtractor preserves literal Narrador asterisks without mangling`() {
+        val elements = listOf(
+            com.example.util.ExtractedElement.Text("Narrador**", 50f, 700f, 15f, isBold = true),
+            com.example.util.ExtractedElement.Text("De el cielo los elfos lograron a precias una fuente de luz.", 50f, 670f, 14f)
+        )
+        val blocks = com.example.util.PdfStructureExtractor.processPageElements(elements)
+        val narrador = blocks.first { it is EditorBlock.Text && it.content.contains("Narrador") } as EditorBlock.Text
+        assertEquals("Narrador**", narrador.content)
+        assertTrue(narrador.isBold)
+        assertFalse(narrador.isHeader)
+    }
+
+    @Test
+    fun `parseInlineMarkdown preserves Narrador asterisks without bolding subsequent text`() {
+        val sample = "Narrador**\nDe el cielo los elfos lograron ver la luz."
+        val parsed = parseInlineMarkdown(sample)
+        assertTrue(parsed.text.contains("Narrador**"))
+        val spans = parsed.spanStyles
+        val extraBoldOnFollowingText = spans.any {
+            it.item.fontWeight == androidx.compose.ui.text.font.FontWeight.ExtraBold &&
+            it.start >= sample.indexOf("De el cielo")
+        }
+        assertFalse("Trailing asterisks on Narrador** must not cause subsequent paragraph to become bold", extraBoldOnFollowingText)
+    }
+
 }

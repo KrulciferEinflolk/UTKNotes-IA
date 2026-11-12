@@ -274,7 +274,7 @@ fun parseTextContentToBlocks(textContent: String, splitLinesAsBlocks: Boolean): 
                     fontColor = headerParsed.fontColor,
                     isHeader = true,
                     isCollapsedHeader = true,
-                    isCollapsed = false,
+                    isCollapsed = true,
                     indentLevel = lineIndent,
                     parentToggleId = activeToggleId
                 )
@@ -376,7 +376,7 @@ fun parseTextContentToBlocks(textContent: String, splitLinesAsBlocks: Boolean): 
                     fontColor = parsedTitle.fontColor,
                     isHeader = true,
                     isCollapsedHeader = true,
-                    isCollapsed = false,
+                    isCollapsed = true,
                     indentLevel = toggleIndent
                 )
             )
@@ -466,11 +466,12 @@ fun parseTextContentToBlocks(textContent: String, splitLinesAsBlocks: Boolean): 
             continue
         }
 
-        // 4. Quote (> text)
-        if (line.startsWith("> ")) {
+        // 4. Quote (> text or | text)
+        if (line.startsWith("> ") || (line.startsWith("| ") && !line.endsWith("|"))) {
             flushParagraph()
             pendingSpacerCount = 0
-            blocks.add(EditorBlock.Quote(content = line.substring(2).trim(), parentToggleId = activeToggleId))
+            val quoteContent = if (line.startsWith("> ")) line.substring(2).trim() else line.substring(2).trim()
+            blocks.add(EditorBlock.Quote(content = quoteContent, parentToggleId = activeToggleId))
             i++
             continue
         }

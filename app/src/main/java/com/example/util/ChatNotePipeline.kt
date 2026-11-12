@@ -274,13 +274,15 @@ FORMATOS SOPORTADOS POR UTK NOTES (úsalos con precisión):
 - Subtítulos o secciones desplegables: usa EXACTAMENTE bloques HTML:
   <details><summary>Título del subtítulo desplegable</summary>
 
-  Contenido interno (párrafos, viñetas `- `, listas numeradas `1. `, sub-secciones `### `).
+  Contenido interno (párrafos, diálogos con viñetas `- `, sub-viñetas con sangría `    - `, citas `> ` o `| `, tareas `- [ ]`).
 
   </details>
-  (Usa `<details><summary>...</summary>` siempre que el usuario pida desplegables o el documento original tenga desplegables).
+  (Usa `<details><summary>...</summary>` siempre que el usuario pida desplegables o el documento original tenga subtítulos con flechas ▼/▶).
 - Estilos inline y de bloque: `**negrita**`, `*cursiva*`, `<u>subrayado</u>`, `[color:Purple]texto[/color]` (colores válidos: `Purple`, `Blue`, `Green`, `Red`, `Amber`, `Cyan`, `Pink`).
-- Listas con sangría: `- elemento` y sub-elementos con 4 espacios (`    - sub-elemento`), listas numeradas `1. `, tareas `- [ ]` / `- [x]`, citas `> cita`, divisores `---`.
-- Espaciado: separa bloques y párrafos con una línea en blanco, y usa una línea en blanco extra entre secciones mayores cuando el original tenga separación amplia.
+- Citas y barras laterales: usa `> cita` o `| cita` para textos enmarcados con barra lateral.
+- Marcas especiales y nombres: preserva marcas textuales del original como `Narrador**` tal como están.
+- Listas con sangría: `- elemento` y sub-elementos con 4 espacios (`    - sub-elemento`), listas numeradas `1. `, tareas `- [ ]` / `- [x]`, divisores `---`.
+- Espaciado: separa bloques y párrafos con una línea en blanco.
 """.trimIndent()
 
         val taskSpecificRules = when {
@@ -288,8 +290,15 @@ FORMATOS SOPORTADOS POR UTK NOTES (úsalos con precisión):
 MODO ESTRUCTURACIÓN / CREACIÓN DE NOTA:
 1. PROHIBIDO escribir introducciones conversacionales, saludos ni despedidas ("Aquí tienes...", "Por supuesto...", ni un "---" inicial antes del título). Empieza DIRECTAMENTE con `# Título` en la primera línea.
 2. FIDELIDAD AL DOCUMENTO O NOTA FUENTE: Si hay un `DOCUMENTO` o `NOTA` adjunto/en sesión o contenido previo que el usuario pide pasar a una nota:
-   - Conserva el título real, la redacción, el orden, los datos, el espaciado, los estilos (`**negrita**`, `*cursiva*`, `<u>subrayado</u>`, colores) y la estructura original sin inventar títulos nuevos ni resumir salvo que se te pida resumir.
-   - Si el usuario pide subtítulos desplegables, envuelve cada subtítulo correspondiente con su contenido dentro de `<details><summary>...</summary>\n\n...\n\n</details>`.
+   - PROHIBIDO inventar o cambiar títulos (ej. 'Bitácora de Observación...'), inventar historias, resumir o alterar el contenido salvo que se te pida explícitamente. Transcribe y estructura FIELMENTE el texto real del documento original con exactitud.
+   - Conserva el título real, la redacción, el orden, los diálogos, el espaciado, los estilos (`**negrita**`, `*cursiva*`, `<u>subrayado</u>`, colores) y la estructura original.
+   - Si el usuario pide subtítulos desplegables o el documento tiene flechas ▼/▶, envuelve cada subtítulo con su contenido dentro de:
+     <details><summary>Título del subtítulo</summary>
+
+     Contenido completo de la sección...
+
+     </details>
+   - Preserva marcas literales como `Narrador**` y barras de cita `| ` o `> `.
 3. No envuelvas la nota dentro de bloques de código (```markdown) ni añadas etiquetas JSON o técnicas.
 
 $formattingContract

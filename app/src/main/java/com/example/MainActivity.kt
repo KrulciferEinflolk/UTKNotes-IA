@@ -7353,7 +7353,7 @@ fun parseInlineMarkdown(
     defaultColor: Color = TextPrimary
 ): AnnotatedString {
     return buildAnnotatedString {
-        val regex = Regex("""(\*\*\*[\s\S]*?\*\*\*|\*\*[\s\S]*?\*\*|__[\s\S]*?__|<u>[\s\S]*?<\/u>|~~[\s\S]*?~~|\*[\s\S]*?\*|_[\s\S]*?_|`[\s\S]*?`|\[color:[a-zA-Z0-9#]+\][\s\S]*?\[\/color\]|@"[^"]+"|@[a-zA-Z0-9áéíóúÁÉÍÓÚñÑ_]+)""")
+        val regex = Regex("""(\*\*\*[\s\S]*?\*\*\*|(?<!\w)\*\*(?!\s)[^\n]+?(?<!\s)\*\*|(?<!\w)__(?!\s)[^\n]+?(?<!\s)__|<u>[\s\S]*?<\/u>|~~[\s\S]*?~~|(?<!\w)\*(?!\s)[^\n*]+?(?<!\s)\*|(?<!\w)_(?!\s)[^\n_]+?(?<!\s)_|`[^`\n]+`|\[color:[a-zA-Z0-9#]+\][\s\S]*?\[\/color\]|@"[^"]+"|@[a-zA-Z0-9áéíóúÁÉÍÓÚñÑ_]+)""")
         var lastIdx = 0
         val matches = regex.findAll(text)
         for (match in matches) {
@@ -7474,8 +7474,8 @@ class MarkdownVisualTransformation(
         val hiddenTags = mutableListOf<HiddenTag>()
         val styles = mutableListOf<StyledRange>()
 
-        // 1. Bold: **...** or __...__
-        val boldRegex = Regex("""(\*\*|__)(.*?)\1""")
+        // 1. Bold: **...** or __...__ (respect left-flanking delimiter to preserve literal Narrador**)
+        val boldRegex = Regex("""(?<!\w)(\*\*|__)(?!\s)([^\n]*?)(?<!\s)\1""")
         for (m in boldRegex.findAll(raw)) {
             val s = m.range.first
             val e = m.range.last + 1
@@ -8217,9 +8217,9 @@ fun MarkdownChatBubble(
                 continue
             }
 
-            // 11. Blockquote (> quote)
-            if (trimmed.startsWith("> ")) {
-                val quoteText = trimmed.removePrefix("> ").trim()
+            // 11. Blockquote (> quote or | quote)
+            if (trimmed.startsWith("> ") || (trimmed.startsWith("| ") && !trimmed.endsWith("|"))) {
+                val quoteText = if (trimmed.startsWith("> ")) trimmed.removePrefix("> ").trim() else trimmed.removePrefix("| ").trim()
                 val parsed = parseInlineMarkdown(quoteText, notesList)
                 Row(
                     modifier = Modifier

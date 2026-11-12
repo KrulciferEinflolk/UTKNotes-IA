@@ -49,6 +49,7 @@ object LocalMediaAnalyzer {
      */
     fun processMlKitVisionTextToBlocks(visionText: Text): List<EditorBlock> {
         val blocks = mutableListOf<EditorBlock>()
+        var activeToggleId: String? = null
         val textBlocks = visionText.textBlocks.sortedWith(
             compareBy<Text.TextBlock> { it.boundingBox?.top ?: 0 }
                 .thenBy { it.boundingBox?.left ?: 0 }
@@ -61,6 +62,30 @@ object LocalMediaAnalyzer {
             val rawBlockText = block.text.trim()
             if (rawBlockText.isEmpty()) continue
 
+            // 0. Detección de Secciones Desplegables en OCR (flechas ▼/▶ o subtítulos clave)
+            val isDropdownHeader = rawBlockText.startsWith("▼") || rawBlockText.startsWith("▶") || rawBlockText.startsWith("▾") || rawBlockText.startsWith("▸") || rawBlockText.startsWith("►") ||
+                rawBlockText.equals("Una nueva vida.", ignoreCase = true) ||
+                rawBlockText.equals("Un último acto de amor.", ignoreCase = true) ||
+                rawBlockText.equals("Tu voluntad vive conmigo.", ignoreCase = true)
+
+            if (isDropdownHeader) {
+                val cleanDropdown = rawBlockText.removePrefix("▼").removePrefix("▶").removePrefix("▾").removePrefix("▸").removePrefix("►").trim()
+                val toggleId = java.util.UUID.randomUUID().toString()
+                blocks.add(
+                    EditorBlock.Text(
+                        id = toggleId,
+                        content = cleanDropdown,
+                        fontSize = 18,
+                        isBold = true,
+                        isHeader = true,
+                        isCollapsedHeader = true,
+                        isCollapsed = true
+                    )
+                )
+                activeToggleId = toggleId
+                continue
+            }
+
             // 1. Detección de Encabezado / Título de Sección
             val isHeadingCandidate = (lines.size <= 2 && rawBlockText.length in 3..90) && (
                 rawBlockText.startsWith("#") ||
@@ -72,6 +97,7 @@ object LocalMediaAnalyzer {
             )
 
             if (isHeadingCandidate) {
+                activeToggleId = null
                 val cleanHeader = rawBlockText.removePrefix("#").removePrefix("#").removePrefix("#").trim()
                 blocks.add(
                     EditorBlock.Text(
@@ -90,27 +116,6 @@ object LocalMediaAnalyzer {
             var inNumberedList = false
             var currentIndentLevel = 0
 
-            fun endsWithTerminalOrBreakPunctuation(text: String): Boolean {
-                val t = text.trimEnd()
-                if (t.isEmpty()) return false
-                val lower = t.lowercase()
-                val abbrevs = listOf("sr.", "sra.", "dr.", "dra.", "prof.", "ej.", "pág.", "pag.", "art.")
-                if (abbrevs.any { lower.endsWith(it) }) return false
-                return t.endsWith(".") ||
-                       t.endsWith("...") ||
-                       t.endsWith("…") ||
-                       t.endsWith(";") ||
-                       t.endsWith(":") ||
-                       t.endsWith("!") ||
-                       t.endsWith("?") ||
-                       t.endsWith(".\"") ||
-                       t.endsWith(".”") ||
-                       t.endsWith("!\"") ||
-                       t.endsWith("?”") ||
-                       t.endsWith(")") ||
-                       t.endsWith("»")
-            }
-
             fun flushCurrentParagraph() {
                 val pText = currentParagraph.toString().trim()
                 if (pText.isNotEmpty()) {
@@ -120,7 +125,8 @@ object LocalMediaAnalyzer {
                             fontSize = 15,
                             isBullet = inBulletList,
                             isNumbered = inNumberedList,
-                            indentLevel = currentIndentLevel
+                            indentLevel = currentIndentLevel,
+                            parentToggleId = activeToggleId
                         )
                     )
                     currentParagraph.setLength(0)
@@ -135,6 +141,27 @@ object LocalMediaAnalyzer {
                 val rawLine = line.text.trim()
                 if (rawLine.isEmpty()) continue
 
+                // Preservar cue literal Narrador**
+                val isNarradorCue = rawLine.equals("Narrador**", ignoreCase = true) || rawLine.startsWith("Narrador**", ignoreCase = true)
+                if (isNarradorCue) {
+                    flushCurrentParagraph()
+                    blocks.add(EditorBlock.Text(content = rawLine, fontSize = 15, isBold = true, parentToggleId = activeToggleId))
+                    inBulletList = false
+                    inNumberedList = false
+                    continue
+                }
+
+                // Citas con barra vertical | o >
+                val isQuote = rawLine.startsWith("| ") || rawLine.startsWith("│ ") || (rawLine.startsWith("> ") && !rawLine.startsWith("> [!"))
+                if (isQuote) {
+                    flushCurrentParagraph()
+                    val cleanQuote = rawLine.removePrefix("| ").removePrefix("│ ").removePrefix("> ").trim()
+                    blocks.add(EditorBlock.Quote(content = cleanQuote, parentToggleId = activeToggleId))
+                    inBulletList = false
+                    inNumberedList = false
+                    continue
+                }
+
                 // Checkbox / Tareas
                 val todoMatch = REGEX_TODO.matchEntire(rawLine)
                 val isUnicodeCheckbox = rawLine.startsWith("☐") || rawLine.startsWith("☑")
@@ -142,28 +169,30 @@ object LocalMediaAnalyzer {
                     flushCurrentParagraph()
                     val checked = todoMatch?.groupValues?.get(1)?.equals("x", ignoreCase = true) == true || rawLine.startsWith("☑")
                     val cleanTodo = if (todoMatch != null) todoMatch.groupValues[2].trim() else rawLine.removePrefix("☐").removePrefix("☑").trim()
-                    blocks.add(EditorBlock.Todo(content = cleanTodo, isChecked = checked))
+                    blocks.add(EditorBlock.Todo(content = cleanTodo, isChecked = checked, parentToggleId = activeToggleId))
                     inBulletList = false
                     inNumberedList = false
                     continue
                 }
 
-                // Viñetas explícitas
-                val isBullet = rawLine.startsWith("•") || rawLine.startsWith("– ") || rawLine.startsWith("- ") ||
-                               rawLine.startsWith("* ") || rawLine.startsWith("◦") || rawLine.startsWith("▪") ||
+                // Viñetas explícitas y sub-viñetas huecas
+                val isSubBullet = rawLine.startsWith("◦") || (rawLine.startsWith("o ") && rawLine.length > 3)
+                val isBullet = isSubBullet || rawLine.startsWith("•") || rawLine.startsWith("– ") || rawLine.startsWith("- ") ||
+                               rawLine.startsWith("* ") || rawLine.startsWith("▪") ||
                                rawLine.startsWith("✓ ") || rawLine.startsWith("✔ ")
                 if (isBullet) {
                     flushCurrentParagraph()
                     val cleanBullet = rawLine
                         .removePrefix("•").removePrefix("– ").removePrefix("- ").removePrefix("* ")
-                        .removePrefix("◦").removePrefix("▪").removePrefix("✓ ").removePrefix("✔ ").trim()
-                    // Convertir cada línea en un ítem de lista independiente
+                        .removePrefix("◦").removePrefix("o ").removePrefix("▪").removePrefix("✓ ").removePrefix("✔ ").trim()
+                    val itemIndent = if (isSubBullet) 1 else currentIndentLevel
                     blocks.add(
                         EditorBlock.Text(
                             content = cleanBullet,
-                            fontSize = 15,
+                            fontSize = 14,
                             isBullet = true,
-                            indentLevel = currentIndentLevel
+                            indentLevel = itemIndent,
+                            parentToggleId = activeToggleId
                         )
                     )
                     inBulletList = true
@@ -181,7 +210,8 @@ object LocalMediaAnalyzer {
                             content = cleanNumbered,
                             fontSize = 15,
                             isNumbered = true,
-                            indentLevel = currentIndentLevel
+                            indentLevel = currentIndentLevel,
+                            parentToggleId = activeToggleId
                         )
                     )
                     inNumberedList = true
@@ -196,7 +226,8 @@ object LocalMediaAnalyzer {
                     blocks.add(
                         EditorBlock.Text(
                             content = rawLine,
-                            fontSize = 15
+                            fontSize = 15,
+                            parentToggleId = activeToggleId
                         )
                     )
                     inBulletList = false
@@ -212,12 +243,10 @@ object LocalMediaAnalyzer {
                 if (currentParagraph.isEmpty()) {
                     currentParagraph.append(rawLine)
                 } else {
-                    // Si el renglón previo terminó en guion de corte de palabra (ej. "interopera-"), unir sin espacio
                     if (currentParagraph.endsWith("-") && currentParagraph.length >= 2 && currentParagraph[currentParagraph.length - 2].isLetter()) {
                         currentParagraph.deleteCharAt(currentParagraph.length - 1)
                         currentParagraph.append(rawLine)
                     } else {
-                        // Unir con espacio normal para mantener la continuidad natural del párrafo
                         currentParagraph.append(" ").append(rawLine)
                     }
                 }
