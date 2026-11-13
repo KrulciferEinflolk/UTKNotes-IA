@@ -98,9 +98,15 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 if (trimmedCandidate != null) {
                     aiStudioConfig.saveApiKey(trimmedCandidate)
                 }
-                val updated = aiStudioConfig.saveDiscoveredModels(models)
+                var updated = aiStudioConfig.saveDiscoveredModels(models, markVerified = true)
+                if (models.isNotEmpty() && models.none { it.id.equals(updated.selectedModel, ignoreCase = true) }) {
+                    val preferred = models.firstOrNull { it.id.equals(com.example.data.local.ai.DEFAULT_AI_STUDIO_MODEL, ignoreCase = true) }?.id
+                        ?: models.first().id
+                    updated = aiStudioConfig.saveSelectedModel(preferred)
+                }
                 _aiSettingsState.value = updated.copy(
-                    validationState = ApiKeyValidationState.Valid(models.size)
+                    validationState = ApiKeyValidationState.Valid(models.size),
+                    isConnectionVerified = true
                 )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -109,9 +115,45 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     e.localizedMessage.orEmpty(),
                     trimmedCandidate
                 ).ifBlank { "No se pudo verificar la clave en Google AI Studio." }
-                _aiSettingsState.value = _aiSettingsState.value.copy(
-                    validationState = ApiKeyValidationState.Invalid(safeError)
+                val updated = aiStudioConfig.setConnectionVerified(false)
+                _aiSettingsState.value = updated.copy(
+                    validationState = ApiKeyValidationState.Invalid(safeError),
+                    isConnectionVerified = false
                 )
+            }
+        }
+    }
+
+    fun refreshGoogleAiStudioModelsIfVerified() {
+        val current = _aiSettingsState.value
+        if (!current.hasApiKey || !current.isConnectionVerified) return
+        if (current.validationState is ApiKeyValidationState.Validating) return
+
+        viewModelScope.launch {
+            try {
+                val models = googleAiStudio.listAvailableModels(apiKeyOverride = null)
+                var updated = aiStudioConfig.saveDiscoveredModels(models, markVerified = true)
+                if (models.isNotEmpty() && models.none { it.id.equals(updated.selectedModel, ignoreCase = true) }) {
+                    val preferred = models.firstOrNull { it.id.equals(com.example.data.local.ai.DEFAULT_AI_STUDIO_MODEL, ignoreCase = true) }?.id
+                        ?: models.first().id
+                    updated = aiStudioConfig.saveSelectedModel(preferred)
+                }
+                _aiSettingsState.value = updated.copy(
+                    validationState = ApiKeyValidationState.Valid(models.size),
+                    isConnectionVerified = true
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: com.example.data.remote.gemini.AiStudioApiException) {
+                if (e.httpCode in listOf(400, 401, 403)) {
+                    val updated = aiStudioConfig.setConnectionVerified(false)
+                    _aiSettingsState.value = updated.copy(
+                        validationState = ApiKeyValidationState.Invalid(e.message.orEmpty().ifBlank { "Clave API inválida." }),
+                        isConnectionVerified = false
+                    )
+                }
+            } catch (_: Exception) {
+                // Error de red transitorio: mantener modelos cacheados y estado verificado
             }
         }
     }
@@ -341,7 +383,30 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         rawUserPrompt: String = userDisplayMsg
     ) {
         val updatedList = if (alreadyAddedToChat) _chatMessages.value else (_chatMessages.value + (userDisplayMsg to true))
-        _chatMessages.value = updatedList
+        val userIndex = updatedList.indexOfLast { it.second }.coerceAtLeast(0)
+        executeChatbotTurn(
+            baseMessages = updatedList,
+            insertResponseAt = updatedList.size,
+            historyMessages = if (userIndex > 0) updatedList.take(userIndex) else emptyList(),
+            sessionTitleCandidate = userDisplayMsg,
+            promptWithContext = promptWithContext,
+            imgB64 = imgB64,
+            imgMime = imgMime,
+            rawUserPrompt = rawUserPrompt
+        )
+    }
+
+    private fun executeChatbotTurn(
+        baseMessages: List<Pair<String, Boolean>>,
+        insertResponseAt: Int,
+        historyMessages: List<Pair<String, Boolean>>,
+        sessionTitleCandidate: String,
+        promptWithContext: String,
+        imgB64: String? = null,
+        imgMime: String? = null,
+        rawUserPrompt: String
+    ) {
+        _chatMessages.value = baseMessages
         _isChatbotSending.value = true
         _liveThinkingText.value = null
         if (_chatbotStatusText.value.isNullOrBlank()) {
@@ -353,20 +418,19 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         val historyTurnCap = if (isGeminiEngine) 8 else 4
         val historyCharCap = if (isGeminiEngine) 4_000 else 800
 
-        viewModelScope.launch {
-            val existing = repository.getChatSession(sId)
-            val chatTitle = existing?.title ?: userDisplayMsg.take(35).ifBlank { "Conversación" }
-            saveChatSession(
-                sId,
-                chatTitle,
-                serializeChatMessagesWithMeta(updatedList, sessionSourceMap[sId])
-            )
-        }
-
         chatbotJob?.cancel()
         chatbotJob = viewModelScope.launch {
             try {
-                val recentHistory = _chatMessages.value.dropLast(1).takeLast(historyTurnCap).map { (text, isUser) ->
+                val existing = repository.getChatSession(sId)
+                val chatTitle = existing?.title?.takeIf { it.isNotBlank() }
+                    ?: sessionTitleCandidate.take(35).ifBlank { "Conversación" }
+                saveChatSessionSync(
+                    sId,
+                    chatTitle,
+                    serializeChatMessagesWithMeta(baseMessages, sessionSourceMap[sId])
+                )
+
+                val recentHistory = historyMessages.takeLast(historyTurnCap).map { (text, isUser) ->
                     val cleanedTurn = if (isUser) {
                         text
                     } else {
@@ -384,18 +448,13 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 )
                 val finalResult = response ?: "Error al obtener respuesta de Aura"
 
-                val dbSession = repository.getChatSession(sId)
-                val currentMsgs = if (dbSession != null) {
-                    val deserialized = deserializeChatMessages(dbSession.messagesJson)
-                    if (deserialized.isNotEmpty()) deserialized else updatedList
-                } else {
-                    updatedList
+                val finalMessages = baseMessages.toMutableList().apply {
+                    val safeIdx = insertResponseAt.coerceIn(0, size)
+                    add(safeIdx, finalResult to false)
                 }
-                val finalMessages = currentMsgs + (finalResult to false)
-                val sessionTitle = dbSession?.title ?: userDisplayMsg.take(35).ifBlank { "Conversación" }
-                saveChatSession(
+                saveChatSessionSync(
                     sId,
-                    sessionTitle,
+                    chatTitle,
                     serializeChatMessagesWithMeta(finalMessages, sessionSourceMap[sId])
                 )
 
@@ -411,7 +470,10 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 }
             } catch (e: Exception) {
                 if (_currentChatSessionId.value == sId) {
-                    val finalMessages = _chatMessages.value + ("Error en la respuesta: ${e.message}" to false)
+                    val finalMessages = baseMessages.toMutableList().apply {
+                        val safeIdx = insertResponseAt.coerceIn(0, size)
+                        add(safeIdx, "Error en la respuesta: ${e.message}" to false)
+                    }
                     _chatMessages.value = finalMessages
                     _isChatbotSending.value = false
                     _chatbotStatusText.value = null
@@ -425,32 +487,32 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun regenerateLastChatbotResponse(allNotes: List<NoteEntity>) {
-        val currentMsgs = _chatMessages.value
-        val lastUserIdx = currentMsgs.indexOfLast { it.second }
-        if (lastUserIdx == -1) return
-        val lastUserMsg = currentMsgs[lastUserIdx].first
-        val trimmedMsgs = currentMsgs.subList(0, lastUserIdx + 1).toList()
-        _chatMessages.value = trimmedMsgs
-
+    private fun buildTurnPromptWithContext(
+        userMsg: String,
+        allNotes: List<NoteEntity>,
+        extraShortcutContext: String = ""
+    ): String {
         val sId = _currentChatSessionId.value
         val sessionSource = if (sId != null) sessionSourceMap[sId] else null
         val isGeminiEngine = _selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO
         val contextLimit = if (isGeminiEngine) 35_000 else 4_500
 
-        val isGreeting = isGreetingOrGeneralQuery(lastUserMsg)
-        val isIndependent = com.example.util.ChatNotePipeline.isIndependentGeneralTopic(lastUserMsg)
-        val mentionedNote = resolveMentionedNote(lastUserMsg, allNotes)
-        val refsActive = com.example.util.ChatNotePipeline.detectActiveNoteReference(lastUserMsg)
+        val isGreeting = isGreetingOrGeneralQuery(userMsg) && extraShortcutContext.isBlank()
+        val isIndependent = com.example.util.ChatNotePipeline.isIndependentGeneralTopic(userMsg)
+        val mentionedNote = resolveMentionedNote(userMsg, allNotes)
+        val refsActive = com.example.util.ChatNotePipeline.detectActiveNoteReference(userMsg)
 
         val sb = StringBuilder()
+        if (extraShortcutContext.isNotBlank()) {
+            sb.append(extraShortcutContext.trim()).append("\n\n")
+        }
         when {
             mentionedNote != null -> {
                 val formatted = formatNoteBlocksForLlm(mentionedNote.content, maxChars = contextLimit)
                 sb.append("=== NOTA MENCIONADA (\"${mentionedNote.title}\") ===\n")
                 sb.append(formatted)
                 sb.append("\n=========================================\n\n")
-                sb.append("Instrucción del usuario: ").append(lastUserMsg)
+                sb.append("Instrucción del usuario: ").append(userMsg)
             }
             sessionSource != null && !isGreeting && !isIndependent -> {
                 val header = if (sessionSource.isNote) {
@@ -463,7 +525,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 } else sessionSource.content
                 sb.append(header).append("\n").append(safeSrc)
                 sb.append("\n===========================================\n\n")
-                sb.append("Instrucción del usuario: ").append(lastUserMsg)
+                sb.append("Instrucción del usuario: ").append(userMsg)
             }
             refsActive && _selectedNote.value != null -> {
                 val active = _selectedNote.value!!
@@ -471,15 +533,84 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 sb.append("=== NOTA ACTIVA (\"${active.title}\") ===\n")
                 sb.append(formatted)
                 sb.append("\n=========================================\n\n")
-                sb.append("Instrucción del usuario: ").append(lastUserMsg)
+                sb.append("Instrucción del usuario: ").append(userMsg)
             }
-            else -> sb.append(lastUserMsg)
+            extraShortcutContext.isNotBlank() -> {
+                sb.append("Instrucción del usuario: ").append(userMsg)
+            }
+            else -> sb.append(userMsg)
         }
+        return sb.toString()
+    }
 
-        sendChatbotMessage(
-            userDisplayMsg = lastUserMsg,
-            promptWithContext = sb.toString(),
-            alreadyAddedToChat = true,
+    fun regenerateResponseAt(assistantIndex: Int, allNotes: List<NoteEntity>) {
+        val currentMsgs = _chatMessages.value
+        if (assistantIndex !in currentMsgs.indices || currentMsgs[assistantIndex].second) {
+            regenerateLastChatbotResponse(allNotes)
+            return
+        }
+        var userIdx = -1
+        for (i in (assistantIndex - 1) downTo 0) {
+            if (currentMsgs[i].second) {
+                userIdx = i
+                break
+            }
+        }
+        if (userIdx == -1) return
+
+        val userMsg = currentMsgs[userIdx].first
+        val (cleanedMessages, insertSlot) = removeAssistantTurnResponses(currentMsgs, userIdx)
+        val promptWithContext = buildTurnPromptWithContext(userMsg, allNotes)
+
+        executeChatbotTurn(
+            baseMessages = cleanedMessages,
+            insertResponseAt = insertSlot,
+            historyMessages = cleanedMessages.take(userIdx),
+            sessionTitleCandidate = userMsg,
+            promptWithContext = promptWithContext,
+            rawUserPrompt = userMsg
+        )
+    }
+
+    fun editUserMessageAndRegenerate(
+        userIndex: Int,
+        newUserDisplayMsg: String,
+        extraShortcutContext: String = "",
+        allNotes: List<NoteEntity>
+    ) {
+        val trimmedNewMsg = newUserDisplayMsg.trim()
+        if (trimmedNewMsg.isEmpty()) return
+        val currentMsgs = _chatMessages.value.toMutableList()
+        if (userIndex !in currentMsgs.indices || !currentMsgs[userIndex].second) return
+
+        currentMsgs[userIndex] = trimmedNewMsg to true
+        val (cleanedMessages, insertSlot) = removeAssistantTurnResponses(currentMsgs, userIndex)
+        val promptWithContext = buildTurnPromptWithContext(trimmedNewMsg, allNotes, extraShortcutContext)
+
+        executeChatbotTurn(
+            baseMessages = cleanedMessages,
+            insertResponseAt = insertSlot,
+            historyMessages = cleanedMessages.take(userIndex),
+            sessionTitleCandidate = trimmedNewMsg,
+            promptWithContext = promptWithContext,
+            rawUserPrompt = trimmedNewMsg
+        )
+    }
+
+    fun regenerateLastChatbotResponse(allNotes: List<NoteEntity>) {
+        val currentMsgs = _chatMessages.value
+        val lastUserIdx = currentMsgs.indexOfLast { it.second }
+        if (lastUserIdx == -1) return
+        val lastUserMsg = currentMsgs[lastUserIdx].first
+        val (cleanedMessages, insertSlot) = removeAssistantTurnResponses(currentMsgs, lastUserIdx)
+        val promptWithContext = buildTurnPromptWithContext(lastUserMsg, allNotes)
+
+        executeChatbotTurn(
+            baseMessages = cleanedMessages,
+            insertResponseAt = insertSlot,
+            historyMessages = cleanedMessages.take(lastUserIdx),
+            sessionTitleCandidate = lastUserMsg,
+            promptWithContext = promptWithContext,
             rawUserPrompt = lastUserMsg
         )
     }
@@ -600,7 +731,8 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         imgMime: String?,
         pNote: NoteEntity?,
         pText: String?,
-        allNotes: List<NoteEntity>
+        allNotes: List<NoteEntity>,
+        extraShortcutContext: String = ""
     ) {
         // Consumir pre-adjuntos pendientes para no filtrarlos en mensajes posteriores
         _chatbotPreAttachedNote.value = null
@@ -639,7 +771,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             val noteLimit = if (isGeminiEngine) 35_000 else 3_000
 
             val isGreeting = isGreetingOrGeneralQuery(rawUserMsg) &&
-                actualFileContent.isNullOrBlank() && imgUri == null && pNote == null && pText.isNullOrBlank()
+                actualFileContent.isNullOrBlank() && imgUri == null && pNote == null && pText.isNullOrBlank() && extraShortcutContext.isBlank()
             val isIndependent = com.example.util.ChatNotePipeline.isIndependentGeneralTopic(rawUserMsg)
             val refsActiveNote = com.example.util.ChatNotePipeline.detectActiveNoteReference(rawUserMsg)
             val mentionedNote = resolveMentionedNote(rawUserMsg, allNotes)
@@ -672,6 +804,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 explicitTargetNote == null &&
                 imgUri == null &&
                 pText.isNullOrBlank() &&
+                extraShortcutContext.isBlank() &&
                 !isGreeting &&
                 !isIndependent
             ) {
@@ -685,11 +818,16 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 imageOcrText.isNotBlank() ||
                 explicitTargetNote != null ||
                 !pText.isNullOrBlank() ||
-                storedSessionSource != null
+                storedSessionSource != null ||
+                extraShortcutContext.isNotBlank()
 
             if (isGreeting || !hasAnyStructuredContext) {
                 sb.append(rawUserMsg)
             } else {
+                if (extraShortcutContext.isNotBlank()) {
+                    sb.append(extraShortcutContext.trim()).append("\n\n")
+                }
+
                 if (!actualFileContent.isNullOrBlank()) {
                     val safeFile = if (actualFileContent.length > docLimit) {
                         actualFileContent.take(docLimit) + "\n...[Documento extenso condensado]"
@@ -807,6 +945,10 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         .flatMapLatest { email -> repository.searchNotes("", email) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val allPages: StateFlow<List<PageEntity>> = currentEmail
+        .flatMapLatest { email -> repository.getAllPagesForUser(email) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     // All chat history sessions
     val allChatSessions: StateFlow<List<com.example.data.model.ChatSessionEntity>> = currentEmail
         .flatMapLatest { email -> repository.getChatSessions(email) }
@@ -822,17 +964,21 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         .flatMapLatest { email -> repository.getDeletedBooks(email) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    private suspend fun saveChatSessionSync(id: String, title: String, messagesJson: String) {
+        repository.insertChatSession(
+            com.example.data.model.ChatSessionEntity(
+                id = id,
+                title = title,
+                messagesJson = messagesJson,
+                createdAt = System.currentTimeMillis(),
+                userEmail = currentEmail.value
+            )
+        )
+    }
+
     fun saveChatSession(id: String, title: String, messagesJson: String) {
         viewModelScope.launch {
-            repository.insertChatSession(
-                com.example.data.model.ChatSessionEntity(
-                    id = id,
-                    title = title,
-                    messagesJson = messagesJson,
-                    createdAt = System.currentTimeMillis(),
-                    userEmail = currentEmail.value
-                )
-            )
+            saveChatSessionSync(id, title, messagesJson)
         }
     }
 

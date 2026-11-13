@@ -1,85 +1,78 @@
 package com.example.ui
 
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 
 /**
- * Custom Modifier for Graphic Elements in the note editor.
- * Requires holding down for more than 2 seconds (2000ms) to open the edit menu.
- * Prevents UI freezing by cancelling cleanly on drag/scroll and decoupling gesture release
- * from modal window creation, avoiding SurfaceSyncGroup timeouts.
+ * Unified gesture modifier for the block drag handle (`⠿`).
+ * - Vertical drag swaps the block up or down among paragraphs and other elements.
+ * - Double tap (for graphic elements) immediately opens the configuration menu without
+ *   interfering with LazyColumn scrolling, text fields, or native media views.
  */
 @Composable
-fun Modifier.graphicElement2SecondHold(
-    onOpenSettings: () -> Unit,
-    onClick: (() -> Unit)? = null
+fun Modifier.graphicDragHandleGestures(
+    blockKey: String,
+    enableDoubleTap: Boolean,
+    onDoubleTap: () -> Unit,
+    onSingleTap: () -> Unit = {},
+    onDragStart: () -> Unit,
+    onDragStepDown: () -> Boolean,
+    onDragStepUp: () -> Boolean
 ): Modifier {
     val haptic = LocalHapticFeedback.current
-    val scope = rememberCoroutineScope()
-    val currentOnOpenSettings by rememberUpdatedState(onOpenSettings)
-    val currentOnClick by rememberUpdatedState(onClick)
+    val currentEnableDoubleTap by rememberUpdatedState(enableDoubleTap)
+    val currentOnDoubleTap by rememberUpdatedState(onDoubleTap)
+    val currentOnSingleTap by rememberUpdatedState(onSingleTap)
+    val currentOnDragStart by rememberUpdatedState(onDragStart)
+    val currentOnDragStepDown by rememberUpdatedState(onDragStepDown)
+    val currentOnDragStepUp by rememberUpdatedState(onDragStepUp)
 
-    return this.pointerInput(Unit) {
-        awaitEachGesture {
-            val down = awaitFirstDown(requireUnconsumed = false)
-            var heldFor2Seconds = false
-            var tapTriggered = false
-
-            try {
-                withTimeout(2000L) {
-                    var upOrCancel: PointerInputChange? = null
-                    while (upOrCancel == null) {
-                        val event = awaitPointerEvent(PointerEventPass.Main)
-                        val change = event.changes.firstOrNull { it.id == down.id }
-                        if (change == null || change.isConsumed) {
-                            // Cancelled by scroll or consumed by container
-                            return@withTimeout
+    return this
+        .pointerInput(blockKey) {
+            detectTapGestures(
+                onTap = {
+                    currentOnSingleTap()
+                },
+                onDoubleTap = {
+                    if (currentEnableDoubleTap) {
+                        try {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        } catch (_: Exception) {
+                            // Ignore haptic failure on emulator/container
                         }
-                        if (!change.pressed) {
-                            // Finger lifted before 2 seconds
-                            upOrCancel = change
-                        } else {
-                            val diff = change.position - down.position
-                            if (diff.getDistance() > viewConfiguration.touchSlop) {
-                                // User dragged or scrolled
-                                return@withTimeout
-                            }
+                        currentOnDoubleTap()
+                    }
+                }
+            )
+        }
+        .pointerInput(blockKey) {
+            var totalDragY = 0f
+            detectDragGestures(
+                onDragStart = {
+                    totalDragY = 0f
+                    currentOnDragStart()
+                },
+                onDrag = { change, dragAmount ->
+                    change.consume()
+                    totalDragY += dragAmount.y
+                    val threshold = 60f
+                    if (totalDragY > threshold) {
+                        if (currentOnDragStepDown()) {
+                            totalDragY = 0f
+                        }
+                    } else if (totalDragY < -threshold) {
+                        if (currentOnDragStepUp()) {
+                            totalDragY = 0f
                         }
                     }
-                    tapTriggered = true
                 }
-            } catch (e: TimeoutCancellationException) {
-                // 2000ms passed with finger stationary
-                heldFor2Seconds = true
-            }
-
-            if (heldFor2Seconds) {
-                down.consume()
-                try {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                } catch (e: Exception) {
-                    // Ignore haptic failure on emulator/container
-                }
-                // Decouple window creation from pointer event loop to prevent SurfaceSyncGroup timeout
-                scope.launch {
-                    currentOnOpenSettings()
-                }
-            } else if (tapTriggered) {
-                currentOnClick?.invoke()
-            }
+            )
         }
-    }
 }

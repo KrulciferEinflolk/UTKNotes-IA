@@ -48,6 +48,9 @@ interface NotesDao {
     @Query("SELECT * FROM pages WHERE bookId = :bookId ORDER BY orderIndex ASC, createdAt ASC")
     suspend fun getPagesForBook(bookId: String): List<PageEntity>
 
+    @Query("SELECT * FROM pages WHERE userEmail = :userEmail ORDER BY orderIndex ASC, createdAt ASC")
+    fun getAllPagesFlow(userEmail: String): Flow<List<PageEntity>>
+
     @Query("SELECT * FROM pages WHERE id = :id")
     suspend fun getPageById(id: String): PageEntity?
 

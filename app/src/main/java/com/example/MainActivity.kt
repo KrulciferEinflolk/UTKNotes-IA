@@ -64,6 +64,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -83,13 +85,12 @@ import com.example.ui.HexColorBox
 import com.example.ui.HexColorPickerDialog
 import com.example.ui.parseHexColorSafe
 import com.example.ui.colorToHex
-import com.example.ui.graphicElement2SecondHold
+import com.example.ui.graphicDragHandleGestures
 import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.zIndex
@@ -1652,14 +1653,14 @@ sealed class EditorBlock {
 
     data class Image(
         override val id: String = UUID.randomUUID().toString(),
-        var urlOrPath: String = "Mantener pulsado para editar",
+        var urlOrPath: String = "",
         var caption: String = "", var width: String = "Match", var height: String = "Wrap",
         override var parentToggleId: String? = null
     ) : EditorBlock()
 
     data class Audio(
         override val id: String = UUID.randomUUID().toString(),
-        var name: String = "Mantener pulsado para editar",
+        var name: String = "Audio",
         var duration: String = "02:30",
         var isPlaying: Boolean = false,
         var sourceUrl: String = "",
@@ -1668,7 +1669,7 @@ sealed class EditorBlock {
 
     data class Video(
         override val id: String = UUID.randomUUID().toString(),
-        var title: String = "Mantener pulsado para editar",
+        var title: String = "Video",
         var length: String = "05:15",
         var sourceUrl: String = "", var width: String = "Match", var height: String = "Wrap",
         override var parentToggleId: String? = null
@@ -1676,9 +1677,9 @@ sealed class EditorBlock {
 
     data class File(
         override val id: String = java.util.UUID.randomUUID().toString(),
-        var name: String = "Mantener pulsado para editar",
+        var name: String = "Archivo",
         var sourceUrl: String = "",
-        var size: String = "Desconocido",
+        var size: String = "",
         override var parentToggleId: String? = null
     ) : EditorBlock()
 
@@ -2142,7 +2143,7 @@ fun parseBlocks(content: String): List<EditorBlock> {
                     list.add(
                         EditorBlock.Image(
                             id = id,
-                            urlOrPath = obj.optString("urlOrPath", "Mantener pulsado para editar"),
+                            urlOrPath = obj.optString("urlOrPath", ""),
                             caption = obj.optString("caption", ""),
                             width = obj.optString("width", "Match"),
                             height = obj.optString("height", "Wrap"),
@@ -2154,7 +2155,7 @@ fun parseBlocks(content: String): List<EditorBlock> {
                     list.add(
                         EditorBlock.Audio(
                             id = id,
-                            name = obj.optString("name", "Mantener pulsado para editar"),
+                            name = obj.optString("name", "Audio"),
                             duration = obj.optString("duration", "02:30"),
                             sourceUrl = obj.optString("sourceUrl", ""),
                             parentToggleId = parentToggleId
@@ -2165,7 +2166,7 @@ fun parseBlocks(content: String): List<EditorBlock> {
                     list.add(
                         EditorBlock.Video(
                             id = id,
-                            title = obj.optString("title", "Mantener pulsado para editar"),
+                            title = obj.optString("title", "Video"),
                             length = obj.optString("length", "05:15"),
                             sourceUrl = obj.optString("sourceUrl", ""),
                             width = obj.optString("width", "Match"),
@@ -2178,9 +2179,9 @@ fun parseBlocks(content: String): List<EditorBlock> {
                     list.add(
                         EditorBlock.File(
                             id = id,
-                            name = obj.optString("name", "Documento"),
+                            name = obj.optString("name", "Archivo"),
                             sourceUrl = obj.optString("sourceUrl", ""),
-                            size = obj.optString("size", "Desconocido"),
+                            size = obj.optString("size", ""),
                             parentToggleId = parentToggleId
                         )
                     )
@@ -2465,6 +2466,7 @@ fun RichFormatToolbar(
                         val nextAlign = when (activeBlock.alignment) {
                             "Left" -> "Center"
                             "Center" -> "Right"
+                            "Right" -> "Justify"
                             else -> "Left"
                         }
                         onFormatChange(null, null, null, null, null, null, nextAlign, null, null, null)
@@ -2472,6 +2474,7 @@ fun RichFormatToolbar(
                         val icon = when (activeBlock.alignment) {
                             "Center" -> Icons.Default.FormatAlignCenter
                             "Right" -> Icons.Default.FormatAlignRight
+                            "Justify" -> Icons.Default.FormatAlignJustify
                             else -> Icons.Default.FormatAlignLeft
                         }
                         Icon(icon, "Alineación", tint = GeminiBlue)
@@ -2674,6 +2677,10 @@ fun CellEditDialog(
     }
 }
 
+private fun isLegacyMediaPlaceholder(value: String): Boolean {
+    return value.isBlank() || value == "Mantener pulsado para editar"
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TableBlockView(
@@ -2682,27 +2689,13 @@ fun TableBlockView(
     onDelete: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
+    val isTableEmpty = block.data.all { row -> row.all { it.isBlank() } }
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = block.margin.dp)
-            .graphicElement2SecondHold(
-                onOpenSettings = onOpenSettings
-            ),
+            .padding(vertical = block.margin.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth(if (block.tableWidth == "Match") 1f else 0.8f)
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Tabla (${block.rows}×${block.cols}) • Mantén presionado 2s para editar", color = TextTertiary, fontSize = 10.sp)
-            IconButton(onClick = onOpenSettings, modifier = Modifier.size(20.dp)) {
-                Icon(Icons.Default.Settings, contentDescription = "Editar tabla", tint = GeminiCyanAccent, modifier = Modifier.size(14.dp))
-            }
-        }
         Column(
             modifier = Modifier
                 .fillMaxWidth(if (block.tableWidth == "Match") 1f else 0.8f)
@@ -2777,7 +2770,8 @@ fun TableBlockView(
                                 singleLine = true,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(6.dp),
+                                    .padding(6.dp)
+                                    .testTag("table_cell_${block.id}_${r}_${c}"),
                                 decorationBox = { innerTextField ->
                                     Box(
                                         contentAlignment = when (block.cellColor) {
@@ -2802,6 +2796,16 @@ fun TableBlockView(
                 }
             }
         }
+        if (isTableEmpty) {
+            Text(
+                text = "Doble toque en ⠿ para configurar",
+                color = TextTertiary.copy(alpha = 0.8f),
+                fontSize = 11.sp,
+                modifier = Modifier
+                    .padding(top = 4.dp)
+                    .testTag("table_empty_hint")
+            )
+        }
     }
 }
 
@@ -2823,13 +2827,14 @@ fun ImageBlockView(
         horizontalArrangement = Arrangement.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            val isPlaceholder = block.urlOrPath.isEmpty() || block.urlOrPath == "Mantener pulsado para editar"
+            val isPlaceholder = isLegacyMediaPlaceholder(block.urlOrPath)
             var imageAspectRatio by remember(block.urlOrPath) { mutableStateOf<Float?>(null) }
-            
+            var hasLoadError by remember(block.urlOrPath) { mutableStateOf(false) }
+
             val mod = Modifier
                 .fillMaxWidth(if (block.width == "Match") 1f else 0.5f)
                 .let { modifier ->
-                    if (isPlaceholder) {
+                    if (isPlaceholder || hasLoadError) {
                         modifier.height(if (block.height == "Wrap") 140.dp else 250.dp)
                     } else {
                         if (block.height == "Wrap") {
@@ -2845,10 +2850,7 @@ fun ImageBlockView(
                     }
                 }
                 .clip(RoundedCornerShape(8.dp))
-                .graphicElement2SecondHold(
-                    onOpenSettings = onOpenSettings
-                )
-            
+
             val imageModel: Any = remember(resolvedUrl, block.urlOrPath) {
                 val target = if (resolvedUrl.isNotEmpty()) resolvedUrl else block.urlOrPath
                 if (target.startsWith("/") || target.startsWith("file://")) {
@@ -2862,27 +2864,65 @@ fun ImageBlockView(
             Box(contentAlignment = Alignment.Center) {
                 if (isPlaceholder) {
                     Box(
-                        modifier = mod.background(Brush.linearGradient(listOf(Color(0xFF4285F4), Color(0xFF9B72F3)))),
+                        modifier = mod
+                            .background(Brush.linearGradient(listOf(Color(0xFF4285F4), Color(0xFF9B72F3))))
+                            .clickable { onOpenSettings() }
+                            .testTag("image_empty_placeholder"),
                         contentAlignment = Alignment.Center
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.Palette, null, tint = Color.White, modifier = Modifier.size(32.dp))
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text("Mantener pulsado para configurar", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        ) {
+                            Icon(Icons.Default.Image, contentDescription = "Imagen vacía", tint = Color.White, modifier = Modifier.size(32.dp))
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Toca aquí o doble toque en ⠿ para configurar",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
+                    }
+                } else if (hasLoadError) {
+                    Box(
+                        modifier = mod
+                            .background(CosmicSurfaceVariant)
+                            .border(1.dp, CosmicBorder, RoundedCornerShape(8.dp))
+                            .clickable { onOpenSettings() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        ) {
+                            Icon(Icons.Default.BrokenImage, contentDescription = "Error al cargar imagen", tint = TextSecondary, modifier = Modifier.size(28.dp))
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "No se pudo abrir la imagen • Toca aquí o doble toque en ⠿",
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
                         }
                     }
                 } else {
                     coil.compose.AsyncImage(
                         model = imageModel,
-                        contentDescription = block.caption,
+                        contentDescription = block.caption.ifBlank { "Imagen de la nota" },
                         modifier = mod.background(Color.DarkGray),
                         onSuccess = { state ->
+                            hasLoadError = false
                             val drawable = state.result.drawable
                             val w = drawable.intrinsicWidth
                             val h = drawable.intrinsicHeight
                             if (w > 0 && h > 0) {
                                 imageAspectRatio = w.toFloat() / h.toFloat()
                             }
+                        },
+                        onError = {
+                            hasLoadError = true
                         },
                         contentScale = if (block.height == "Wrap") {
                             androidx.compose.ui.layout.ContentScale.FillWidth
@@ -2892,7 +2932,7 @@ fun ImageBlockView(
                     )
                 }
             }
-            
+
             if (block.caption.isNotEmpty()) {
                 Text(
                     text = block.caption,
@@ -2917,23 +2957,20 @@ fun AudioBlockView(
     syncManager: com.example.data.remote.DriveSyncManager
 ) {
     val resolvedUrl = rememberDownloadedUri(block.sourceUrl, syncManager)
-    val baseContext = LocalContext.current
-    val context = remember(baseContext) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            baseContext.createAttributionContext("media")
-        } else {
-            baseContext
-        }
-    }
+    val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
+    var isPrepared by remember(resolvedUrl, block.sourceUrl) { mutableStateOf(false) }
+    var audioError by remember(resolvedUrl, block.sourceUrl) { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0f) }
     var duration by remember { mutableStateOf(0) }
     var currentPos by remember { mutableStateOf(0) }
     var mediaPlayer by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
 
-    DisposableEffect(resolvedUrl) {
+    DisposableEffect(resolvedUrl, block.sourceUrl) {
         var mp: android.media.MediaPlayer? = null
         val urlToUse = if (resolvedUrl.isNotEmpty()) resolvedUrl else block.sourceUrl
+        isPrepared = false
+        audioError = false
         if (urlToUse.isNotEmpty()) {
             try {
                 mp = android.media.MediaPlayer().apply {
@@ -2945,70 +2982,88 @@ fun AudioBlockView(
                                 .build()
                         )
                     }
-                    setDataSource(context, android.net.Uri.parse(urlToUse))
-                    setOnPreparedListener { 
+                    setOnPreparedListener {
                         duration = it.duration
+                        isPrepared = true
+                    }
+                    setOnErrorListener { _, _, _ ->
+                        isPlaying = false
+                        isPrepared = false
+                        audioError = true
+                        true
                     }
                     setOnCompletionListener {
                         isPlaying = false
                         currentPos = 0
                         progress = 0f
                     }
+                    setDataSource(context, android.net.Uri.parse(urlToUse))
                     prepareAsync()
                 }
                 mediaPlayer = mp
             } catch (e: Exception) {
-                e.printStackTrace()
+                audioError = true
             }
         }
         onDispose {
-            mp?.release()
+            try {
+                mp?.release()
+            } catch (_: Exception) {
+            }
             mediaPlayer = null
             isPlaying = false
+            isPrepared = false
         }
     }
 
-    LaunchedEffect(isPlaying) {
-        if (isPlaying) {
-            mediaPlayer?.let { mp ->
-                try {
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                        mp.playbackParams = mp.playbackParams.setSpeed(1.0f)
-                    }
-                } catch (e: Exception) {}
-            }
-            mediaPlayer?.start()
-            while (isPlaying) {
-                mediaPlayer?.let { mp ->
+    LaunchedEffect(isPlaying, isPrepared) {
+        val mp = mediaPlayer
+        if (isPlaying && isPrepared && mp != null) {
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                    mp.playbackParams = mp.playbackParams.setSpeed(1.0f)
+                }
+            } catch (_: Exception) {}
+            try {
+                mp.start()
+                while (isPlaying) {
                     if (duration > 0) {
                         currentPos = mp.currentPosition
                         progress = currentPos.toFloat() / duration.toFloat()
                     }
+                    kotlinx.coroutines.delay(100)
                 }
-                kotlinx.coroutines.delay(100)
+            } catch (_: Exception) {
+                isPlaying = false
             }
-        } else {
-            mediaPlayer?.pause()
+        } else if (!isPlaying && isPrepared && mp != null) {
+            try {
+                if (mp.isPlaying) {
+                    mp.pause()
+                }
+            } catch (_: Exception) {}
         }
     }
+
+    val isEmptyAudio = block.sourceUrl.isBlank()
+    val displayAudioName = if (isLegacyMediaPlaceholder(block.name)) "Audio" else block.name
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 8.dp)
             .clip(RoundedCornerShape(24.dp))
-            .background(Color(0xFF1E1E22)) // Dark gray/black background
-            .graphicElement2SecondHold(
-                onOpenSettings = onOpenSettings,
-                onClick = {
-                    if (block.sourceUrl.isEmpty()) {
-                        onOpenSettings()
-                    }
-                }
+            .background(Color(0xFF1E1E22))
+            .then(
+                if (isEmptyAudio) {
+                    Modifier
+                        .clickable { onOpenSettings() }
+                        .testTag("audio_empty_placeholder")
+                } else Modifier
             )
             .padding(horizontal = 16.dp, vertical = 16.dp)
     ) {
-        if (block.sourceUrl.isEmpty()) {
+        if (isEmptyAudio) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
@@ -3020,11 +3075,11 @@ fun AudioBlockView(
                         .background(GeminiBlue.copy(alpha = 0.2f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Default.AudioFile, null, tint = GeminiBlue, modifier = Modifier.size(24.dp))
+                    Icon(Icons.Default.AudioFile, contentDescription = "Audio vacío", tint = GeminiBlue, modifier = Modifier.size(24.dp))
                 }
                 Column {
-                    Text(block.name, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                    Text("Sin archivo configurado", color = Color.Gray, fontSize = 12.sp)
+                    Text(displayAudioName, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text("Toca aquí o doble toque en ⠿ para configurar", color = TextSecondary, fontSize = 12.sp)
                 }
             }
         } else {
@@ -3032,13 +3087,18 @@ fun AudioBlockView(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                // Play button with purple circle
                 Box(
                     modifier = Modifier
                         .size(48.dp)
                         .clip(CircleShape)
                         .background(Color(0xFF907CFF))
-                        .clickable { isPlaying = !isPlaying },
+                        .clickable {
+                            if (!audioError && isPrepared) {
+                                isPlaying = !isPlaying
+                            } else if (audioError) {
+                                onOpenSettings()
+                            }
+                        },
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
@@ -3049,49 +3109,50 @@ fun AudioBlockView(
                     )
                 }
 
-                // Info column
                 Column(
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
-                        block.name, 
-                        color = Color.White, 
+                        displayAudioName,
+                        color = Color.White,
                         fontSize = 14.sp,
                         maxLines = 1,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    
+
                     Slider(
                         value = progress,
                         onValueChange = {
                             progress = it
                             val newPos = (it * duration).toInt()
-                            mediaPlayer?.seekTo(newPos)
+                            try {
+                                if (isPrepared) mediaPlayer?.seekTo(newPos)
+                            } catch (_: Exception) {}
                             currentPos = newPos
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(24.dp), // Compact height
+                            .height(24.dp),
                         colors = SliderDefaults.colors(
-                            thumbColor = Color(0xFF907CFF), 
+                            thumbColor = Color(0xFF907CFF),
                             activeTrackColor = Color(0xFF907CFF),
                             inactiveTrackColor = Color(0xFF333333)
                         )
                     )
-                    
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            String.format("%d:%02d", currentPos / 1000 / 60, (currentPos / 1000) % 60), 
-                            color = Color.Gray, 
+                            String.format("%d:%02d", currentPos / 1000 / 60, (currentPos / 1000) % 60),
+                            color = Color.Gray,
                             fontSize = 12.sp
                         )
                         Text(
-                            String.format("%d:%02d", duration / 1000 / 60, (duration / 1000) % 60), 
-                            color = Color.Gray, 
+                            if (audioError) "Error de audio" else String.format("%d:%02d", duration / 1000 / 60, (duration / 1000) % 60),
+                            color = if (audioError) MaterialTheme.colorScheme.error else Color.Gray,
                             fontSize = 12.sp
                         )
                     }
@@ -3112,42 +3173,43 @@ fun VideoBlockView(
     onOpenSettings: () -> Unit,
     syncManager: com.example.data.remote.DriveSyncManager
 ) {
-    val baseContext = LocalContext.current
-    val context = remember(baseContext) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            baseContext.createAttributionContext("media")
-        } else {
-            baseContext
-        }
-    }
     val resolvedUrl = rememberDownloadedUri(block.sourceUrl, syncManager)
     val urlToUse = if (resolvedUrl.isNotEmpty()) resolvedUrl else block.sourceUrl
 
     var isPlaying by remember { mutableStateOf(false) }
+    var isVideoPrepared by remember(urlToUse) { mutableStateOf(false) }
+    var hasVideoError by remember(urlToUse) { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0f) }
     var duration by remember { mutableStateOf(0) }
     var currentPos by remember { mutableStateOf(0) }
     var videoView: android.widget.VideoView? by remember { mutableStateOf(null) }
     var isFullScreen by remember { mutableStateOf(false) }
 
-    LaunchedEffect(isPlaying, videoView) {
-        if (isPlaying) {
-            videoView?.start()
-            while (isPlaying) {
-                videoView?.let { vv ->
+    val displayVideoTitle = if (isLegacyMediaPlaceholder(block.title)) "Video" else block.title
+
+    LaunchedEffect(isPlaying, videoView, isVideoPrepared) {
+        val vv = videoView ?: return@LaunchedEffect
+        if (isPlaying && isVideoPrepared && !hasVideoError) {
+            try {
+                vv.start()
+                while (isPlaying) {
                     if (duration > 0) {
                         currentPos = vv.currentPosition
                         progress = currentPos.toFloat() / duration.toFloat()
                     }
+                    kotlinx.coroutines.delay(100)
                 }
-                kotlinx.coroutines.delay(100)
+            } catch (_: Exception) {
+                isPlaying = false
             }
-        } else {
-            videoView?.pause()
+        } else if (!isPlaying) {
+            try {
+                if (vv.isPlaying) vv.pause()
+            } catch (_: Exception) {}
         }
     }
 
-    if (isFullScreen) {
+    if (isFullScreen && urlToUse.isNotEmpty()) {
         androidx.compose.ui.window.Dialog(
             onDismissRequest = { isFullScreen = false },
             properties = androidx.compose.ui.window.DialogProperties(
@@ -3157,31 +3219,39 @@ fun VideoBlockView(
             )
         ) {
             var fsIsPlaying by remember { mutableStateOf(isPlaying) }
+            var fsPrepared by remember { mutableStateOf(false) }
             var fsProgress by remember { mutableStateOf(0f) }
             var fsDuration by remember { mutableStateOf(duration) }
             var fsCurrentPos by remember { mutableStateOf(currentPos) }
             var fsVideoView: android.widget.VideoView? by remember { mutableStateOf(null) }
 
-            LaunchedEffect(fsIsPlaying, fsVideoView) {
-                if (fsIsPlaying) {
-                    fsVideoView?.start()
-                    while (fsIsPlaying) {
-                        fsVideoView?.let { vv ->
+            LaunchedEffect(fsIsPlaying, fsVideoView, fsPrepared) {
+                val vv = fsVideoView ?: return@LaunchedEffect
+                if (fsIsPlaying && fsPrepared) {
+                    try {
+                        vv.start()
+                        while (fsIsPlaying) {
                             if (fsDuration > 0) {
                                 fsCurrentPos = vv.currentPosition
                                 fsProgress = fsCurrentPos.toFloat() / fsDuration.toFloat()
                             }
+                            kotlinx.coroutines.delay(100)
                         }
-                        kotlinx.coroutines.delay(100)
+                    } catch (_: Exception) {
+                        fsIsPlaying = false
                     }
-                } else {
-                    fsVideoView?.pause()
+                } else if (!fsIsPlaying) {
+                    try {
+                        if (vv.isPlaying) vv.pause()
+                    } catch (_: Exception) {}
                 }
             }
 
             LaunchedEffect(Unit) {
                 isPlaying = false
-                videoView?.pause()
+                try {
+                    if (videoView?.isPlaying == true) videoView?.pause()
+                } catch (_: Exception) {}
             }
 
             Box(
@@ -3190,44 +3260,56 @@ fun VideoBlockView(
                     .background(Color.Black),
                 contentAlignment = Alignment.Center
             ) {
-                if (urlToUse.isNotEmpty()) {
-                    androidx.compose.ui.viewinterop.AndroidView(
-                        factory = { ctx ->
-                            val frameLayout = android.widget.FrameLayout(ctx).apply {
-                                layoutParams = android.view.ViewGroup.LayoutParams(
-                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
-                                )
+                androidx.compose.ui.viewinterop.AndroidView(
+                    factory = { ctx ->
+                        val frameLayout = android.widget.FrameLayout(ctx).apply {
+                            layoutParams = android.view.ViewGroup.LayoutParams(
+                                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                        }
+                        val vv = android.widget.VideoView(ctx).apply {
+                            layoutParams = android.widget.FrameLayout.LayoutParams(
+                                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                android.view.Gravity.CENTER
+                            )
+                            setOnErrorListener { _, _, _ ->
+                                fsIsPlaying = false
+                                true
                             }
-                            val vv = android.widget.VideoView(ctx).apply {
-                                layoutParams = android.widget.FrameLayout.LayoutParams(
-                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                                    android.view.Gravity.CENTER
-                                )
-                                setVideoURI(android.net.Uri.parse(urlToUse))
-                                setOnPreparedListener { mp ->
-                                    fsDuration = mp.duration
+                            setOnPreparedListener { mp ->
+                                fsPrepared = true
+                                fsDuration = mp.duration
+                                try {
                                     seekTo(currentPos)
-                                    if (fsIsPlaying) {
-                                        start()
-                                    }
-                                }
-                                setOnCompletionListener {
-                                    fsIsPlaying = false
-                                    fsCurrentPos = 0
-                                    fsProgress = 0f
-                                    seekTo(0)
-                                }
-                                fsVideoView = this
+                                    if (fsIsPlaying) start()
+                                } catch (_: Exception) {}
                             }
-                            frameLayout.addView(vv)
-                            frameLayout
-                        },
-                        update = { },
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
+                            setOnCompletionListener {
+                                fsIsPlaying = false
+                                fsCurrentPos = 0
+                                fsProgress = 0f
+                                try { seekTo(0) } catch (_: Exception) {}
+                            }
+                            try {
+                                val parsedUri = if (urlToUse.startsWith("/")) {
+                                    android.net.Uri.fromFile(java.io.File(urlToUse))
+                                } else {
+                                    android.net.Uri.parse(urlToUse)
+                                }
+                                setVideoURI(parsedUri)
+                            } catch (_: Exception) {
+                                fsIsPlaying = false
+                            }
+                            fsVideoView = this
+                        }
+                        frameLayout.addView(vv)
+                        frameLayout
+                    },
+                    update = { },
+                    modifier = Modifier.fillMaxSize()
+                )
 
                 Box(
                     modifier = Modifier
@@ -3248,7 +3330,7 @@ fun VideoBlockView(
                         onClick = {
                             currentPos = fsCurrentPos
                             isPlaying = fsIsPlaying
-                            videoView?.seekTo(fsCurrentPos)
+                            try { videoView?.seekTo(fsCurrentPos) } catch (_: Exception) {}
                             isFullScreen = false
                         },
                         modifier = Modifier
@@ -3265,7 +3347,7 @@ fun VideoBlockView(
                     }
 
                     Text(
-                        text = block.title,
+                        text = displayVideoTitle,
                         color = Color.White,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
@@ -3311,7 +3393,7 @@ fun VideoBlockView(
                             onValueChange = {
                                 fsProgress = it
                                 val newPos = (it * fsDuration).toInt()
-                                fsVideoView?.seekTo(newPos)
+                                try { fsVideoView?.seekTo(newPos) } catch (_: Exception) {}
                                 fsCurrentPos = newPos
                             },
                             modifier = Modifier.weight(1f),
@@ -3330,7 +3412,7 @@ fun VideoBlockView(
                             onClick = {
                                 currentPos = fsCurrentPos
                                 isPlaying = fsIsPlaying
-                                videoView?.seekTo(fsCurrentPos)
+                                try { videoView?.seekTo(fsCurrentPos) } catch (_: Exception) {}
                                 isFullScreen = false
                             },
                             modifier = Modifier.size(48.dp)
@@ -3348,6 +3430,8 @@ fun VideoBlockView(
         }
     }
 
+    val isEmptyVideo = urlToUse.isBlank()
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -3361,59 +3445,101 @@ fun VideoBlockView(
                     .height(if (block.height == "Wrap") 200.dp else 250.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .background(Color(0xFF1E1C24))
-                    .graphicElement2SecondHold(
-                        onOpenSettings = onOpenSettings,
-                        onClick = {
-                            if (block.sourceUrl.isEmpty()) {
-                                onOpenSettings()
-                            }
-                        }
+                    .then(
+                        if (isEmptyVideo) {
+                            Modifier
+                                .clickable { onOpenSettings() }
+                                .testTag("video_empty_placeholder")
+                        } else Modifier
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                if (block.sourceUrl.isEmpty()) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.VideoFile, null, tint = Color.White, modifier = Modifier.size(32.dp))
+                if (isEmptyVideo) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    ) {
+                        Icon(Icons.Default.VideoFile, contentDescription = "Video vacío", tint = Color.White, modifier = Modifier.size(32.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(displayVideoTitle, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                         Spacer(modifier = Modifier.height(4.dp))
-                        Text(block.title, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        Text(
+                            text = "Toca aquí o doble toque en ⠿ para configurar",
+                            color = TextSecondary,
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else if (hasVideoError) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable { onOpenSettings() }
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(Icons.Default.VideoFile, contentDescription = "Error de video", tint = TextSecondary, modifier = Modifier.size(32.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "No se pudo reproducir el video • Toca aquí o doble toque en ⠿",
+                            color = TextSecondary,
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center
+                        )
                     }
                 } else {
                     androidx.compose.runtime.key(urlToUse) {
                         androidx.compose.ui.viewinterop.AndroidView(
-                            factory = { _ ->
-                                val frameLayout = android.widget.FrameLayout(context).apply {
+                            factory = { ctx ->
+                                val frameLayout = android.widget.FrameLayout(ctx).apply {
                                     layoutParams = android.view.ViewGroup.LayoutParams(
                                         android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                                         android.view.ViewGroup.LayoutParams.MATCH_PARENT
                                     )
                                 }
-                                val vv = android.widget.VideoView(context).apply {
+                                val vv = android.widget.VideoView(ctx).apply {
                                     layoutParams = android.widget.FrameLayout.LayoutParams(
                                         android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                                         android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                                         android.view.Gravity.CENTER
                                     )
-                                    setVideoURI(android.net.Uri.parse(urlToUse))
+                                    setOnErrorListener { _, _, _ ->
+                                        hasVideoError = true
+                                        isPlaying = false
+                                        true
+                                    }
                                     setOnPreparedListener { mp ->
+                                        isVideoPrepared = true
+                                        hasVideoError = false
                                         duration = mp.duration
                                     }
                                     setOnCompletionListener {
                                         isPlaying = false
                                         currentPos = 0
                                         progress = 0f
-                                        seekTo(0)
+                                        try { seekTo(0) } catch (_: Exception) {}
+                                    }
+                                    try {
+                                        val parsedUri = if (urlToUse.startsWith("/")) {
+                                            android.net.Uri.fromFile(java.io.File(urlToUse))
+                                        } else {
+                                            android.net.Uri.parse(urlToUse)
+                                        }
+                                        setVideoURI(parsedUri)
+                                    } catch (_: Exception) {
+                                        hasVideoError = true
                                     }
                                     videoView = this
                                 }
                                 frameLayout.addView(vv)
                                 frameLayout
                             },
-                            update = { view ->
-                            },
+                            update = { },
                             modifier = Modifier.fillMaxSize()
                         )
                     }
-                    
+
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -3427,13 +3553,12 @@ fun VideoBlockView(
                                     )
                                 )
                             )
-                            .graphicElement2SecondHold(
-                                onOpenSettings = onOpenSettings,
-                                onClick = { isPlaying = !isPlaying }
-                            )
+                            .clickable {
+                                if (isVideoPrepared) isPlaying = !isPlaying
+                            }
                     ) {
                         Text(
-                            text = block.title,
+                            text = displayVideoTitle,
                             color = Color.White,
                             fontSize = 14.sp,
                             modifier = Modifier
@@ -3448,7 +3573,9 @@ fun VideoBlockView(
                                     .size(64.dp)
                                     .clip(RoundedCornerShape(16.dp))
                                     .background(Color.White.copy(alpha = 0.3f))
-                                    .clickable { isPlaying = true },
+                                    .clickable {
+                                        if (isVideoPrepared) isPlaying = true
+                                    },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
@@ -3478,7 +3605,9 @@ fun VideoBlockView(
                                 onValueChange = {
                                     progress = it
                                     val newPos = (it * duration).toInt()
-                                    videoView?.seekTo(newPos)
+                                    try {
+                                        if (isVideoPrepared) videoView?.seekTo(newPos)
+                                    } catch (_: Exception) {}
                                     currentPos = newPos
                                 },
                                 modifier = Modifier
@@ -3532,6 +3661,10 @@ fun FileBlockView(
 ) {
     val context = LocalContext.current
     val resolvedUrl = rememberDownloadedUri(block.sourceUrl, syncManager)
+    val urlToUse = if (resolvedUrl.isNotEmpty()) resolvedUrl else block.sourceUrl
+    val isEmptyFile = urlToUse.isBlank()
+    val displayFileName = if (isLegacyMediaPlaceholder(block.name)) "Archivo" else block.name
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -3539,36 +3672,35 @@ fun FileBlockView(
             .clip(RoundedCornerShape(8.dp))
             .background(CosmicSurface)
             .border(1.dp, CosmicBorder, RoundedCornerShape(8.dp))
-            .graphicElement2SecondHold(
-                onOpenSettings = onOpenSettings,
-                onClick = {
-                    val urlToUse = if (resolvedUrl.isNotEmpty()) resolvedUrl else block.sourceUrl
-                    if (urlToUse.isNotEmpty()) {
-                        try {
-                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                                setDataAndType(android.net.Uri.parse(urlToUse), "*/*")
-                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
-                            context.startActivity(intent)
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "No se puede abrir el archivo", Toast.LENGTH_SHORT).show()
+            .clickable {
+                if (isEmptyFile) {
+                    onOpenSettings()
+                } else {
+                    try {
+                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                            setDataAndType(android.net.Uri.parse(urlToUse), "*/*")
+                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                         }
-                    } else {
-                        onOpenSettings()
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "No se puede abrir el archivo", Toast.LENGTH_SHORT).show()
                     }
                 }
-            )
+            }
+            .then(if (isEmptyFile) Modifier.testTag("file_empty_placeholder") else Modifier)
             .padding(16.dp)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Icon(Icons.Default.InsertDriveFile, null, tint = GeminiBlue, modifier = Modifier.size(32.dp))
+            Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = GeminiBlue, modifier = Modifier.size(32.dp))
             Column {
-                Text(block.name, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                if (block.size.isNotEmpty()) {
+                Text(displayFileName, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                if (isEmptyFile) {
+                    Text("Toca aquí o doble toque en ⠿ para configurar", color = TextSecondary, fontSize = 12.sp)
+                } else if (block.size.isNotEmpty()) {
                     Text(block.size, color = TextSecondary, fontSize = 12.sp)
                 }
             }
@@ -3586,10 +3718,7 @@ fun TodoBlockView(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .graphicElement2SecondHold(
-                onOpenSettings = onOpenSettings
-            ),
+            .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -3629,7 +3758,7 @@ fun TodoBlockView(
             modifier = Modifier.weight(1f),
             decorationBox = { innerTextField ->
                 if (block.content.isEmpty()) {
-                    Text("Tarea pendiente...", color = TextTertiary, fontSize = 15.sp)
+                    Text("Tarea pendiente • Doble toque en ⠿ para configurar", color = TextTertiary, fontSize = 14.sp)
                 }
                 innerTextField()
             }
@@ -3673,10 +3802,7 @@ fun CalloutBlockView(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 5.dp)
-            .graphicElement2SecondHold(
-                onOpenSettings = onOpenSettings
-            ),
+            .padding(vertical = 5.dp),
         shape = RoundedCornerShape(12.dp),
         color = bgColor,
         border = BorderStroke(1.dp, borderColor)
@@ -3717,7 +3843,7 @@ fun CalloutBlockView(
                 modifier = Modifier.weight(1f),
                 decorationBox = { innerTextField ->
                     if (block.content.isEmpty()) {
-                        Text("Nota destacada / Callout...", color = textColor.copy(alpha = 0.5f), fontSize = 14.sp)
+                        Text("Nota destacada • Doble toque en ⠿ para configurar", color = textColor.copy(alpha = 0.5f), fontSize = 13.sp)
                     }
                     innerTextField()
                 }
@@ -3736,10 +3862,7 @@ fun QuoteBlockView(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .graphicElement2SecondHold(
-                onOpenSettings = onOpenSettings
-            ),
+            .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -3760,7 +3883,7 @@ fun QuoteBlockView(
             modifier = Modifier.weight(1f),
             decorationBox = { innerTextField ->
                 if (block.content.isEmpty()) {
-                    Text("Cita textual...", color = TextTertiary, fontStyle = FontStyle.Italic, fontSize = 15.sp)
+                    Text("Cita textual • Doble toque en ⠿ para configurar", color = TextTertiary, fontStyle = FontStyle.Italic, fontSize = 14.sp)
                 }
                 innerTextField()
             }
@@ -3777,10 +3900,8 @@ fun DividerBlockView(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp)
-            .graphicElement2SecondHold(
-                onOpenSettings = onOpenSettings
-            ),
+            .heightIn(min = 24.dp)
+            .padding(vertical = 8.dp),
         contentAlignment = Alignment.Center
     ) {
         val thickness = block.thickness.dp
@@ -3846,10 +3967,7 @@ fun CodeBlockView(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 5.dp)
-            .graphicElement2SecondHold(
-                onOpenSettings = onOpenSettings
-            ),
+            .padding(vertical = 5.dp),
         shape = RoundedCornerShape(8.dp),
         color = bgColor,
         border = BorderStroke(1.dp, Color(0xFF282E3A))
@@ -3895,7 +4013,7 @@ fun CodeBlockView(
                 modifier = Modifier.fillMaxWidth(),
                 decorationBox = { innerTextField ->
                     if (block.code.isEmpty()) {
-                        Text("// Escribe o pega tu código aquí...", color = textColor.copy(alpha = 0.5f), fontSize = 13.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                        Text("// Escribe o pega tu código • Doble toque en ⠿ para configurar", color = textColor.copy(alpha = 0.5f), fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
                     }
                     innerTextField()
                 }
@@ -4241,6 +4359,92 @@ fun NoteEditorWorkspace(
                     }
                 }
             }
+        }
+    }
+
+    fun EditorBlock.withParentToggle(toggleId: String?): EditorBlock = when (this) {
+        is EditorBlock.Text -> copy(
+            parentToggleId = toggleId,
+            indentLevel = if (toggleId != null && indentLevel == 0) 1 else indentLevel
+        )
+        is EditorBlock.Table -> copy(parentToggleId = toggleId)
+        is EditorBlock.Image -> copy(parentToggleId = toggleId)
+        is EditorBlock.Audio -> copy(parentToggleId = toggleId)
+        is EditorBlock.Video -> copy(parentToggleId = toggleId)
+        is EditorBlock.File -> copy(parentToggleId = toggleId)
+        is EditorBlock.Todo -> copy(parentToggleId = toggleId)
+        is EditorBlock.Callout -> copy(parentToggleId = toggleId)
+        is EditorBlock.Quote -> copy(parentToggleId = toggleId)
+        is EditorBlock.Divider -> copy(parentToggleId = toggleId)
+        is EditorBlock.Code -> copy(parentToggleId = toggleId)
+    }
+
+    fun insertBlockBelowCurrent(newBlock: EditorBlock) {
+        pushHistory()
+        val newList = blocks.toMutableList()
+        val anchorIdx = selectedBlockIndex
+        val insertAt = if (anchorIdx in newList.indices) anchorIdx + 1 else newList.size
+        val inheritedToggleId = if (anchorIdx in newList.indices) {
+            val anchor = newList[anchorIdx]
+            if (anchor is EditorBlock.Text && anchor.isCollapsedHeader) {
+                if (anchor.isCollapsed) {
+                    newList[anchorIdx] = anchor.copy(isCollapsed = false)
+                }
+                anchor.id
+            } else {
+                getEffectiveToggleId(anchorIdx, newList)
+            }
+        } else null
+        val prepared = if (newBlock.parentToggleId != null) newBlock else newBlock.withParentToggle(inheritedToggleId)
+        newList.add(insertAt, prepared)
+        updateBlocksAndSave(newList)
+        selectedBlockIndex = insertAt
+        if (prepared is EditorBlock.Text) {
+            scope.launch {
+                delay(50)
+                try {
+                    focusRequesters[prepared.id]?.requestFocus()
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    fun insertEmptyParagraphRelative(above: Boolean) {
+        if (selectedBlockIndex !in blocks.indices) return
+        pushHistory()
+        val mutableBlocks = blocks.toMutableList()
+        val anchorIdx = selectedBlockIndex
+        val anchorBlock = mutableBlocks[anchorIdx]
+        val insertAt = if (above) anchorIdx else anchorIdx + 1
+        val inheritedToggleId = if (above) {
+            if (anchorBlock is EditorBlock.Text && anchorBlock.isCollapsedHeader) {
+                anchorBlock.parentToggleId
+            } else {
+                getEffectiveToggleId(anchorIdx, mutableBlocks)
+            }
+        } else {
+            if (anchorBlock is EditorBlock.Text && anchorBlock.isCollapsedHeader) {
+                if (anchorBlock.isCollapsed) {
+                    mutableBlocks[anchorIdx] = anchorBlock.copy(isCollapsed = false)
+                }
+                anchorBlock.id
+            } else {
+                getEffectiveToggleId(anchorIdx, mutableBlocks)
+            }
+        }
+        val newParagraph = EditorBlock.Text(
+            content = "",
+            parentToggleId = inheritedToggleId,
+            indentLevel = if (inheritedToggleId != null) 1 else 0
+        )
+        mutableBlocks.add(insertAt, newParagraph)
+        updateBlocksAndSave(mutableBlocks)
+        selectedBlockIndex = insertAt
+        scope.launch {
+            delay(50)
+            try {
+                focusRequesters[newParagraph.id]?.requestFocus()
+            } catch (_: Exception) {}
         }
     }
 
@@ -4927,7 +5131,8 @@ fun NoteEditorWorkspace(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(CosmicSurfaceVariant)
-                                    .padding(vertical = 8.dp, horizontal = 12.dp),
+                                    .padding(vertical = 8.dp, horizontal = 12.dp)
+                                    .testTag("editor_formatting_lazy_row"),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -5113,6 +5318,85 @@ fun NoteEditorWorkspace(
                                 }
                                 item { VerticalDivider(color = CosmicBorder, modifier = Modifier.height(20.dp)) }
 
+                                // 4 Direct Icon-Only Alignment Buttons (Left, Center, Right, Justify)
+                                item {
+                                    val isLeft = activeBlock.alignment.equals("Left", ignoreCase = true) || activeBlock.alignment.isBlank()
+                                    IconToggleButton(
+                                        checked = isLeft,
+                                        onCheckedChange = {
+                                            pushHistory()
+                                            if (selectedBlockIndex in blocks.indices) {
+                                                val b = blocks[selectedBlockIndex]
+                                                if (b is EditorBlock.Text) {
+                                                    blocks[selectedBlockIndex] = b.copy(alignment = "Left")
+                                                    updateBlocksAndSave(null)
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.testTag("editor_align_left_btn")
+                                    ) {
+                                        Icon(Icons.Default.FormatAlignLeft, "Alinear a la izquierda", tint = if (isLeft) GeminiCyanAccent else TextPrimary)
+                                    }
+                                }
+                                item {
+                                    val isCenter = activeBlock.alignment.equals("Center", ignoreCase = true)
+                                    IconToggleButton(
+                                        checked = isCenter,
+                                        onCheckedChange = {
+                                            pushHistory()
+                                            if (selectedBlockIndex in blocks.indices) {
+                                                val b = blocks[selectedBlockIndex]
+                                                if (b is EditorBlock.Text) {
+                                                    blocks[selectedBlockIndex] = b.copy(alignment = "Center")
+                                                    updateBlocksAndSave(null)
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.testTag("editor_align_center_btn")
+                                    ) {
+                                        Icon(Icons.Default.FormatAlignCenter, "Centrar texto", tint = if (isCenter) GeminiCyanAccent else TextPrimary)
+                                    }
+                                }
+                                item {
+                                    val isRight = activeBlock.alignment.equals("Right", ignoreCase = true)
+                                    IconToggleButton(
+                                        checked = isRight,
+                                        onCheckedChange = {
+                                            pushHistory()
+                                            if (selectedBlockIndex in blocks.indices) {
+                                                val b = blocks[selectedBlockIndex]
+                                                if (b is EditorBlock.Text) {
+                                                    blocks[selectedBlockIndex] = b.copy(alignment = "Right")
+                                                    updateBlocksAndSave(null)
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.testTag("editor_align_right_btn")
+                                    ) {
+                                        Icon(Icons.Default.FormatAlignRight, "Alinear a la derecha", tint = if (isRight) GeminiCyanAccent else TextPrimary)
+                                    }
+                                }
+                                item {
+                                    val isJustify = activeBlock.alignment.equals("Justify", ignoreCase = true)
+                                    IconToggleButton(
+                                        checked = isJustify,
+                                        onCheckedChange = {
+                                            pushHistory()
+                                            if (selectedBlockIndex in blocks.indices) {
+                                                val b = blocks[selectedBlockIndex]
+                                                if (b is EditorBlock.Text) {
+                                                    blocks[selectedBlockIndex] = b.copy(alignment = "Justify")
+                                                    updateBlocksAndSave(null)
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.testTag("editor_align_justify_btn")
+                                    ) {
+                                        Icon(Icons.Default.FormatAlignJustify, "Justificar texto", tint = if (isJustify) GeminiCyanAccent else TextPrimary)
+                                    }
+                                }
+                                item { VerticalDivider(color = CosmicBorder, modifier = Modifier.height(20.dp)) }
+
                                 // Bullet List (Whole block / paragraph)
                                 item {
                                     IconToggleButton(
@@ -5212,42 +5496,68 @@ fun NoteEditorWorkspace(
                                     }
                                 }
                                 item { VerticalDivider(color = CosmicBorder, modifier = Modifier.height(20.dp)) }
-                                // Font Family Selector
+                                // Font Family Selector (Menú desplegable anclado estilo Word)
                                 item {
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = CosmicSurface,
-                                        border = BorderStroke(1.dp, CosmicBorder),
-                                        modifier = Modifier.clickable { showFormattingPanel = true; showTextFontPicker = true }
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    Box {
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = CosmicSurface,
+                                            border = BorderStroke(1.dp, CosmicBorder),
+                                            modifier = Modifier
+                                                .minimumInteractiveComponentSize()
+                                                .testTag("editor_font_picker_button")
+                                                .clickable { showFormattingPanel = true; showTextFontPicker = true }
                                         ) {
-                                            Icon(
-                                                Icons.Default.TextFields,
-                                                contentDescription = "Paquete de tipografías",
-                                                tint = GeminiCyanAccent,
-                                                modifier = Modifier.size(14.dp)
-                                            )
-                                            Text(
-                                                text = getAppFontDisplayName(activeBlock.fontFamily),
-                                                fontFamily = getAppFontFamily(activeBlock.fontFamily),
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = TextPrimary
-                                            )
-                                            Icon(
-                                                Icons.Default.ArrowDropDown,
-                                                contentDescription = null,
-                                                tint = TextSecondary,
-                                                modifier = Modifier.size(16.dp)
-                                            )
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.TextFields,
+                                                    contentDescription = "Tipografía",
+                                                    tint = GeminiCyanAccent,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Text(
+                                                    text = getAppFontDisplayName(activeBlock.fontFamily),
+                                                    fontFamily = getAppFontFamily(activeBlock.fontFamily),
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = TextPrimary
+                                                )
+                                                Icon(
+                                                    Icons.Default.ArrowDropDown,
+                                                    contentDescription = null,
+                                                    tint = TextSecondary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
                                         }
+
+                                        TypographyDropdownMenu(
+                                            expanded = showTextFontPicker,
+                                            selectedFontId = activeBlock.fontFamily,
+                                            onFontSelected = { selectedFontId ->
+                                                pushHistory()
+                                                if (selectedBlockIndex in blocks.indices) {
+                                                    val b = blocks[selectedBlockIndex]
+                                                    if (b is EditorBlock.Text) {
+                                                        blocks[selectedBlockIndex] = b.copy(fontFamily = selectedFontId)
+                                                        updateBlocksAndSave(null)
+                                                    }
+                                                }
+                                                showTextFontPicker = false
+                                                showFormattingPanel = true
+                                            },
+                                            onDismiss = {
+                                                showTextFontPicker = false
+                                                showFormattingPanel = true
+                                            }
+                                        )
                                     }
                                 }
-                                // Text Color Recuadro (Opens HEX Color Dialog)
+                                // Text Color Recuadro (Abre directamente la mini ventana de rueda HSV/RGB/HEX)
                                 item {
                                     val textHex = if (activeBlock.fontColor.startsWith("#")) {
                                         activeBlock.fontColor
@@ -5264,24 +5574,32 @@ fun NoteEditorWorkspace(
                                     val displayColor = parseHexColorSafe(textHex)
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(2.dp)
                                     ) {
                                         Text("Color:", fontSize = 11.sp, color = TextSecondary)
                                         Box(
                                             modifier = Modifier
-                                                .size(30.dp)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(displayColor)
-                                                .border(1.5.dp, Color.White.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                                                .size(48.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .testTag("editor_color_picker_button")
                                                 .clickable { showFormattingPanel = true; showTextColorPicker = true },
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Palette,
-                                                contentDescription = "Elegir color hex",
-                                                tint = if (displayColor.red * 0.299 + displayColor.green * 0.587 + displayColor.blue * 0.114 > 0.6) Color.Black.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.85f),
-                                                modifier = Modifier.size(16.dp)
-                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(30.dp)
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(displayColor)
+                                                    .border(1.5.dp, Color.White.copy(alpha = 0.6f), RoundedCornerShape(8.dp)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Palette,
+                                                    contentDescription = "Elegir color",
+                                                    tint = if (displayColor.red * 0.299 + displayColor.green * 0.587 + displayColor.blue * 0.114 > 0.6) Color.Black.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.85f),
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -5305,17 +5623,15 @@ fun NoteEditorWorkspace(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .background(CosmicSurfaceVariant)
-                                .padding(vertical = 8.dp, horizontal = 12.dp),
+                                .padding(vertical = 8.dp, horizontal = 12.dp)
+                                .testTag("editor_insertion_lazy_row"),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             item {
                                 AssistChip(
                                     onClick = {
-                                        pushHistory()
-                                        val newList = blocks.toMutableList()
-                                        newList.add(EditorBlock.Todo())
-                                        updateBlocksAndSave(newList)
+                                        insertBlockBelowCurrent(EditorBlock.Todo())
                                         Toast.makeText(context, "Tarea añadida", Toast.LENGTH_SHORT).show()
                                     },
                                     label = { Text("Tarea", fontSize = 11.sp, color = TextPrimary) },
@@ -5325,10 +5641,7 @@ fun NoteEditorWorkspace(
                             item {
                                 AssistChip(
                                     onClick = {
-                                        pushHistory()
-                                        val newList = blocks.toMutableList()
-                                        newList.add(EditorBlock.Callout())
-                                        updateBlocksAndSave(newList)
+                                        insertBlockBelowCurrent(EditorBlock.Callout())
                                         Toast.makeText(context, "Destacado añadido", Toast.LENGTH_SHORT).show()
                                     },
                                     label = { Text("Destacado", fontSize = 11.sp, color = TextPrimary) },
@@ -5338,10 +5651,7 @@ fun NoteEditorWorkspace(
                             item {
                                 AssistChip(
                                     onClick = {
-                                        pushHistory()
-                                        val newList = blocks.toMutableList()
-                                        newList.add(EditorBlock.Quote())
-                                        updateBlocksAndSave(newList)
+                                        insertBlockBelowCurrent(EditorBlock.Quote())
                                         Toast.makeText(context, "Cita añadida", Toast.LENGTH_SHORT).show()
                                     },
                                     label = { Text("Cita", fontSize = 11.sp, color = TextPrimary) },
@@ -5353,6 +5663,9 @@ fun NoteEditorWorkspace(
                                     onClick = {
                                         pushHistory()
                                         val newList = blocks.toMutableList()
+                                        val anchorIdx = selectedBlockIndex
+                                        val insertAt = if (anchorIdx in newList.indices) anchorIdx + 1 else newList.size
+                                        val outerToggleId = if (anchorIdx in newList.indices) getEffectiveToggleId(anchorIdx, newList) else null
                                         val headerId = UUID.randomUUID().toString()
                                         val headerBlock = EditorBlock.Text(
                                             id = headerId,
@@ -5361,16 +5674,19 @@ fun NoteEditorWorkspace(
                                             isCollapsed = false,
                                             isHeader = true,
                                             fontSize = 18,
-                                            isBold = true
+                                            isBold = true,
+                                            parentToggleId = outerToggleId,
+                                            indentLevel = if (outerToggleId != null) 1 else 0
                                         )
                                         val bodyBlock = EditorBlock.Text(
                                             content = "Escribe aquí el contenido dentro del desplegable...",
                                             parentToggleId = headerId,
                                             indentLevel = 1
                                         )
-                                        newList.add(headerBlock)
-                                        newList.add(bodyBlock)
+                                        newList.add(insertAt, headerBlock)
+                                        newList.add(insertAt + 1, bodyBlock)
                                         updateBlocksAndSave(newList)
+                                        selectedBlockIndex = insertAt + 1
                                         Toast.makeText(context, "Sección contraíble añadida", Toast.LENGTH_SHORT).show()
                                     },
                                     label = { Text("Contraíble", fontSize = 11.sp, color = TextPrimary) },
@@ -5380,10 +5696,7 @@ fun NoteEditorWorkspace(
                             item {
                                 AssistChip(
                                     onClick = {
-                                        pushHistory()
-                                        val newList = blocks.toMutableList()
-                                        newList.add(EditorBlock.Divider())
-                                        updateBlocksAndSave(newList)
+                                        insertBlockBelowCurrent(EditorBlock.Divider())
                                         Toast.makeText(context, "Divisor añadido", Toast.LENGTH_SHORT).show()
                                     },
                                     label = { Text("Divisor", fontSize = 11.sp, color = TextPrimary) },
@@ -5393,10 +5706,7 @@ fun NoteEditorWorkspace(
                             item {
                                 AssistChip(
                                     onClick = {
-                                        pushHistory()
-                                        val newList = blocks.toMutableList()
-                                        newList.add(EditorBlock.Code())
-                                        updateBlocksAndSave(newList)
+                                        insertBlockBelowCurrent(EditorBlock.Code())
                                         Toast.makeText(context, "Código añadido", Toast.LENGTH_SHORT).show()
                                     },
                                     label = { Text("Código", fontSize = 11.sp, color = TextPrimary) },
@@ -5406,10 +5716,7 @@ fun NoteEditorWorkspace(
                             item {
                                 AssistChip(
                                     onClick = {
-                                        pushHistory()
-                                        val newList = blocks.toMutableList()
-                                        newList.add(EditorBlock.Table())
-                                        updateBlocksAndSave(newList)
+                                        insertBlockBelowCurrent(EditorBlock.Table())
                                         Toast.makeText(context, "Tabla añadida", Toast.LENGTH_SHORT).show()
                                     },
                                     label = { Text("Tabla", fontSize = 11.sp, color = TextPrimary) },
@@ -5419,10 +5726,7 @@ fun NoteEditorWorkspace(
                             item {
                                 AssistChip(
                                     onClick = {
-                                        pushHistory()
-                                        val newList = blocks.toMutableList()
-                                        newList.add(EditorBlock.Image())
-                                        updateBlocksAndSave(newList)
+                                        insertBlockBelowCurrent(EditorBlock.Image())
                                         Toast.makeText(context, "Imagen añadida", Toast.LENGTH_SHORT).show()
                                     },
                                     label = { Text("Imagen", fontSize = 11.sp, color = TextPrimary) },
@@ -5432,10 +5736,7 @@ fun NoteEditorWorkspace(
                             item {
                                 AssistChip(
                                     onClick = {
-                                        pushHistory()
-                                        val newList = blocks.toMutableList()
-                                        newList.add(EditorBlock.Audio())
-                                        updateBlocksAndSave(newList)
+                                        insertBlockBelowCurrent(EditorBlock.Audio())
                                         Toast.makeText(context, "Audio añadido", Toast.LENGTH_SHORT).show()
                                     },
                                     label = { Text("Audio", fontSize = 11.sp, color = TextPrimary) },
@@ -5445,10 +5746,7 @@ fun NoteEditorWorkspace(
                             item {
                                 AssistChip(
                                     onClick = {
-                                        pushHistory()
-                                        val newList = blocks.toMutableList()
-                                        newList.add(EditorBlock.Video())
-                                        updateBlocksAndSave(newList)
+                                        insertBlockBelowCurrent(EditorBlock.Video())
                                         Toast.makeText(context, "Video añadido", Toast.LENGTH_SHORT).show()
                                     },
                                     label = { Text("Video", fontSize = 11.sp, color = TextPrimary) },
@@ -5458,10 +5756,7 @@ fun NoteEditorWorkspace(
                             item {
                                 AssistChip(
                                     onClick = {
-                                        pushHistory()
-                                        val newList = blocks.toMutableList()
-                                        newList.add(EditorBlock.File())
-                                        updateBlocksAndSave(newList)
+                                        insertBlockBelowCurrent(EditorBlock.File())
                                         Toast.makeText(context, "Archivo añadido", Toast.LENGTH_SHORT).show()
                                     },
                                     label = { Text("Importar archivo", fontSize = 11.sp, color = TextPrimary) },
@@ -5480,7 +5775,9 @@ fun NoteEditorWorkspace(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         LazyRow(
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("editor_main_toolbar_lazy_row"),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -5622,6 +5919,40 @@ fun NoteEditorWorkspace(
                                         imageVector = Icons.Default.KeyboardTab,
                                         contentDescription = "Dar espaciado / Bajar nivel a sub-lista",
                                         tint = if (isActiveBlockText) TextPrimary else TextTertiary
+                                    )
+                                }
+                            }
+
+                            // Nuevo párrafo arriba (±)
+                            item {
+                                val canInsert = selectedBlockIndex in blocks.indices
+                                IconButton(
+                                    onClick = { insertEmptyParagraphRelative(above = true) },
+                                    enabled = canInsert,
+                                    modifier = Modifier.testTag("editor_insert_para_above_btn")
+                                ) {
+                                    Text(
+                                        text = "±",
+                                        color = if (canInsert) TextPrimary else TextTertiary,
+                                        fontSize = 19.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            // Nuevo párrafo abajo (∓)
+                            item {
+                                val canInsert = selectedBlockIndex in blocks.indices
+                                IconButton(
+                                    onClick = { insertEmptyParagraphRelative(above = false) },
+                                    enabled = canInsert,
+                                    modifier = Modifier.testTag("editor_insert_para_below_btn")
+                                ) {
+                                    Text(
+                                        text = "∓",
+                                        color = if (canInsert) TextPrimary else TextTertiary,
+                                        fontSize = 19.sp,
+                                        fontWeight = FontWeight.SemiBold
                                     )
                                 }
                             }
@@ -5971,7 +6302,14 @@ fun NoteEditorWorkspace(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = if (block is EditorBlock.Text && (block.isHeader || block.isCollapsedHeader)) 8.dp else if (block is EditorBlock.Text && (block.isBullet || block.isNumbered)) 2.dp else 5.dp)
+                                .padding(
+                                    vertical = when {
+                                        block is EditorBlock.Text && block.isCollapsedHeader -> 4.dp
+                                        block is EditorBlock.Text && block.isHeader -> 8.dp
+                                        block is EditorBlock.Text && (block.isBullet || block.isNumbered) -> 2.dp
+                                        else -> 5.dp
+                                    }
+                                )
                                 .then(
                                     if (matchesSearch) {
                                         Modifier
@@ -5989,49 +6327,71 @@ fun NoteEditorWorkspace(
                                 }
                         ) {
                             Row(
-                                verticalAlignment = Alignment.Top,
+                                verticalAlignment = if (block is EditorBlock.Text && block.isCollapsedHeader) Alignment.CenterVertically else Alignment.Top,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 if (selectedBlockIndex == index || block !is EditorBlock.Text) {
-                                    Icon(
-                                        imageVector = Icons.Default.DragIndicator,
-                                        contentDescription = "Arrastrar bloque",
-                                        tint = GeminiCyanAccent,
+                                    Box(
                                         modifier = Modifier
-                                            .padding(top = if (block is EditorBlock.Text) 2.dp else 12.dp)
-                                            .padding(end = 4.dp)
-                                            .size(20.dp)
-                                            .pointerInput(index, blocks) {
-                                                var totalDragY = 0f
-                                                detectDragGestures(
-                                                    onDragStart = { 
-                                                        totalDragY = 0f 
-                                                        selectedBlockIndex = index
-                                                    },
-                                                    onDrag = { change, dragAmount ->
-                                                        change.consume()
-                                                        totalDragY += dragAmount.y
-                                                        val threshold = 60f // Adjust threshold as needed
-                                                        if (totalDragY > threshold && index < blocks.size - 1) {
-                                                            pushHistory()
-                                                            val mutable = blocks.toMutableList()
-                                                            java.util.Collections.swap(mutable, index, index + 1)
-                                                            updateBlocksAndSave(mutable)
-                                                            selectedBlockIndex = index + 1
-                                                            totalDragY = 0f
-                                                        } else if (totalDragY < -threshold && index > 0) {
-                                                            pushHistory()
-                                                            val mutable = blocks.toMutableList()
-                                                            java.util.Collections.swap(mutable, index, index - 1)
-                                                            updateBlocksAndSave(mutable)
-                                                            selectedBlockIndex = index - 1
-                                                            totalDragY = 0f
-                                                        }
-                                                    }
-                                                )
-                                            }
-                                    )
-                                } else {
+                                            .padding(
+                                                top = if (block is EditorBlock.Text) 0.dp else 8.dp,
+                                                end = 4.dp
+                                            )
+                                            .size(
+                                                width = 24.dp,
+                                                height = if (block is EditorBlock.Text) 24.dp else 36.dp
+                                            )
+                                            .testTag("block_drag_handle_$index")
+                                            .graphicDragHandleGestures(
+                                                blockKey = block.id,
+                                                enableDoubleTap = block !is EditorBlock.Text,
+                                                onSingleTap = {
+                                                    selectedBlockIndex = index
+                                                    showFormattingPanel = true
+                                                },
+                                                onDoubleTap = {
+                                                    selectedBlockIndex = index
+                                                    val latest = blocks.firstOrNull { it.id == block.id } ?: block
+                                                    editingBlockSettings = latest
+                                                },
+                                                onDragStart = {
+                                                    selectedBlockIndex = index
+                                                },
+                                                onDragStepDown = {
+                                                    if (index < blocks.size - 1) {
+                                                        pushHistory()
+                                                        val mutable = blocks.toMutableList()
+                                                        java.util.Collections.swap(mutable, index, index + 1)
+                                                        updateBlocksAndSave(mutable)
+                                                        selectedBlockIndex = index + 1
+                                                        true
+                                                    } else false
+                                                },
+                                                onDragStepUp = {
+                                                    if (index > 0) {
+                                                        pushHistory()
+                                                        val mutable = blocks.toMutableList()
+                                                        java.util.Collections.swap(mutable, index, index - 1)
+                                                        updateBlocksAndSave(mutable)
+                                                        selectedBlockIndex = index - 1
+                                                        true
+                                                    } else false
+                                                }
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.DragIndicator,
+                                            contentDescription = if (block !is EditorBlock.Text) {
+                                                "Arrastrar bloque o doble toque para configurar"
+                                            } else {
+                                                "Arrastrar bloque"
+                                            },
+                                            tint = GeminiCyanAccent,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                } else if (!(block is EditorBlock.Text && block.isCollapsedHeader)) {
                                     Spacer(modifier = Modifier.width(24.dp))
                                 }
 
@@ -6040,16 +6400,23 @@ fun NoteEditorWorkspace(
                                         is EditorBlock.Text -> {
                                             var isFocused by remember { mutableStateOf(false) }
                                             val isSelected = selectedBlockIndex == index
+                                            @Suppress("DEPRECATION")
                                             val textStyle = TextStyle(
                                                 fontFamily = getAppFontFamily(block.fontFamily),
                                                 fontSize = block.fontSize.sp,
-                                                lineHeight = if (block.isHeader) (block.fontSize * 1.3f).sp else (block.fontSize * 1.55f).sp,
+                                                lineHeight = if (block.isHeader || block.isCollapsedHeader) (block.fontSize * 1.15f).sp else (block.fontSize * 1.55f).sp,
+                                                platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false),
+                                                lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
+                                                    alignment = androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center,
+                                                    trim = androidx.compose.ui.text.style.LineHeightStyle.Trim.Both
+                                                ),
                                                 fontWeight = if (block.isBold) FontWeight.Bold else FontWeight.Normal,
                                                 fontStyle = if (block.isItalic) FontStyle.Italic else FontStyle.Normal,
                                                 textDecoration = if (block.isUnderline) TextDecoration.Underline else TextDecoration.None,
                                                 textAlign = when (block.alignment) {
                                                     "Center" -> TextAlign.Center
                                                     "Right" -> TextAlign.Right
+                                                    "Justify" -> TextAlign.Justify
                                                     else -> TextAlign.Left
                                                 },
                                                 color = when (block.fontColor.lowercase()) {
@@ -6107,7 +6474,7 @@ fun NoteEditorWorkspace(
 
                                             LaunchedEffect(pendingTabInsertionTrigger) {
                                                 if (pendingTabInsertionTrigger == block.id) {
-                                                    if (block.isBullet || block.isNumbered || block.indentLevel > 0 || tfValue.selection.start <= 1) {
+                                                    if (block.isBullet || block.isNumbered || block.isCollapsedHeader || block.indentLevel > 0 || tfValue.selection.start <= 1) {
                                                         pushHistory()
                                                         val nextIndent = (block.indentLevel + 1).coerceAtMost(4)
                                                         if (index in blocks.indices) {
@@ -6179,8 +6546,8 @@ fun NoteEditorWorkspace(
                                                     .padding(vertical = 2.dp)
                                             ) {
                                                 Row(
-                                                     verticalAlignment = Alignment.Top,
-                                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                     verticalAlignment = if (block.isCollapsedHeader) Alignment.CenterVertically else Alignment.Top,
+                                                     horizontalArrangement = Arrangement.spacedBy(if (block.isCollapsedHeader) 2.dp else 6.dp),
                                                      modifier = Modifier
                                                          .fillMaxWidth()
                                                          .padding(start = (block.indentLevel * 24).dp)
@@ -6233,27 +6600,51 @@ fun NoteEditorWorkspace(
                                                         )
                                                     }
                                                     if (block.isCollapsedHeader) {
-                                                      IconButton(
-                                                          onClick = {
-                                                              pushHistory()
-                                                              if (index in blocks.indices) {
-                                                                  val b = blocks[index]
-                                                                  if (b is EditorBlock.Text) {
-                                                                      blocks[index] = b.copy(isCollapsed = !b.isCollapsed)
-                                                                  }
-                                                                  updateBlocksAndSave(null)
-                                                              }
-                                                          },
+                                                      val toggleDesc = if (block.isCollapsed) "Desplegar sección" else "Plegar sección"
+                                                      Box(
                                                           modifier = Modifier
-                                                              .minimumInteractiveComponentSize()
-                                                              .testTag("editor_collapsible_toggle_${block.id}")
+                                                              .size(width = 14.dp, height = 22.dp)
+                                                              .semantics { contentDescription = toggleDesc }
+                                                              .clip(RoundedCornerShape(4.dp))
+                                                              .clickable {
+                                                                  pushHistory()
+                                                                  if (index in blocks.indices) {
+                                                                      val b = blocks[index]
+                                                                      if (b is EditorBlock.Text) {
+                                                                          blocks[index] = b.copy(isCollapsed = !b.isCollapsed)
+                                                                      }
+                                                                      updateBlocksAndSave(null)
+                                                                  }
+                                                              }
+                                                              .testTag("editor_collapsible_toggle_${block.id}"),
+                                                          contentAlignment = Alignment.CenterStart
                                                       ) {
-                                                          Icon(
-                                                              imageVector = if (block.isCollapsed) Icons.Default.ChevronRight else Icons.Default.ExpandMore,
-                                                              contentDescription = if (block.isCollapsed) "Desplegar sección" else "Plegar sección",
-                                                              tint = GeminiBlue,
-                                                              modifier = Modifier.size(18.dp)
-                                                          )
+                                                          val isCollapsedState = block.isCollapsed
+                                                          Canvas(modifier = Modifier.size(width = 12.dp, height = 14.dp)) {
+                                                              val strokePx = 2.dp.toPx()
+                                                              val path = androidx.compose.ui.graphics.Path().apply {
+                                                                  if (isCollapsedState) {
+                                                                      // Right chevron › flush left
+                                                                      moveTo(size.width * 0.22f, size.height * 0.16f)
+                                                                      lineTo(size.width * 0.78f, size.height * 0.50f)
+                                                                      lineTo(size.width * 0.22f, size.height * 0.84f)
+                                                                  } else {
+                                                                      // Down chevron ⌄
+                                                                      moveTo(size.width * 0.10f, size.height * 0.30f)
+                                                                      lineTo(size.width * 0.50f, size.height * 0.72f)
+                                                                      lineTo(size.width * 0.90f, size.height * 0.30f)
+                                                                  }
+                                                              }
+                                                              drawPath(
+                                                                  path = path,
+                                                                  color = GeminiBlue,
+                                                                  style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                                                      width = strokePx,
+                                                                      cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                                                                      join = androidx.compose.ui.graphics.StrokeJoin.Round
+                                                                  )
+                                                              )
+                                                          }
                                                       }
                                                   }
 
@@ -6664,22 +7055,6 @@ fun NoteEditorWorkspace(
 
         val activeTextBlock = if (selectedBlockIndex in blocks.indices) blocks[selectedBlockIndex] as? EditorBlock.Text else null
 
-        if (showTextFontPicker && activeTextBlock != null) {
-            TypographyPickerDialog(
-                selectedFontId = activeTextBlock.fontFamily,
-                onFontSelected = { selectedFontId ->
-                    pushHistory()
-                    if (selectedBlockIndex in blocks.indices) { val b = blocks[selectedBlockIndex]; if (b is EditorBlock.Text) { blocks[selectedBlockIndex] = b.copy(fontFamily = selectedFontId); updateBlocksAndSave(null) } }
-                    showTextFontPicker = false
-                    showFormattingPanel = true
-                },
-                onDismiss = { 
-                    showTextFontPicker = false 
-                    showFormattingPanel = true
-                }
-            )
-        }
-
         if (showTextColorPicker && activeTextBlock != null) {
             val currentColorHex = if (activeTextBlock.fontColor.startsWith("#")) {
                 activeTextBlock.fontColor
@@ -6788,6 +7163,8 @@ fun BlockSettingsBottomSheet(
                 is EditorBlock.Audio -> AudioSettingsContent(block, onBlockChange)
                 is EditorBlock.Video -> VideoSettingsContent(block, onBlockChange)
                 is EditorBlock.File -> FileSettingsContent(block, onBlockChange)
+                is EditorBlock.Todo -> TodoSettingsContent(block, onBlockChange)
+                is EditorBlock.Quote -> QuoteSettingsContent(block, onBlockChange)
                 is EditorBlock.Divider -> DividerSettingsContent(block, onBlockChange)
                 is EditorBlock.Code -> CodeSettingsContent(block, onBlockChange)
                 is EditorBlock.Callout -> CalloutSettingsContent(block, onBlockChange)
@@ -6869,20 +7246,38 @@ fun TableSettingsContent(block: EditorBlock.Table, onBlockChange: (EditorBlock) 
 }
 
 
+private fun copyPickedMediaToInternalFile(
+    context: android.content.Context,
+    uri: android.net.Uri,
+    prefix: String,
+    defaultExt: String
+): String {
+    return try {
+        val dir = java.io.File(context.filesDir, "note_media").apply { if (!exists()) mkdirs() }
+        val mime = context.contentResolver.getType(uri)
+        val ext = android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)?.takeIf { it.isNotBlank() } ?: defaultExt
+        val destFile = java.io.File(dir, "${prefix}_${UUID.randomUUID()}.$ext")
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            destFile.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        if (destFile.exists() && destFile.length() > 0L) destFile.absolutePath else uri.toString()
+    } catch (_: Exception) {
+        uri.toString()
+    }
+}
+
 @Composable
 fun ImageSettingsContent(block: EditorBlock.Image, onBlockChange: (EditorBlock) -> Unit) {
     val context = LocalContext.current
     val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } catch (e: SecurityException) {
-                // Ignore if persistable permission is not available
-            }
-            onBlockChange(block.copy(urlOrPath = uri.toString()))
-            Toast.makeText(context, "Imagen cambiada", Toast.LENGTH_SHORT).show()
+            val savedPath = copyPickedMediaToInternalFile(context, uri, "img", "jpg")
+            onBlockChange(block.copy(urlOrPath = savedPath))
+            Toast.makeText(context, "Imagen actualizada", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -6894,7 +7289,13 @@ fun ImageSettingsContent(block: EditorBlock.Image, onBlockChange: (EditorBlock) 
             modifier = Modifier.fillMaxWidth()
         )
         Button(
-            onClick = { launcher.launch(arrayOf("image/*")) },
+            onClick = {
+                launcher.launch(
+                    androidx.activity.result.PickVisualMediaRequest(
+                        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly
+                    )
+                )
+            },
             colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -6938,17 +7339,18 @@ fun AudioSettingsContent(block: EditorBlock.Audio, onBlockChange: (EditorBlock) 
         if (uri != null) {
             try {
                 context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } catch (e: SecurityException) {
-                // Ignore
+            } catch (_: Exception) {
             }
             val name = getFileName(context, uri) ?: "Audio"
-            onBlockChange(block.copy(sourceUrl = uri.toString(), name = name))
+            val savedPath = copyPickedMediaToInternalFile(context, uri, "aud", "mp3")
+            onBlockChange(block.copy(sourceUrl = savedPath, name = name))
         }
     }
 
+    val initialName = if (isLegacyMediaPlaceholder(block.name)) "" else block.name
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         OutlinedTextField(
-            value = block.name,
+            value = initialName,
             onValueChange = { onBlockChange(block.copy(name = it)) },
             label = { Text("Nombre del Audio") },
             modifier = Modifier.fillMaxWidth()
@@ -6971,33 +7373,37 @@ fun AudioSettingsContent(block: EditorBlock.Audio, onBlockChange: (EditorBlock) 
 fun VideoSettingsContent(block: EditorBlock.Video, onBlockChange: (EditorBlock) -> Unit) {
     val context = LocalContext.current
     val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } catch (e: SecurityException) {
-                // Ignore
-            }
-            onBlockChange(block.copy(sourceUrl = uri.toString()))
+            val savedPath = copyPickedMediaToInternalFile(context, uri, "vid", "mp4")
+            onBlockChange(block.copy(sourceUrl = savedPath))
+            Toast.makeText(context, "Video actualizado", Toast.LENGTH_SHORT).show()
         }
     }
 
+    val initialTitle = if (isLegacyMediaPlaceholder(block.title)) "" else block.title
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         OutlinedTextField(
-            value = block.title,
+            value = initialTitle,
             onValueChange = { onBlockChange(block.copy(title = it)) },
             label = { Text("Título") },
             modifier = Modifier.fillMaxWidth()
         )
         Button(
-            onClick = { launcher.launch(arrayOf("video/*")) },
+            onClick = {
+                launcher.launch(
+                    androidx.activity.result.PickVisualMediaRequest(
+                        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.VideoOnly
+                    )
+                )
+            },
             colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
             modifier = Modifier.fillMaxWidth()
         ) {
             Icon(Icons.Default.VideoFile, null, tint = Color.White)
             Spacer(Modifier.width(8.dp))
-            Text("Seleccionar Vídeo (Archivos)", color = Color.White)
+            Text("Seleccionar Vídeo", color = Color.White)
         }
         Text("Ancho", color = TextPrimary)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -7033,11 +7439,8 @@ fun FileSettingsContent(block: EditorBlock.File, onBlockChange: (EditorBlock) ->
     ) { uri: android.net.Uri? ->
         if (uri != null) {
             try {
-                try {
-                    context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                } catch (e: Exception) {}
-            } catch (e: SecurityException) {
-                // Ignore
+                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: Exception) {
             }
             val name = getFileName(context, uri) ?: "Archivo"
             val size = getFileSize(context, uri) ?: "Desconocido"
@@ -7045,9 +7448,10 @@ fun FileSettingsContent(block: EditorBlock.File, onBlockChange: (EditorBlock) ->
         }
     }
 
+    val initialName = if (isLegacyMediaPlaceholder(block.name)) "" else block.name
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         OutlinedTextField(
-            value = block.name,
+            value = initialName,
             onValueChange = { onBlockChange(block.copy(name = it)) },
             label = { Text("Nombre del Archivo") },
             modifier = Modifier.fillMaxWidth()
@@ -7064,6 +7468,42 @@ fun FileSettingsContent(block: EditorBlock.File, onBlockChange: (EditorBlock) ->
         if (block.sourceUrl.isNotEmpty()) {
             Text("Archivo seleccionado: ${block.name}", color = TextSecondary, fontSize = 12.sp)
         }
+    }
+}
+
+@Composable
+fun TodoSettingsContent(block: EditorBlock.Todo, onBlockChange: (EditorBlock) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        OutlinedTextField(
+            value = block.content,
+            onValueChange = { onBlockChange(block.copy(content = it)) },
+            label = { Text("Texto de la tarea") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Completada", color = TextPrimary)
+            Switch(
+                checked = block.isChecked,
+                onCheckedChange = { onBlockChange(block.copy(isChecked = it)) }
+            )
+        }
+    }
+}
+
+@Composable
+fun QuoteSettingsContent(block: EditorBlock.Quote, onBlockChange: (EditorBlock) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        OutlinedTextField(
+            value = block.content,
+            onValueChange = { onBlockChange(block.copy(content = it)) },
+            label = { Text("Texto de la cita") },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 2
+        )
     }
 }
 
@@ -7169,82 +7609,6 @@ fun CalloutSettingsContent(block: EditorBlock.Callout, onBlockChange: (EditorBlo
             label = "Color de Texto",
             selectedColorHex = block.textColorHex ?: "#FFFFFF",
             onColorSelected = { onBlockChange(block.copy(textColorHex = it)) }
-        )
-    }
-}
-
-@Composable
-fun ColorHexTable(
-    selectedColorHex: String,
-    onColorSelected: (String) -> Unit
-) {
-    val colors = listOf(
-        "#FFFFFF", "#000000", "#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF", "#00FFFF",
-        "#808080", "#800000", "#808000", "#008000", "#800080", "#008080", "#000080",
-        "#D0BCFF", "#8AB4F8", "#81C784", "#E57373", "#FFB74D", "#131720", "#1E1C24", "#3B2E5C", "#233B5E"
-    )
-
-    var showCustomHexDialog by remember { mutableStateOf(false) }
-
-    Column {
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(40.dp),
-            modifier = Modifier.height(100.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(colors) { colorHex ->
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .clip(CircleShape)
-                        .background(Color(android.graphics.Color.parseColor(colorHex)))
-                        .border(
-                            width = if (selectedColorHex.uppercase() == colorHex.uppercase()) 2.dp else 1.dp,
-                            color = if (selectedColorHex.uppercase() == colorHex.uppercase()) GeminiCyanAccent else CosmicBorder,
-                            shape = CircleShape
-                        )
-                        .clickable { onColorSelected(colorHex) }
-                )
-            }
-            item {
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .clip(CircleShape)
-                        .background(CosmicSurfaceVariant)
-                        .border(1.dp, CosmicBorder, CircleShape)
-                        .clickable { showCustomHexDialog = true },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Palette, null, tint = TextPrimary, modifier = Modifier.size(16.dp))
-                }
-            }
-        }
-    }
-
-    if (showCustomHexDialog) {
-        var hexInput by remember { mutableStateOf(selectedColorHex) }
-        AlertDialog(
-            onDismissRequest = { showCustomHexDialog = false },
-            containerColor = CosmicSurface,
-            title = { Text("Color Hex Personalizado", color = TextPrimary) },
-            text = {
-                OutlinedTextField(
-                    value = hexInput,
-                    onValueChange = { hexInput = it },
-                    label = { Text("Hex (ej: #FF0000)") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(onClick = {
-                    if (hexInput.matches(Regex("^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$"))) {
-                        onColorSelected(hexInput)
-                        showCustomHexDialog = false
-                    }
-                }) { Text("Aplicar") }
-            }
         )
     }
 }
@@ -8288,7 +8652,10 @@ private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, v
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
-    var message by remember { mutableStateOf("") }
+    var messageTfv by remember { mutableStateOf(TextFieldValue("")) }
+    var activeTokens by remember { mutableStateOf<List<com.example.ui.ActiveChatToken>>(emptyList()) }
+    var userMsgMenuIndex by remember { mutableStateOf<Int?>(null) }
+    var editingUserMsgIndex by remember { mutableStateOf<Int?>(null) }
     val messagesList by viewModel.chatMessages.collectAsStateWithLifecycle()
     val currentSessionId by viewModel.currentChatSessionId.collectAsStateWithLifecycle()
     val isSending by viewModel.isChatbotSending.collectAsStateWithLifecycle()
@@ -8302,7 +8669,9 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
     var showSettingsDialog by remember { mutableStateOf(false) }
     val currentEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
     val selectedNote by viewModel.selectedNote.collectAsStateWithLifecycle()
+    val selectedBook by viewModel.selectedBook.collectAsStateWithLifecycle()
     val modelDownloadStatus by viewModel.modelVerifier.status.collectAsStateWithLifecycle()
+    val activeLocalModel by viewModel.modelVerifier.activeModel.collectAsStateWithLifecycle()
     val llmModelState by viewModel.localLlm.modelState.collectAsStateWithLifecycle()
     val aiSettings by viewModel.aiSettingsState.collectAsStateWithLifecycle()
     val selectedAiEngine by viewModel.selectedAiEngine.collectAsStateWithLifecycle()
@@ -8369,6 +8738,8 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
     // Collect Room state
     val allSessions by viewModel.allChatSessions.collectAsStateWithLifecycle(emptyList())
     val allNotes by viewModel.allNotes.collectAsStateWithLifecycle(emptyList())
+    val allBooks by viewModel.books.collectAsStateWithLifecycle(emptyList())
+    val allPages by viewModel.allPages.collectAsStateWithLifecycle(emptyList())
 
     // TTS state
     var tts by remember { mutableStateOf<android.speech.tts.TextToSpeech?>(null) }
@@ -8515,6 +8886,10 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     attachedFileUri = null
                     attachedNoteFromScreen = null
                     attachedTextFromScreen = null
+                    messageTfv = TextFieldValue("")
+                    activeTokens = emptyList()
+                    userMsgMenuIndex = null
+                    editingUserMsgIndex = null
                     Toast.makeText(context, "Nuevo Chat Vacío", Toast.LENGTH_SHORT).show()
                 }) {
                     Icon(
@@ -8525,68 +8900,36 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                 }
             }
 
-            // Center: AI Name + Engine pill
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier
-                    .weight(1f, fill = false)
-                    .padding(horizontal = 6.dp)
-                    .minimumInteractiveComponentSize()
-                    .testTag("chatbot_engine_pill")
-                    .clickable {
-                        val nextEngine = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) {
-                            com.example.ui.AiEngineType.AURA_LOCAL
+            // Center: Aura IA + active model name (only shown when a model is configured/ready)
+            val activeModelLabel = com.example.ui.resolveAuraActiveModelLabel(
+                selectedEngine = selectedAiEngine,
+                aiSettings = aiSettings,
+                modelDownloadStatus = modelDownloadStatus,
+                llmModelState = llmModelState,
+                activeLocalModelName = activeLocalModel.name
+            )
+            com.example.ui.AuraHeaderTitlePill(
+                selectedEngine = selectedAiEngine,
+                activeModelLabel = activeModelLabel,
+                onClick = {
+                    val nextEngine = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) {
+                        com.example.ui.AiEngineType.AURA_LOCAL
+                    } else {
+                        com.example.ui.AiEngineType.GOOGLE_AI_STUDIO
+                    }
+                    viewModel.setAiEngine(nextEngine)
+                    Toast.makeText(
+                        context,
+                        if (nextEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) {
+                            "Motor activado: Google AI Studio (${aiSettings.selectedModel})"
                         } else {
-                            com.example.ui.AiEngineType.GOOGLE_AI_STUDIO
-                        }
-                        viewModel.setAiEngine(nextEngine)
-                        Toast.makeText(
-                            context,
-                            if (nextEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) {
-                                "Motor activado: Google AI Studio (${aiSettings.selectedModel})"
-                            } else {
-                                "Motor activado: Aura Local (Offline)"
-                            },
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-            ) {
-                Text(
-                    text = "Aura",
-                    color = TextPrimary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
-                Surface(
-                    color = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) GeminiCyanAccent.copy(alpha = 0.2f) else TextSecondary.copy(alpha = 0.15f),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) Icons.Default.AutoAwesome else Icons.Default.Memory,
-                            contentDescription = null,
-                            tint = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) GeminiCyanAccent else TextSecondary,
-                            modifier = Modifier.size(11.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) {
-                                "AI Studio · ${aiSettings.selectedModel}"
-                            } else {
-                                "Aura Local"
-                            },
-                            color = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) GeminiCyanAccent else TextSecondary,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-            }
+                            "Motor activado: Aura Local (Offline)"
+                        },
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
+                modifier = Modifier.weight(1f, fill = false)
+            )
 
             // Right Group: Sound/Speaker Toggle + Settings Icon
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -8725,37 +9068,30 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                 items(messagesList.size) { index ->
                     val (msg, isUser) = messagesList[index]
                     if (isUser) {
-                        // USER BUBBLE
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .widthIn(max = 290.dp)
-                                    .background(Color(0xFF322F37), RoundedCornerShape(16.dp))
-                                    .padding(horizontal = 14.dp, vertical = 10.dp)
-                            ) {
-                                val userParsed = parseInlineMarkdown(msg, allNotes)
-                                androidx.compose.foundation.text.ClickableText(
-                                    text = userParsed,
-                                    style = TextStyle(
-                                        color = TextPrimary,
-                                        fontSize = 15.sp,
-                                        lineHeight = 21.sp
-                                    ),
-                                    onClick = { offset ->
-                                        userParsed.getStringAnnotations(tag = "NOTE_LINK", start = offset, end = offset)
-                                            .firstOrNull()?.let { annotation ->
-                                                allNotes.find { it.id == annotation.item }?.let { matchingNote ->
-                                                    viewModel.selectNote(matchingNote)
-                                                    onDismiss()
-                                                }
-                                            }
-                                    }
-                                )
+                        val userParsed = parseInlineMarkdown(msg, allNotes)
+                        val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                        com.example.ui.UserMessageBubbleRow(
+                            index = index,
+                            annotatedText = userParsed,
+                            isMenuOpen = userMsgMenuIndex == index,
+                            onOpenMenu = { userMsgMenuIndex = index },
+                            onDismissMenu = { if (userMsgMenuIndex == index) userMsgMenuIndex = null },
+                            onEditClick = {
+                                editingUserMsgIndex = index
+                                activeTokens = emptyList()
+                                messageTfv = TextFieldValue(text = msg, selection = TextRange(msg.length))
+                            },
+                            onCopyClick = {
+                                clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(msg))
+                                Toast.makeText(context, "Mensaje copiado", Toast.LENGTH_SHORT).show()
+                            },
+                            onNoteAnnotationClick = { noteId ->
+                                allNotes.find { it.id == noteId }?.let { matchingNote ->
+                                    viewModel.selectNote(matchingNote)
+                                    onDismiss()
+                                }
                             }
-                        }
+                        )
                     } else {
                         // ASSISTANT MESSAGE (Aura Action or Conversation)
                         val auraAction = remember(msg) { viewModel.parseAuraJsonResponse(msg) }
@@ -8873,11 +9209,11 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
 
                                     IconButton(
                                         onClick = {
-                                            viewModel.regenerateLastChatbotResponse(allNotes)
+                                            viewModel.regenerateResponseAt(index, allNotes)
                                         },
                                         modifier = Modifier
                                             .minimumInteractiveComponentSize()
-                                            .testTag("chat_regenerate_btn")
+                                            .testTag(if (index == messagesList.lastIndex) "chat_regenerate_btn" else "chat_regenerate_btn_$index")
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Refresh,
@@ -9347,6 +9683,81 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
 
         Spacer(modifier = Modifier.height(10.dp))
 
+        // Editing indicator banner when modifying a sent user message
+        if (editingUserMsgIndex != null) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = GeminiCyanAccent.copy(alpha = 0.14f),
+                border = BorderStroke(1.dp, GeminiCyanAccent.copy(alpha = 0.45f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+                    .testTag("editing_message_banner")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(15.dp))
+                        Text(
+                            text = "Editando mensaje (regenerará la respuesta de Aura)",
+                            color = TextPrimary,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            editingUserMsgIndex = null
+                            messageTfv = TextFieldValue("")
+                            activeTokens = emptyList()
+                        },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Cancelar edición", tint = TextSecondary, modifier = Modifier.size(15.dp))
+                    }
+                }
+            }
+        }
+
+        // Contextual /, !, @ shortcut mini-list above input
+        val activeTrigger = remember(messageTfv.text, messageTfv.selection, activeTokens) {
+            com.example.ui.detectActiveTrigger(messageTfv.text, messageTfv.selection.start, activeTokens)
+        }
+        val shortcutSuggestions = remember(activeTrigger, allNotes, allBooks, allPages, selectedNote, selectedBook) {
+            if (activeTrigger == null) emptyList()
+            else com.example.ui.buildShortcutSuggestions(
+                triggerChar = activeTrigger.triggerChar,
+                query = activeTrigger.query,
+                allNotes = allNotes,
+                allBooks = allBooks,
+                allPages = allPages,
+                activeNote = selectedNote,
+                activeBook = selectedBook
+            )
+        }
+        com.example.ui.ChatbotShortcutPopup(
+            visible = activeTrigger != null && shortcutSuggestions.isNotEmpty(),
+            triggerChar = activeTrigger?.triggerChar,
+            suggestions = shortcutSuggestions,
+            onSelect = { option ->
+                val trig = activeTrigger ?: return@ChatbotShortcutPopup
+                val (updatedTfv, updatedTokens) = com.example.ui.insertShortcutToken(
+                    currentTfv = messageTfv,
+                    activeTokens = activeTokens,
+                    trigger = trig,
+                    option = option
+                )
+                messageTfv = updatedTfv
+                activeTokens = updatedTokens
+            }
+        )
+
         // INPUT ROW PILL (Placed higher up with comfortable bottom padding)
         Row(
             modifier = Modifier
@@ -9391,25 +9802,23 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
 
             Spacer(modifier = Modifier.width(4.dp))
 
-            // Transparent Input Box using BasicTextField
-            BasicTextField(
-                value = message,
-                onValueChange = { message = it },
+            // Transparent Input Box with inline gray rounded-corner badges for /, !, @
+            com.example.ui.AuraInputWithInlineBadges(
+                value = messageTfv,
+                activeTokens = activeTokens,
+                onValueChange = { incomingTfv ->
+                    val (reconciledTfv, reconciledTokens) = com.example.ui.reconcileTokensOnTextChange(
+                        oldTfv = messageTfv,
+                        newTfv = incomingTfv,
+                        oldTokens = activeTokens
+                    )
+                    messageTfv = reconciledTfv
+                    activeTokens = reconciledTokens
+                },
+                placeholderText = "Usa /, !, @ o haz una pregunta",
                 modifier = Modifier
                     .weight(1f)
-                    .padding(vertical = 8.dp),
-                textStyle = TextStyle(color = TextPrimary, fontSize = 15.sp),
-                cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF907CFF)),
-                decorationBox = { innerTextField ->
-                    if (message.isEmpty()) {
-                        Text(
-                            text = "Haz una pregunta o usa @nota",
-                            color = TextSecondary.copy(alpha = 0.8f),
-                            fontSize = 15.sp
-                        )
-                    }
-                    innerTextField()
-                }
+                    .testTag("chatbot_message_input")
             )
 
             Spacer(modifier = Modifier.width(4.dp))
@@ -9418,25 +9827,39 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
             IconButton(
                 onClick = {
                     if (isSending) return@IconButton
-                    if (message.isBlank() && attachedImageUri == null && attachedFileName == null && attachedNoteFromScreen == null && attachedTextFromScreen == null) return@IconButton
-                    val rawUserMsg = message.trim()
+                    val rawUserMsg = messageTfv.text.trim()
+                    if (rawUserMsg.isBlank() && attachedImageUri == null && attachedFileName == null && attachedNoteFromScreen == null && attachedTextFromScreen == null) return@IconButton
+
+                    val resolvedContext = com.example.ui.resolvePromptContextFromTokens(
+                        tokens = activeTokens,
+                        allNotes = allNotes,
+                        allBooks = allBooks,
+                        allPages = allPages,
+                        formatNoteContent = { raw -> viewModel.formatNoteBlocksForLlm(raw) }
+                    )
+
+                    val editTargetIdx = editingUserMsgIndex
+                    if (editTargetIdx != null && rawUserMsg.isNotBlank()) {
+                        editingUserMsgIndex = null
+                        messageTfv = TextFieldValue("")
+                        activeTokens = emptyList()
+                        viewModel.editUserMessageAndRegenerate(
+                            userIndex = editTargetIdx,
+                            newUserDisplayMsg = rawUserMsg,
+                            extraShortcutContext = resolvedContext.extraContextBlock,
+                            allNotes = allNotes
+                        )
+                        return@IconButton
+                    }
+
                     val imgUri = attachedImageUri
                     val fName = attachedFileName
                     val fContent = attachedFileContent
                     val fUri = attachedFileUri
                     val imgB64 = attachedImageBase64
                     val imgMime = attachedImageMimeType
-                    val pNote = attachedNoteFromScreen
+                    val pNote = attachedNoteFromScreen ?: resolvedContext.primaryReferencedNote
                     val pText = attachedTextFromScreen
-
-                    val displayMsg = when {
-                        rawUserMsg.isNotBlank() -> rawUserMsg
-                        fName != null -> "📎 Archivo: $fName"
-                        imgUri != null -> "📷 [Imagen adjunta]"
-                        pNote != null -> "📄 [Nota citada]"
-                        pText != null -> "📝 [Fragmento citado]"
-                        else -> "Consulta"
-                    }
 
                     // Clear attachments and input immediately
                     attachedImageUri = null
@@ -9447,7 +9870,8 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     attachedFileUri = null
                     attachedNoteFromScreen = null
                     attachedTextFromScreen = null
-                    message = ""
+                    messageTfv = TextFieldValue("")
+                    activeTokens = emptyList()
 
                     viewModel.sendUserMessageWithAttachments(
                         context = context,
@@ -9460,13 +9884,15 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                         imgMime = imgMime,
                         pNote = pNote,
                         pText = pText,
-                        allNotes = allNotes
+                        allNotes = allNotes,
+                        extraShortcutContext = resolvedContext.extraContextBlock
                     )
                 },
                 enabled = !isSending,
                 modifier = Modifier
                     .size(38.dp)
                     .background(if (isSending) Color(0xFF222026) else Color(0xFF322F37), CircleShape)
+                    .testTag("chatbot_send_button")
             ) {
                 if (isSending) {
                     CircularProgressIndicator(
@@ -9477,7 +9903,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                 } else {
                     Icon(
                         imageVector = Icons.Default.FlashOn,
-                        contentDescription = "Enviar",
+                        contentDescription = if (editingUserMsgIndex != null) "Confirmar edición" else "Enviar",
                         tint = Color.White,
                         modifier = Modifier.size(18.dp)
                     )

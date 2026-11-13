@@ -109,6 +109,7 @@ class GoogleAiStudioUnitTest {
         val savedState = store.saveApiKey(rawKey)
 
         assertTrue(savedState.hasApiKey)
+        assertFalse(savedState.isConnectionVerified)
         assertTrue(savedState.isKeystoreEncrypted)
         assertFalse(savedState.maskedKeyPreview.contains("UnitTestSecret"))
         // Raw plaintext key must never be stored directly in storage map values
@@ -127,9 +128,17 @@ class GoogleAiStudioUnitTest {
         )
         val afterModels = store.saveDiscoveredModels(discovered)
         assertEquals(2, afterModels.discoveredModels.size)
+        assertTrue(afterModels.isConnectionVerified)
+
+        val reloadedStore = AiStudioConfigStore(storage, ReversibleTestCipher())
+        val reloadedSettings = reloadedStore.getSettingsSnapshot()
+        assertTrue(reloadedSettings.isConnectionVerified)
+        assertEquals(2, reloadedSettings.discoveredModels.size)
 
         val cleared = store.clearApiKey()
         assertFalse(cleared.hasApiKey)
+        assertFalse(cleared.isConnectionVerified)
+        assertTrue(cleared.discoveredModels.isEmpty())
         assertEquals("", cleared.maskedKeyPreview)
         assertNull(store.getDecryptedApiKey())
     }

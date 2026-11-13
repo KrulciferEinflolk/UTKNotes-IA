@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,12 +31,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.local.ai.AiApiSettingsState
-import com.example.data.local.ai.AiStudioConfigStore
+import com.example.data.local.ai.AiStudioModelInfo
 import com.example.data.local.ai.ApiKeyValidationState
 import com.example.data.local.ai.CURATED_AI_STUDIO_MODELS
+import com.example.data.local.ai.DEFAULT_AI_STUDIO_MODEL
 import com.example.ui.theme.*
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GoogleAiStudioEngineCard(
     isCloudActive: Boolean,
@@ -45,6 +47,7 @@ fun GoogleAiStudioEngineCard(
     onClearApiKey: () -> Unit,
     onTestConnection: (String?) -> Unit,
     onSelectModel: (String) -> Unit,
+    onRefreshModelsIfVerified: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val clipboardManager = LocalClipboardManager.current
@@ -52,12 +55,11 @@ fun GoogleAiStudioEngineCard(
 
     var apiKeyDraft by remember { mutableStateOf("") }
     var isApiKeyVisible by remember { mutableStateOf(false) }
-    var modelDraft by remember { mutableStateOf(aiSettings.selectedModel) }
-    var showAllDiscoveredModels by remember { mutableStateOf(false) }
+    var modelDropdownExpanded by remember { mutableStateOf(false) }
 
-    LaunchedEffect(aiSettings.selectedModel) {
-        if (AiStudioConfigStore.normalizeModelId(modelDraft) != aiSettings.selectedModel) {
-            modelDraft = aiSettings.selectedModel
+    LaunchedEffect(isCloudActive, aiSettings.hasApiKey, aiSettings.isConnectionVerified) {
+        if (isCloudActive && aiSettings.hasApiKey && aiSettings.isConnectionVerified) {
+            onRefreshModelsIfVerified()
         }
     }
 
@@ -70,6 +72,18 @@ fun GoogleAiStudioEngineCard(
 
     val emeraldAccent = Color(0xFF81C784)
     val errorAccent = Color(0xFFFF897D)
+    val isConnectionValid = aiSettings.validationState is ApiKeyValidationState.Valid ||
+        (aiSettings.hasApiKey && aiSettings.isConnectionVerified)
+
+    val availableModels = remember(aiSettings.discoveredModels) {
+        if (aiSettings.discoveredModels.isNotEmpty()) {
+            aiSettings.discoveredModels
+        } else {
+            CURATED_AI_STUDIO_MODELS.map {
+                AiStudioModelInfo(id = it.id, displayName = it.label)
+            }
+        }
+    }
 
     Surface(
         color = if (isCloudActive) CosmicSurface.copy(alpha = 0.96f) else CosmicSurfaceVariant.copy(alpha = 0.5f),
@@ -82,7 +96,7 @@ fun GoogleAiStudioEngineCard(
             .fillMaxWidth()
             .padding(vertical = 4.dp)
             .testTag("engine_google_ai_studio_card")
-            .clickable(enabled = !isCloudActive) { onSelectEngine() }
+            .then(if (!isCloudActive) Modifier.clickable { onSelectEngine() } else Modifier)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(
@@ -124,7 +138,7 @@ fun GoogleAiStudioEngineCard(
                     }
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Conexión directa con tu clave API y modelo Gemini a elección (sin Firebase ni reCAPTCHA).",
+                        text = "Conexión directa con tu clave API de Google AI Studio.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp,
                         lineHeight = 16.sp
@@ -135,28 +149,27 @@ fun GoogleAiStudioEngineCard(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         val statusIcon = when {
-                            aiSettings.validationState is ApiKeyValidationState.Valid -> Icons.Default.VerifiedUser
+                            isConnectionValid -> Icons.Default.VerifiedUser
                             aiSettings.validationState is ApiKeyValidationState.Invalid -> Icons.Default.ErrorOutline
                             aiSettings.hasApiKey -> Icons.Default.Lock
                             else -> Icons.Default.Key
                         }
                         val statusColor = when {
-                            aiSettings.validationState is ApiKeyValidationState.Valid -> emeraldAccent
+                            isConnectionValid -> emeraldAccent
                             aiSettings.validationState is ApiKeyValidationState.Invalid -> errorAccent
                             aiSettings.hasApiKey -> emeraldAccent
                             else -> MaterialTheme.colorScheme.onSurfaceVariant
                         }
-                        val statusText = when (val vs = aiSettings.validationState) {
-                            is ApiKeyValidationState.Valid -> "Verificada (${vs.modelCount} modelos) • ${aiSettings.selectedModel}"
-                            is ApiKeyValidationState.Invalid -> "Revisa tu clave • ${aiSettings.selectedModel}"
-                            is ApiKeyValidationState.Validating -> "Validando clave..."
-                            ApiKeyValidationState.Idle -> {
-                                if (aiSettings.hasApiKey) {
-                                    "Clave cifrada (${aiSettings.maskedKeyPreview}) • ${aiSettings.selectedModel}"
-                                } else {
-                                    "Sin clave configurada"
-                                }
+                        val statusText = when {
+                            aiSettings.validationState is ApiKeyValidationState.Validating -> "Probando conexión..."
+                            aiSettings.validationState is ApiKeyValidationState.Invalid -> "Revisa tu clave API"
+                            isConnectionValid -> {
+                                val count = (aiSettings.validationState as? ApiKeyValidationState.Valid)?.modelCount
+                                    ?: availableModels.size
+                                "Conectada ($count modelos) • ${aiSettings.selectedModel}"
                             }
+                            aiSettings.hasApiKey -> "Clave guardada (${aiSettings.maskedKeyPreview})"
+                            else -> "Sin clave configurada"
                         }
                         Icon(
                             statusIcon,
@@ -206,7 +219,7 @@ fun GoogleAiStudioEngineCard(
                                 shape = RoundedCornerShape(6.dp)
                             ) {
                                 Text(
-                                    text = if (aiSettings.isKeystoreEncrypted) "Cifrada en Keystore" else "Cifrada en app",
+                                    text = if (aiSettings.isKeystoreEncrypted) "Cifrada" else "Guardada",
                                     color = emeraldAccent,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.SemiBold,
@@ -216,13 +229,6 @@ fun GoogleAiStudioEngineCard(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Créala gratis en aistudio.google.com/apikey y pégala aquí.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 11.sp
-                    )
-
                     Spacer(modifier = Modifier.height(8.dp))
 
                     OutlinedTextField(
@@ -231,13 +237,13 @@ fun GoogleAiStudioEngineCard(
                         singleLine = true,
                         label = {
                             Text(
-                                text = if (aiSettings.hasApiKey) "Nueva clave API (opcional)" else "Pega tu clave AIza...",
+                                text = if (aiSettings.hasApiKey) "Clave API (${aiSettings.maskedKeyPreview})" else "Pega tu clave AIza...",
                                 fontSize = 12.sp
                             )
                         },
                         placeholder = {
                             Text(
-                                text = if (aiSettings.hasApiKey) aiSettings.maskedKeyPreview else "AIzaSy...",
+                                text = if (aiSettings.hasApiKey) "Introduce otra clave para reemplazarla" else "AIzaSy...",
                                 color = TextSecondary.copy(alpha = 0.65f),
                                 fontSize = 12.sp
                             )
@@ -249,12 +255,10 @@ fun GoogleAiStudioEngineCard(
                         ),
                         keyboardActions = KeyboardActions(
                             onDone = {
-                                if (apiKeyDraft.isNotBlank()) {
-                                    onSaveApiKey(apiKeyDraft)
-                                    apiKeyDraft = ""
-                                    isApiKeyVisible = false
-                                }
                                 focusManager.clearFocus()
+                                if (apiKeyDraft.isNotBlank() || aiSettings.hasApiKey) {
+                                    onTestConnection(apiKeyDraft.trim().takeIf { it.isNotEmpty() })
+                                }
                             }
                         ),
                         trailingIcon = {
@@ -306,361 +310,273 @@ fun GoogleAiStudioEngineCard(
                             .testTag("ai_studio_api_key_input")
                     )
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
+                    val isValidating = aiSettings.validationState is ApiKeyValidationState.Validating
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Button(
                             onClick = {
-                                onSaveApiKey(apiKeyDraft)
-                                apiKeyDraft = ""
-                                isApiKeyVisible = false
                                 focusManager.clearFocus()
+                                val draftToTest = apiKeyDraft.trim().takeIf { it.isNotEmpty() }
+                                onTestConnection(draftToTest)
                             },
-                            enabled = apiKeyDraft.isNotBlank(),
+                            enabled = !isValidating && (apiKeyDraft.isNotBlank() || aiSettings.hasApiKey),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = GeminiBlue,
                                 disabledContainerColor = CosmicBorder.copy(alpha = 0.4f)
                             ),
                             shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                             modifier = Modifier
                                 .weight(1f)
                                 .minimumInteractiveComponentSize()
-                                .testTag("save_api_key_button")
+                                .testTag("test_connection_button")
                         ) {
-                            Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp), tint = GeminiOnPrimary)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Guardar clave", color = GeminiOnPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            if (isValidating) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = GeminiOnPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Probando conexión...",
+                                    color = GeminiOnPrimary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Default.CloudDone,
+                                    contentDescription = null,
+                                    tint = GeminiOnPrimary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Probar conexión",
+                                    color = GeminiOnPrimary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
 
                         if (aiSettings.hasApiKey) {
                             OutlinedButton(
                                 onClick = {
                                     apiKeyDraft = ""
+                                    modelDropdownExpanded = false
                                     onClearApiKey()
                                 },
                                 border = BorderStroke(1.dp, errorAccent.copy(alpha = 0.7f)),
                                 shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                                 modifier = Modifier
                                     .minimumInteractiveComponentSize()
                                     .testTag("clear_api_key_button")
                             ) {
-                                Icon(Icons.Default.DeleteOutline, contentDescription = "Eliminar clave guardada", tint = errorAccent, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Borrar", color = errorAccent, fontSize = 12.sp)
+                                Icon(
+                                    Icons.Default.DeleteOutline,
+                                    contentDescription = "Eliminar clave guardada",
+                                    tint = errorAccent,
+                                    modifier = Modifier.size(16.dp)
+                                )
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    val isValidating = aiSettings.validationState is ApiKeyValidationState.Validating
-                    OutlinedButton(
-                        onClick = {
-                            focusManager.clearFocus()
-                            val draftToTest = apiKeyDraft.trim().takeIf { it.isNotEmpty() }
-                            onTestConnection(draftToTest)
-                        },
-                        enabled = !isValidating && (apiKeyDraft.isNotBlank() || aiSettings.hasApiKey),
-                        border = BorderStroke(1.dp, GeminiCyanAccent.copy(alpha = 0.75f)),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .minimumInteractiveComponentSize()
-                            .testTag("test_connection_button")
-                    ) {
-                        if (isValidating) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                                color = GeminiCyanAccent
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Probando clave y buscando modelos...", color = GeminiCyanAccent, fontSize = 12.sp)
-                        } else {
-                            Icon(Icons.Default.CloudDone, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Probar conexión y ver modelos", color = GeminiCyanAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    if (aiSettings.validationState is ApiKeyValidationState.Invalid) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Surface(
+                            color = errorAccent.copy(alpha = 0.14f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, errorAccent.copy(alpha = 0.45f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Icon(
+                                    Icons.Default.WarningAmber,
+                                    contentDescription = null,
+                                    tint = errorAccent,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = aiSettings.validationState.safeMessage,
+                                    color = errorAccent,
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp
+                                )
+                            }
                         }
                     }
 
-                    when (val validation = aiSettings.validationState) {
-                        is ApiKeyValidationState.Valid -> {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Surface(
-                                color = emeraldAccent.copy(alpha = 0.14f),
-                                shape = RoundedCornerShape(8.dp),
-                                border = BorderStroke(1.dp, emeraldAccent.copy(alpha = 0.4f)),
-                                modifier = Modifier.fillMaxWidth()
+                    // Sección de selección de modelos: completamente oculta hasta probar/validar la clave API
+                    AnimatedVisibility(
+                        visible = isConnectionValid,
+                        enter = expandVertically() + fadeIn(),
+                        exit = shrinkVertically() + fadeOut()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 14.dp)
+                                .testTag("gemini_model_selector_section")
+                        ) {
+                            HorizontalDivider(color = CosmicBorder.copy(alpha = 0.6f))
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                Text(
+                                    text = "Modelo de Gemini a usar",
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
+                                )
+                                Surface(
+                                    color = emeraldAccent.copy(alpha = 0.14f),
+                                    shape = RoundedCornerShape(6.dp)
                                 ) {
-                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = emeraldAccent, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "Conexión exitosa. ${validation.modelCount} modelos disponibles con tu clave.",
+                                        text = "${availableModels.size} disponibles",
                                         color = emeraldAccent,
-                                        fontSize = 11.sp,
-                                        lineHeight = 15.sp
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
                                 }
                             }
-                        }
-                        is ApiKeyValidationState.Invalid -> {
+
                             Spacer(modifier = Modifier.height(8.dp))
-                            Surface(
-                                color = errorAccent.copy(alpha = 0.14f),
-                                shape = RoundedCornerShape(8.dp),
-                                border = BorderStroke(1.dp, errorAccent.copy(alpha = 0.45f)),
+
+                            ExposedDropdownMenuBox(
+                                expanded = modelDropdownExpanded,
+                                onExpandedChange = { modelDropdownExpanded = !modelDropdownExpanded },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(10.dp),
-                                    verticalAlignment = Alignment.Top
-                                ) {
-                                    Icon(Icons.Default.WarningAmber, contentDescription = null, tint = errorAccent, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = validation.safeMessage,
-                                        color = errorAccent,
-                                        fontSize = 11.sp,
-                                        lineHeight = 15.sp
-                                    )
-                                }
-                            }
-                        }
-                        else -> Unit
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-                    HorizontalDivider(color = CosmicBorder.copy(alpha = 0.6f))
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Text(
-                        text = "Modelo de Gemini a usar",
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 13.sp
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Elige una sugerencia rápida o escribe el código exacto del modelo que quieras.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 11.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        CURATED_AI_STUDIO_MODELS.forEach { suggested ->
-                            val isChosen = aiSettings.selectedModel.equals(suggested.id, ignoreCase = true)
-                            FilterChip(
-                                selected = isChosen,
-                                onClick = {
-                                    modelDraft = suggested.id
-                                    onSelectModel(suggested.id)
-                                },
-                                label = {
-                                    Column {
-                                        Text(
-                                            text = suggested.label,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        Text(
-                                            text = suggested.badge,
-                                            fontSize = 9.sp,
-                                            color = if (isChosen) GeminiOnPrimary.copy(alpha = 0.85f) else TextSecondary
-                                        )
-                                    }
-                                },
-                                leadingIcon = if (isChosen) {
-                                    {
+                                OutlinedTextField(
+                                    value = aiSettings.selectedModel,
+                                    onValueChange = {},
+                                    readOnly = true,
+                                    singleLine = true,
+                                    leadingIcon = {
                                         Icon(
-                                            Icons.Default.Check,
+                                            imageVector = Icons.Default.AutoAwesome,
                                             contentDescription = null,
-                                            modifier = Modifier.size(14.dp)
+                                            tint = GeminiCyanAccent,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    trailingIcon = {
+                                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelDropdownExpanded)
+                                    },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = TextPrimary,
+                                        unfocusedTextColor = TextPrimary,
+                                        focusedBorderColor = GeminiCyanAccent,
+                                        unfocusedBorderColor = CosmicBorder,
+                                        focusedContainerColor = CosmicSurfaceVariant.copy(alpha = 0.55f),
+                                        unfocusedContainerColor = CosmicSurfaceVariant.copy(alpha = 0.35f)
+                                    ),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                        .fillMaxWidth()
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("gemini_model_dropdown_anchor")
+                                )
+
+                                ExposedDropdownMenu(
+                                    expanded = modelDropdownExpanded,
+                                    onDismissRequest = { modelDropdownExpanded = false },
+                                    modifier = Modifier
+                                        .background(Color(0xFF1B2130))
+                                        .testTag("gemini_model_dropdown_menu")
+                                ) {
+                                    availableModels.forEach { modelInfo ->
+                                        val isChosen = aiSettings.selectedModel.equals(modelInfo.id, ignoreCase = true)
+                                        val isRecommended = modelInfo.id.equals(DEFAULT_AI_STUDIO_MODEL, ignoreCase = true)
+
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                ) {
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(
+                                                            text = modelInfo.id,
+                                                            color = if (isChosen) GeminiCyanAccent else TextPrimary,
+                                                            fontWeight = if (isChosen) FontWeight.Bold else FontWeight.Medium,
+                                                            fontSize = 13.sp,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                        if (modelInfo.displayName.isNotBlank() &&
+                                                            !modelInfo.displayName.equals(modelInfo.id, ignoreCase = true)
+                                                        ) {
+                                                            Text(
+                                                                text = modelInfo.displayName,
+                                                                color = TextSecondary,
+                                                                fontSize = 11.sp,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis
+                                                            )
+                                                        }
+                                                    }
+                                                    if (isRecommended) {
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Surface(
+                                                            color = GeminiCyanAccent.copy(alpha = 0.15f),
+                                                            shape = RoundedCornerShape(6.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = "Recomendado",
+                                                                color = GeminiCyanAccent,
+                                                                fontSize = 9.sp,
+                                                                fontWeight = FontWeight.Bold,
+                                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            leadingIcon = if (isChosen) {
+                                                {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = null,
+                                                        tint = GeminiCyanAccent,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            } else null,
+                                            onClick = {
+                                                onSelectModel(modelInfo.id)
+                                                modelDropdownExpanded = false
+                                            },
+                                            modifier = Modifier
+                                                .minimumInteractiveComponentSize()
+                                                .testTag("gemini_model_option_${modelInfo.id}")
                                         )
                                     }
-                                } else null,
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = GeminiBlue,
-                                    selectedLabelColor = GeminiOnPrimary,
-                                    selectedLeadingIconColor = GeminiOnPrimary,
-                                    containerColor = CosmicSurfaceVariant,
-                                    labelColor = TextPrimary
-                                ),
-                                border = FilterChipDefaults.filterChipBorder(
-                                    enabled = true,
-                                    selected = isChosen,
-                                    borderColor = CosmicBorder,
-                                    selectedBorderColor = GeminiBlue
-                                ),
-                                modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .testTag("suggested_model_chip_${suggested.id}")
-                            )
-                        }
-                    }
-
-                    val curatedIds = remember { CURATED_AI_STUDIO_MODELS.map { it.id.lowercase() }.toSet() }
-                    val extraDiscovered = remember(aiSettings.discoveredModels) {
-                        aiSettings.discoveredModels.filter { it.id.lowercase() !in curatedIds }
-                    }
-
-                    if (extraDiscovered.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        TextButton(
-                            onClick = { showAllDiscoveredModels = !showAllDiscoveredModels },
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("toggle_discovered_models_button")
-                        ) {
-                            Icon(
-                                imageVector = if (showAllDiscoveredModels) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = null,
-                                tint = GeminiCyanAccent,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = if (showAllDiscoveredModels) {
-                                    "Ocultar otros modelos (${extraDiscovered.size})"
-                                } else {
-                                    "Ver otros modelos de tu cuenta (${extraDiscovered.size})"
-                                },
-                                color = GeminiCyanAccent,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-
-                        AnimatedVisibility(visible = showAllDiscoveredModels) {
-                            FlowRow(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 4.dp),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                extraDiscovered.take(12).forEach { discovered ->
-                                    val isChosen = aiSettings.selectedModel.equals(discovered.id, ignoreCase = true)
-                                    FilterChip(
-                                        selected = isChosen,
-                                        onClick = {
-                                            modelDraft = discovered.id
-                                            onSelectModel(discovered.id)
-                                        },
-                                        label = {
-                                            Text(
-                                                text = discovered.id,
-                                                fontSize = 11.sp,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        },
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = GeminiBlue,
-                                            selectedLabelColor = GeminiOnPrimary,
-                                            containerColor = CosmicSurfaceVariant,
-                                            labelColor = TextPrimary
-                                        ),
-                                        modifier = Modifier.minimumInteractiveComponentSize()
-                                    )
                                 }
                             }
                         }
                     }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    val normalizedDraft = AiStudioConfigStore.normalizeModelId(modelDraft)
-                    val isDraftPendingNormalization = modelDraft.trim() != aiSettings.selectedModel
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = modelDraft,
-                            onValueChange = { raw ->
-                                modelDraft = raw
-                                if (raw.trim().isNotEmpty()) {
-                                    onSelectModel(raw)
-                                }
-                            },
-                            singleLine = true,
-                            label = { Text("Modelo personalizado", fontSize = 12.sp) },
-                            placeholder = { Text("ej. gemini-2.5-flash-lite", fontSize = 12.sp) },
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                            keyboardActions = KeyboardActions(
-                                onDone = {
-                                    if (modelDraft.isNotBlank()) {
-                                        modelDraft = normalizedDraft
-                                        onSelectModel(normalizedDraft)
-                                    }
-                                    focusManager.clearFocus()
-                                }
-                            ),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = TextPrimary,
-                                unfocusedTextColor = TextPrimary,
-                                focusedBorderColor = GeminiCyanAccent,
-                                unfocusedBorderColor = CosmicBorder,
-                                focusedLabelColor = GeminiCyanAccent,
-                                unfocusedLabelColor = TextSecondary
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("ai_studio_model_input")
-                        )
-
-                        Button(
-                            onClick = {
-                                modelDraft = normalizedDraft
-                                onSelectModel(normalizedDraft)
-                                focusManager.clearFocus()
-                            },
-                            enabled = modelDraft.isNotBlank() && isDraftPendingNormalization,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = GeminiBlue,
-                                disabledContainerColor = CosmicBorder.copy(alpha = 0.4f)
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("apply_model_button")
-                        ) {
-                            Text(
-                                text = if (isDraftPendingNormalization) "Fijar" else "Activo",
-                                color = if (isDraftPendingNormalization) GeminiOnPrimary else TextSecondary,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Nota: El nivel gratuito en la nube tiene límites por minuto y día. Si se satura, usa 'gemini-2.5-flash-lite' o cambia a Aura Local (sin límites).",
-                        color = TextSecondary.copy(alpha = 0.85f),
-                        fontSize = 10.sp,
-                        lineHeight = 14.sp
-                    )
                 }
             }
         }

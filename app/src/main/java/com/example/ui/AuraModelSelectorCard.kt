@@ -73,7 +73,8 @@ fun AuraModelSelectorCard(
             onSaveApiKey = { viewModel.saveGoogleAiStudioApiKey(it) },
             onClearApiKey = { viewModel.clearGoogleAiStudioApiKey() },
             onTestConnection = { viewModel.testGoogleAiStudioConnection(it) },
-            onSelectModel = { viewModel.setGoogleAiStudioModel(it) }
+            onSelectModel = { viewModel.setGoogleAiStudioModel(it) },
+            onRefreshModelsIfVerified = { viewModel.refreshGoogleAiStudioModelsIfVerified() }
         )
 
         // Tarjeta 2: Aura Local (Offline / Qwen)

@@ -76,6 +76,9 @@ class NotesRepository(private val notesDao: NotesDao) {
     suspend fun getPagesForBookList(bookId: String): List<PageEntity> =
         notesDao.getPagesForBook(bookId)
 
+    fun getAllPagesForUser(userEmail: String): Flow<List<PageEntity>> =
+        notesDao.getAllPagesFlow(userEmail)
+
     suspend fun getPage(id: String): PageEntity? = notesDao.getPageById(id)
 
     suspend fun createPage(bookId: String, title: String, orderIndex: Int = 0, userEmail: String = "offline"): PageEntity {

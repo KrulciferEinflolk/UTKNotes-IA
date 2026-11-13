@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -225,14 +226,6 @@ fun BookCustomizationDialog(
         )
     }
 
-    if (showFontPicker) {
-        TypographyPickerDialog(
-            selectedFontId = selectedFontFamily,
-            onFontSelected = { selectedFontFamily = it },
-            onDismiss = { showFontPicker = false }
-        )
-    }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
@@ -378,51 +371,12 @@ fun BookCustomizationDialog(
                                         label = "Color de Letra / Título (HEX)"
                                     )
 
-                                    Column {
-                                        Text(
-                                            "Tipografía del Título",
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = TextSecondary,
-                                            modifier = Modifier.padding(bottom = 6.dp)
-                                        )
-                                        Surface(
-                                            shape = RoundedCornerShape(12.dp),
-                                            color = Color(0xFF1B2130),
-                                            border = BorderStroke(1.dp, Color(0xFF2A3142)),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable { showFontPicker = true }
-                                        ) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.SpaceBetween
-                                            ) {
-                                                Column {
-                                                    Text(
-                                                        text = getAppFontDisplayName(selectedFontFamily),
-                                                        fontFamily = getAppFontFamily(selectedFontFamily),
-                                                        fontSize = 16.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = Color.White
-                                                    )
-                                                    Text(
-                                                        text = "Toca para abrir paquete de letras",
-                                                        fontSize = 11.sp,
-                                                        color = GeminiCyanAccent
-                                                    )
-                                                }
-                                                Icon(
-                                                    imageVector = Icons.Default.TextFields,
-                                                    contentDescription = "Cambiar tipografía",
-                                                    tint = GeminiCyanAccent
-                                                )
-                                            }
-                                        }
-                                    }
+                                    BookTypographyDropdownField(
+                                        selectedFontFamily = selectedFontFamily,
+                                        expanded = showFontPicker,
+                                        onExpandedChange = { showFontPicker = it },
+                                        onFontSelected = { selectedFontFamily = it }
+                                    )
                                 }
                             }
 
@@ -583,51 +537,12 @@ fun BookCustomizationDialog(
                                     label = "Color de Letra / Título (HEX)"
                                 )
 
-                                Column {
-                                    Text(
-                                        "Tipografía del Título",
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = TextSecondary,
-                                        modifier = Modifier.padding(bottom = 6.dp)
-                                    )
-                                    Surface(
-                                        shape = RoundedCornerShape(12.dp),
-                                        color = Color(0xFF1B2130),
-                                        border = BorderStroke(1.dp, Color(0xFF2A3142)),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable { showFontPicker = true }
-                                    ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Column {
-                                                Text(
-                                                    text = getAppFontDisplayName(selectedFontFamily),
-                                                    fontFamily = getAppFontFamily(selectedFontFamily),
-                                                    fontSize = 16.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color.White
-                                                )
-                                                Text(
-                                                    text = "Toca para abrir paquete de letras",
-                                                    fontSize = 11.sp,
-                                                    color = GeminiCyanAccent
-                                                )
-                                            }
-                                            Icon(
-                                                imageVector = Icons.Default.TextFields,
-                                                contentDescription = "Cambiar tipografía",
-                                                tint = GeminiCyanAccent
-                                            )
-                                        }
-                                    }
-                                }
+                                BookTypographyDropdownField(
+                                    selectedFontFamily = selectedFontFamily,
+                                    expanded = showFontPicker,
+                                    onExpandedChange = { showFontPicker = it },
+                                    onFontSelected = { selectedFontFamily = it }
+                                )
                             }
                         }
 
@@ -1985,3 +1900,62 @@ fun TrashScreen(
         }
     }
 }
+
+@Composable
+private fun BookTypographyDropdownField(
+    selectedFontFamily: String,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onFontSelected: (String) -> Unit
+) {
+    Column {
+        Text(
+            text = "Tipografía del Título",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = TextSecondary,
+            modifier = Modifier.padding(bottom = 6.dp)
+        )
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = Color(0xFF1B2130),
+                border = BorderStroke(1.dp, if (expanded) GeminiCyanAccent else Color(0xFF2A3142)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .minimumInteractiveComponentSize()
+                    .testTag("book_cover_font_picker_button")
+                    .clickable { onExpandedChange(!expanded) }
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = getAppFontDisplayName(selectedFontFamily),
+                        fontFamily = getAppFontFamily(selectedFontFamily),
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Icon(
+                        imageVector = Icons.Default.ArrowDropDown,
+                        contentDescription = "Cambiar tipografía",
+                        tint = GeminiCyanAccent
+                    )
+                }
+            }
+
+            TypographyDropdownMenu(
+                expanded = expanded,
+                selectedFontId = selectedFontFamily,
+                onFontSelected = onFontSelected,
+                onDismiss = { onExpandedChange(false) }
+            )
+        }
+    }
+}
+

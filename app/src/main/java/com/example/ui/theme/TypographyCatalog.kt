@@ -1,52 +1,39 @@
 package com.example.ui.theme
 
-import androidx.compose.foundation.BorderStroke
+import android.content.Context
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.TextFields
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.example.R
 
 val MontserratFontFamily = FontFamily(Font(R.font.montserrat, FontWeight.Normal))
@@ -62,104 +49,64 @@ val FiraCodeFontFamily = FontFamily(Font(R.font.fira_code, FontWeight.Normal))
 data class AppFontOption(
     val id: String,
     val name: String,
-    val category: String,
-    val sampleText: String,
     val fontFamily: FontFamily
 )
 
 val APP_FONTS = listOf(
-    AppFontOption(
-        id = "Sans",
-        name = "Sans (Sistema)",
-        category = "Limpia y Estándar",
-        sampleText = "Claridad moderna y lectura fluida",
-        fontFamily = FontFamily.SansSerif
-    ),
-    AppFontOption(
-        id = "Montserrat",
-        name = "Montserrat",
-        category = "Geométrica y Moderna",
-        sampleText = "Diseño contemporáneo y elegante",
-        fontFamily = MontserratFontFamily
-    ),
-    AppFontOption(
-        id = "Playfair Display",
-        name = "Playfair Display",
-        category = "Editorial y Refinada",
-        sampleText = "Estilo clásico con alto contraste",
-        fontFamily = PlayfairFontFamily
-    ),
-    AppFontOption(
-        id = "Caveat",
-        name = "Caveat",
-        category = "Manuscrita y Apuntes",
-        sampleText = "Notas hechas a mano con calidez",
-        fontFamily = CaveatFontFamily
-    ),
-    AppFontOption(
-        id = "Pacifico",
-        name = "Pacifico",
-        category = "Brush Retro y Alegre",
-        sampleText = "Pincelada vintage y atractiva",
-        fontFamily = PacificoFontFamily
-    ),
-    AppFontOption(
-        id = "Dancing Script",
-        name = "Dancing Script",
-        category = "Caligráfica y Fluida",
-        sampleText = "Trazos artísticos y elegantes",
-        fontFamily = DancingScriptFontFamily
-    ),
-    AppFontOption(
-        id = "Cinzel",
-        name = "Cinzel",
-        category = "Romana e Imperial",
-        sampleText = "Inspiración en epigrafía clásica",
-        fontFamily = CinzelFontFamily
-    ),
-    AppFontOption(
-        id = "Oswald",
-        name = "Oswald",
-        category = "Titular e Impacto",
-        sampleText = "Condensada para portadas potentes",
-        fontFamily = OswaldFontFamily
-    ),
-    AppFontOption(
-        id = "Lobster",
-        name = "Lobster",
-        category = "Póster y Vintage",
-        sampleText = "Cursiva llamativa con personalidad",
-        fontFamily = LobsterFontFamily
-    ),
-    AppFontOption(
-        id = "Fira Code",
-        name = "Fira Code",
-        category = "Programación y Monospace",
-        sampleText = "Espaciado uniforme para código y listas",
-        fontFamily = FiraCodeFontFamily
-    ),
-    AppFontOption(
-        id = "Serif",
-        name = "Serif (Clásica)",
-        category = "Tradicional",
-        sampleText = "Tipografía literaria atemporal",
-        fontFamily = FontFamily.Serif
-    ),
-    AppFontOption(
-        id = "Monospace",
-        name = "Monospace (Máquina)",
-        category = "Terminal clásica",
-        sampleText = "Ancho fijo para precisión técnica",
-        fontFamily = FontFamily.Monospace
-    ),
-    AppFontOption(
-        id = "Cursive",
-        name = "Cursive (Sistema)",
-        category = "Escritura cursiva",
-        sampleText = "Escritura fluida del sistema",
-        fontFamily = FontFamily.Cursive
-    )
+    AppFontOption(id = "Sans", name = "Sans", fontFamily = FontFamily.SansSerif),
+    AppFontOption(id = "Montserrat", name = "Montserrat", fontFamily = MontserratFontFamily),
+    AppFontOption(id = "Playfair Display", name = "Playfair Display", fontFamily = PlayfairFontFamily),
+    AppFontOption(id = "Caveat", name = "Caveat", fontFamily = CaveatFontFamily),
+    AppFontOption(id = "Pacifico", name = "Pacifico", fontFamily = PacificoFontFamily),
+    AppFontOption(id = "Dancing Script", name = "Dancing Script", fontFamily = DancingScriptFontFamily),
+    AppFontOption(id = "Cinzel", name = "Cinzel", fontFamily = CinzelFontFamily),
+    AppFontOption(id = "Oswald", name = "Oswald", fontFamily = OswaldFontFamily),
+    AppFontOption(id = "Lobster", name = "Lobster", fontFamily = LobsterFontFamily),
+    AppFontOption(id = "Fira Code", name = "Fira Code", fontFamily = FiraCodeFontFamily),
+    AppFontOption(id = "Serif", name = "Serif", fontFamily = FontFamily.Serif),
+    AppFontOption(id = "Monospace", name = "Monospace", fontFamily = FontFamily.Monospace),
+    AppFontOption(id = "Cursive", name = "Cursive", fontFamily = FontFamily.Cursive)
 )
+
+private const val RECENT_FONTS_PREFS = "utk_recent_fonts_prefs"
+private const val KEY_RECENT_FONT_IDS = "recent_font_ids"
+private const val MAX_RECENT_FONTS = 4
+private val DEFAULT_RECENT_FONT_IDS = listOf("Sans", "Montserrat", "Playfair Display")
+
+fun getRecentAppFonts(context: Context, selectedFontId: String? = null): List<AppFontOption> {
+    val prefs = context.applicationContext.getSharedPreferences(RECENT_FONTS_PREFS, Context.MODE_PRIVATE)
+    val stored = prefs.getString(KEY_RECENT_FONT_IDS, null)
+        ?.split("|")
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?: DEFAULT_RECENT_FONT_IDS
+
+    val normalizedSelected = selectedFontId?.trim()?.takeIf { it.isNotEmpty() }
+    val orderedIds = buildList {
+        if (normalizedSelected != null) add(normalizedSelected)
+        addAll(stored)
+    }.distinctBy { it.lowercase() }.take(MAX_RECENT_FONTS)
+
+    return orderedIds.mapNotNull { id ->
+        APP_FONTS.firstOrNull { it.id.equals(id, ignoreCase = true) }
+    }.ifEmpty {
+        APP_FONTS.take(3)
+    }
+}
+
+fun recordRecentAppFont(context: Context, fontId: String) {
+    val match = APP_FONTS.firstOrNull { it.id.equals(fontId.trim(), ignoreCase = true) } ?: return
+    val prefs = context.applicationContext.getSharedPreferences(RECENT_FONTS_PREFS, Context.MODE_PRIVATE)
+    val existing = prefs.getString(KEY_RECENT_FONT_IDS, null)
+        ?.split("|")
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?: DEFAULT_RECENT_FONT_IDS
+    val updated = (listOf(match.id) + existing)
+        .distinctBy { it.lowercase() }
+        .take(MAX_RECENT_FONTS)
+    prefs.edit().putString(KEY_RECENT_FONT_IDS, updated.joinToString("|")).apply()
+}
 
 fun getAppFontFamily(fontId: String?): FontFamily {
     if (fontId.isNullOrBlank()) return FontFamily.SansSerif
@@ -188,171 +135,142 @@ fun getAppFontFamily(fontId: String?): FontFamily {
 fun getAppFontDisplayName(fontId: String?): String {
     if (fontId.isNullOrBlank()) return "Sans"
     val match = APP_FONTS.firstOrNull { it.id.equals(fontId.trim(), ignoreCase = true) }
-    return match?.name?.split(" ")?.firstOrNull() ?: fontId
+    return match?.name ?: fontId
 }
 
+/**
+ * Menú desplegable anclado estilo procesador de textos (Word):
+ * - Sin ventanas modales ni hojas inferiores.
+ * - "Fuentes recientes" arriba + separador + "Todas las fuentes" abajo.
+ * - Cada fuente renderizada directamente en su propia familia tipográfica.
+ */
 @Composable
-fun TypographyPickerDialog(
+fun TypographyDropdownMenu(
+    expanded: Boolean,
     selectedFontId: String,
     onFontSelected: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    Dialog(
+    val context = LocalContext.current
+    val recentFonts = remember(expanded, selectedFontId) {
+        getRecentAppFonts(context, selectedFontId)
+    }
+
+    DropdownMenu(
+        expanded = expanded,
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        containerColor = Color(0xFF1A1F2B),
+        modifier = modifier
+            .widthIn(min = 220.dp, max = 260.dp)
+            .testTag("typography_dropdown_menu")
     ) {
-        Surface(
+        Column(
             modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .fillMaxHeight(0.85f),
-            shape = RoundedCornerShape(24.dp),
-            color = Color(0xFF131720),
-            border = BorderStroke(1.dp, Color(0xFF2A3142))
+                .fillMaxWidth()
+                .heightIn(max = 340.dp)
+                .verticalScroll(rememberScrollState())
         ) {
-            Column(
-                modifier = Modifier
-                    .padding(20.dp)
-            ) {
-                // Header
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(Color(0xFF2F80ED).copy(alpha = 0.2f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.TextFields,
-                                contentDescription = null,
-                                tint = Color(0xFF64FFDA),
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = "Paquete de Tipografías",
-                                color = Color.White,
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Elige el estilo de letra para tu contenido",
-                                color = Color(0xFF9E9E9E),
-                                fontSize = 12.sp
-                            )
-                        }
+            TypographySectionHeader(
+                title = "Fuentes recientes",
+                modifier = Modifier.testTag("typography_section_recent")
+            )
+
+            recentFonts.forEach { fontOption ->
+                TypographyDropdownItemRow(
+                    fontOption = fontOption,
+                    isSelected = fontOption.id.equals(selectedFontId, ignoreCase = true),
+                    tagPrefix = "recent_font_option_",
+                    onClick = {
+                        recordRecentAppFont(context, fontOption.id)
+                        onFontSelected(fontOption.id)
+                        onDismiss()
                     }
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Cerrar",
-                            tint = Color(0xFF9E9E9E)
-                        )
+                )
+            }
+
+            HorizontalDivider(
+                color = Color(0xFF2D3548),
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
+
+            TypographySectionHeader(
+                title = "Todas las fuentes",
+                modifier = Modifier.testTag("typography_section_all")
+            )
+
+            APP_FONTS.forEach { fontOption ->
+                TypographyDropdownItemRow(
+                    fontOption = fontOption,
+                    isSelected = fontOption.id.equals(selectedFontId, ignoreCase = true),
+                    tagPrefix = "font_option_",
+                    onClick = {
+                        recordRecentAppFont(context, fontOption.id)
+                        onFontSelected(fontOption.id)
+                        onDismiss()
                     }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Font List
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    items(APP_FONTS) { fontOption ->
-                        val isSelected = fontOption.id.equals(selectedFontId, ignoreCase = true)
-                        
-                        OutlinedCard(
-                            onClick = {
-                                onFontSelected(fontOption.id)
-                                onDismiss()
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = CardDefaults.outlinedCardColors(
-                                containerColor = if (isSelected) Color(0xFF202636) else Color(0xFF181D29)
-                            ),
-                            border = BorderStroke(
-                                width = if (isSelected) 2.dp else 1.dp,
-                                color = if (isSelected) Color(0xFF64FFDA) else Color(0xFF2A3142)
-                            )
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            text = fontOption.name,
-                                            fontFamily = fontOption.fontFamily,
-                                            fontSize = 17.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = if (isSelected) Color(0xFF64FFDA) else Color.White
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = Color(0xFF262D3D)
-                                        ) {
-                                            Text(
-                                                text = fontOption.category,
-                                                fontSize = 10.sp,
-                                                color = Color(0xFF8AB4F8),
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = fontOption.sampleText,
-                                        fontFamily = fontOption.fontFamily,
-                                        fontSize = 13.sp,
-                                        color = if (isSelected) Color.White.copy(alpha = 0.9f) else Color(0xFFB0BEC5)
-                                    )
-                                }
-
-                                if (isSelected) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(28.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(0xFF64FFDA)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Check,
-                                            contentDescription = "Seleccionado",
-                                            tint = Color(0xFF131720),
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    TextButton(onClick = onDismiss) {
-                        Text("Cerrar", color = Color(0xFF8AB4F8), fontWeight = FontWeight.SemiBold)
-                    }
-                }
+                )
             }
         }
     }
+}
+
+@Composable
+private fun TypographySectionHeader(
+    title: String,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = Color(0xFF141822),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = title,
+            color = Color(0xFF94A3B8),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+        )
+    }
+}
+
+@Composable
+private fun TypographyDropdownItemRow(
+    fontOption: AppFontOption,
+    isSelected: Boolean,
+    tagPrefix: String,
+    onClick: () -> Unit
+) {
+    val highlightBg = if (isSelected) Color(0xFF263654) else Color.Transparent
+
+    DropdownMenuItem(
+        text = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = fontOption.name,
+                    fontFamily = fontOption.fontFamily,
+                    fontSize = 15.sp,
+                    color = if (isSelected) Color(0xFF8AB4F8) else Color.White
+                )
+                if (isSelected) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = "Tipografía seleccionada",
+                        tint = Color(0xFF8AB4F8),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        },
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(highlightBg, RoundedCornerShape(4.dp))
+            .minimumInteractiveComponentSize()
+            .testTag("$tagPrefix${fontOption.id}")
+    )
 }

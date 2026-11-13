@@ -64,6 +64,7 @@ data class AiApiSettingsState(
     val hasApiKey: Boolean = false,
     val maskedKeyPreview: String = "",
     val isKeystoreEncrypted: Boolean = true,
+    val isConnectionVerified: Boolean = false,
     val selectedModel: String = DEFAULT_AI_STUDIO_MODEL,
     val discoveredModels: List<AiStudioModelInfo> = emptyList(),
     val validationState: ApiKeyValidationState = ApiKeyValidationState.Idle
@@ -275,6 +276,7 @@ class AiStudioConfigStore internal constructor(
         storage.putString(KEY_ENCRYPTED_API_KEY, encrypted.encodedValue)
         storage.putBoolean(KEY_IS_HARDWARE_ENCRYPTED, encrypted.isHardwareBacked)
         storage.putString(KEY_MASKED_KEY_PREVIEW, maskApiKey(sanitized))
+        storage.putBoolean(KEY_CONNECTION_VERIFIED, false)
         return getSettingsSnapshot(validationState = ApiKeyValidationState.Idle)
     }
 
@@ -291,7 +293,14 @@ class AiStudioConfigStore internal constructor(
         storage.remove(KEY_ENCRYPTED_API_KEY)
         storage.remove(KEY_IS_HARDWARE_ENCRYPTED)
         storage.remove(KEY_MASKED_KEY_PREVIEW)
+        storage.remove(KEY_CONNECTION_VERIFIED)
+        storage.remove(KEY_DISCOVERED_MODELS_JSON)
         return getSettingsSnapshot(validationState = ApiKeyValidationState.Idle)
+    }
+
+    fun setConnectionVerified(verified: Boolean): AiApiSettingsState {
+        storage.putBoolean(KEY_CONNECTION_VERIFIED, verified)
+        return getSettingsSnapshot()
     }
 
     fun getDiscoveredModels(): List<AiStudioModelInfo> {
@@ -299,10 +308,18 @@ class AiStudioConfigStore internal constructor(
         return deserializeDiscoveredModels(json)
     }
 
-    fun saveDiscoveredModels(models: List<AiStudioModelInfo>): AiApiSettingsState {
+    fun saveDiscoveredModels(
+        models: List<AiStudioModelInfo>,
+        markVerified: Boolean = true
+    ): AiApiSettingsState {
         val serialized = serializeDiscoveredModels(models)
         storage.putString(KEY_DISCOVERED_MODELS_JSON, serialized)
-        return getSettingsSnapshot()
+        if (markVerified) {
+            storage.putBoolean(KEY_CONNECTION_VERIFIED, true)
+        }
+        return getSettingsSnapshot(
+            validationState = if (markVerified) ApiKeyValidationState.Valid(models.size) else ApiKeyValidationState.Idle
+        )
     }
 
     fun getSettingsSnapshot(
@@ -323,11 +340,14 @@ class AiStudioConfigStore internal constructor(
             decryptedIfNeeded != null -> maskApiKey(decryptedIfNeeded)
             else -> "••••••••"
         }
+        val isVerified = effectiveHasKey &&
+            (validationState is ApiKeyValidationState.Valid || storage.getBoolean(KEY_CONNECTION_VERIFIED, false))
 
         return AiApiSettingsState(
             hasApiKey = effectiveHasKey,
             maskedKeyPreview = effectivePreview,
             isKeystoreEncrypted = isHardwareEncrypted,
+            isConnectionVerified = isVerified,
             selectedModel = getSelectedModel(),
             discoveredModels = getDiscoveredModels(),
             validationState = validationState
@@ -342,6 +362,7 @@ class AiStudioConfigStore internal constructor(
         private const val KEY_ENCRYPTED_API_KEY = "ai_studio_encrypted_key_v1"
         private const val KEY_IS_HARDWARE_ENCRYPTED = "ai_studio_key_is_keystore"
         private const val KEY_MASKED_KEY_PREVIEW = "ai_studio_masked_preview"
+        private const val KEY_CONNECTION_VERIFIED = "ai_studio_connection_verified"
         private const val KEY_DISCOVERED_MODELS_JSON = "ai_studio_discovered_models_json"
 
         fun normalizeModelId(raw: String): String {
