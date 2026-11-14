@@ -59,7 +59,7 @@ data class CrashReportEntry(
     val threadName: String = "main",
     val message: String = "",
     val stackTrace: String = "",
-    val appVersion: String = "1.8.03",
+    val appVersion: String = "1.9.01",
     val engineLabel: String = ""
 )
 
@@ -397,9 +397,9 @@ class CrashReportManager(context: Context) {
     private fun resolveAppVersion(): String {
         return try {
             val pInfo = appContext.packageManager.getPackageInfo(appContext.packageName, 0)
-            pInfo.versionName ?: "1.8.03"
+            pInfo.versionName ?: "1.9.01"
         } catch (_: Exception) {
-            "1.8.03"
+            "1.9.01"
         }
     }
 

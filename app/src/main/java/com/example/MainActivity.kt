@@ -86,7 +86,19 @@ import com.example.ui.HexColorPickerDialog
 import com.example.ui.parseHexColorSafe
 import com.example.ui.colorToHex
 import com.example.ui.graphicDragHandleGestures
+import com.example.ui.editor.EditorSnapshot
+import com.example.ui.editor.InNoteSearchMatch
+import com.example.ui.editor.findAllOccurrencesIgnoreCase
+import com.example.ui.editor.findInNoteSearchMatches
+import com.example.ui.editor.shouldStartNewTypingGroup
+import com.example.ui.editor.splitParagraphTextAtCursor
+import com.example.ui.pdf.PdfConfigStore
+import com.example.ui.pdf.PdfExportManager
+import com.example.ui.pdf.PdfPreviewScreen
 import com.example.ui.theme.*
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -1735,338 +1747,7 @@ sealed class EditorBlock {
 }
 
 fun exportNoteToPdf(context: android.content.Context, note: NoteEntity) {
-    try {
-        val pdfDocument = android.graphics.pdf.PdfDocument()
-        val pageWidth = 595 // A4 width in points
-        val pageHeight = 842 // A4 height in points
-        var pageNumber = 1
-        
-        var pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create()
-        var page = pdfDocument.startPage(pageInfo)
-        var canvas = page.canvas
-        val paint = android.graphics.Paint()
-        
-        val margin = 50f
-        var yPosition = 60f
-        
-        // Helper to draw text with word wrap, indentation and bullet/numbered/dropdown support
-        fun drawTextWithWrap(
-            text: String,
-            size: Float,
-            isBold: Boolean,
-            isItalic: Boolean,
-            color: Int = android.graphics.Color.BLACK,
-            isBullet: Boolean = false,
-            isNumbered: Boolean = false,
-            isCollapsedHeader: Boolean = false,
-            indentLevel: Int = 0,
-            numberIndex: Int = 1,
-            customNumberPrefix: String = "$numberIndex."
-        ) {
-            paint.textSize = size
-            val tf = when {
-                isBold && isItalic -> android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD_ITALIC)
-                isBold -> android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-                isItalic -> android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.ITALIC)
-                else -> android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.NORMAL)
-            }
-            paint.typeface = tf
-            paint.color = color
-            
-            val baseIndent = (indentLevel * 20f).coerceIn(0f, 160f)
-            val prefixWidth = when {
-                isBullet -> 16f
-                isNumbered -> (customNumberPrefix.length * 8.5f + 8f).coerceIn(24f, 60f)
-                isCollapsedHeader -> 18f
-                else -> 0f
-            }
-            val contentStartX = margin + baseIndent + prefixWidth
-            val maxTextWidth = (pageWidth - margin - contentStartX).coerceAtLeast(100f)
-            
-            // Clean up text
-            val cleanText = text.replace("\r", "")
-            val paragraphs = cleanText.split("\n")
-            
-            for (pIndex in paragraphs.indices) {
-                val paragraph = paragraphs[pIndex]
-                if (paragraph.isBlank()) {
-                    yPosition += size * 0.4f
-                    continue
-                }
-                
-                // Extra indent if paragraph starts with tabs or multiple spaces
-                var leadingTabs = 0
-                var pTrimmed = paragraph
-                while (pTrimmed.startsWith("\t") || pTrimmed.startsWith("    ")) {
-                    leadingTabs++
-                    if (pTrimmed.startsWith("\t")) pTrimmed = pTrimmed.substring(1)
-                    else pTrimmed = pTrimmed.substring(4)
-                }
-                val lineExtraIndent = leadingTabs * 20f
-                val effectiveStartX = contentStartX + lineExtraIndent
-                val effectiveMaxWidth = (maxTextWidth - lineExtraIndent).coerceAtLeast(80f)
-                
-                val words = pTrimmed.split(" ").filter { it.isNotEmpty() }
-                var currentLine = StringBuilder()
-                var isFirstLineOfParagraph = true
-                
-                fun drawLine(lineStr: String, isFirstLine: Boolean) {
-                    if (yPosition + size + 8f > pageHeight - margin) {
-                        pdfDocument.finishPage(page)
-                        pageNumber++
-                        pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create()
-                        page = pdfDocument.startPage(pageInfo)
-                        canvas = page.canvas
-                        yPosition = margin + 10f
-                    }
-                    
-                    if (isFirstLine && pIndex == 0) {
-                        val origStyle = paint.style
-                        if (isCollapsedHeader) {
-                            // Draw crisp vector downward triangle ▼
-                            val triX = margin + baseIndent + 1f
-                            val triY = yPosition - (size * 0.32f)
-                            val s = (size * 0.32f).coerceIn(4f, 7.5f)
-                            val triPath = android.graphics.Path().apply {
-                                moveTo(triX, triY - s * 0.6f)
-                                lineTo(triX + s * 1.3f, triY - s * 0.6f)
-                                lineTo(triX + s * 0.65f, triY + s * 0.65f)
-                                close()
-                            }
-                            paint.style = android.graphics.Paint.Style.FILL
-                            canvas.drawPath(triPath, paint)
-                        } else if (isBullet) {
-                            val bulletX = margin + baseIndent + 5f
-                            val bulletY = yPosition - (size * 0.30f)
-                            when (indentLevel) {
-                                0 -> {
-                                    // Solid circle bullet disc (•)
-                                    paint.style = android.graphics.Paint.Style.FILL
-                                    canvas.drawCircle(bulletX, bulletY, 2.5f, paint)
-                                }
-                                1 -> {
-                                    // Hollow circle sub-bullet (◦)
-                                    paint.style = android.graphics.Paint.Style.STROKE
-                                    paint.strokeWidth = 1f
-                                    canvas.drawCircle(bulletX, bulletY, 2.5f, paint)
-                                }
-                                else -> {
-                                    // Small square sub-sub-bullet (▪)
-                                    paint.style = android.graphics.Paint.Style.FILL
-                                    canvas.drawRect(bulletX - 2.2f, bulletY - 2.2f, bulletX + 2.2f, bulletY + 2.2f, paint)
-                                }
-                            }
-                        } else if (isNumbered) {
-                            val origTf = paint.typeface
-                            paint.typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-                            canvas.drawText("$customNumberPrefix ", margin + baseIndent, yPosition, paint)
-                            paint.typeface = origTf
-                        }
-                        paint.style = origStyle
-                    }
-                    
-                    canvas.drawText(lineStr, effectiveStartX, yPosition, paint)
-                    yPosition += size * 1.30f
-                }
-                
-                for (word in words) {
-                    val testLine = if (currentLine.isEmpty()) word else "$currentLine $word"
-                    val measuredWidth = paint.measureText(testLine)
-                    if (measuredWidth > effectiveMaxWidth) {
-                        if (currentLine.isNotEmpty()) {
-                            drawLine(currentLine.toString(), isFirstLineOfParagraph)
-                            isFirstLineOfParagraph = false
-                            currentLine = StringBuilder(word)
-                        } else {
-                            drawLine(testLine, isFirstLineOfParagraph)
-                            isFirstLineOfParagraph = false
-                            currentLine = StringBuilder()
-                        }
-                    } else {
-                        currentLine = StringBuilder(testLine)
-                    }
-                }
-                
-                if (currentLine.isNotEmpty()) {
-                    drawLine(currentLine.toString(), isFirstLineOfParagraph)
-                }
-                
-                yPosition += size * 0.35f
-            }
-        }
-        
-        // 1. Draw Title
-        drawTextWithWrap(note.title.ifEmpty { "Sin Título" }, 22f, isBold = true, isItalic = false)
-        yPosition += 10f
-        
-        // 2. Draw Metadata
-        val formatter = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
-        val dateStr = formatter.format(Date(note.updatedAt))
-        drawTextWithWrap("Modificado: $dateStr", 10f, isBold = false, isItalic = true, color = android.graphics.Color.GRAY)
-        
-        if (note.tags.isNotBlank()) {
-            drawTextWithWrap("Etiquetas: ${note.tags}", 10f, isBold = false, isItalic = false, color = android.graphics.Color.DKGRAY)
-        }
-        
-        yPosition += 15f
-        
-        // Draw horizontal line separator
-        paint.style = android.graphics.Paint.Style.STROKE
-        paint.strokeWidth = 1f
-        paint.color = android.graphics.Color.LTGRAY
-        canvas.drawLine(margin, yPosition, pageWidth - margin, yPosition, paint)
-        yPosition += 25f
-        paint.style = android.graphics.Paint.Style.FILL
-        
-        // 3. Draw Content Blocks
-        val blocks = try {
-            parseBlocks(note.content)
-        } catch(e: Exception) {
-            listOf(EditorBlock.Text(content = note.content))
-        }
-        
-        val numberedPrefixes = mutableMapOf<String, String>()
-        val activeNumbersByIndent = mutableMapOf<Int, Int>()
-        var inNumberedSequence = false
-        for (block in blocks) {
-            if (block is EditorBlock.Text && block.isNumbered) {
-                inNumberedSequence = true
-                val indent = block.indentLevel
-                val currentCount = (activeNumbersByIndent[indent] ?: 0) + 1
-                activeNumbersByIndent[indent] = currentCount
-                activeNumbersByIndent.keys.filter { it > indent }.forEach { activeNumbersByIndent.remove(it) }
-                val parts = (0..indent).map { lvl -> activeNumbersByIndent[lvl] ?: 1 }
-                numberedPrefixes[block.id] = parts.joinToString(".") + "."
-            } else {
-                if (inNumberedSequence) {
-                    activeNumbersByIndent.clear()
-                    inNumberedSequence = false
-                }
-            }
-        }
-
-        for (block in blocks) {
-            when (block) {
-                is EditorBlock.Text -> {
-                    val fontSize = block.fontSize.toFloat()
-                    val colorHex = when (block.fontColor) {
-                        "Purple" -> 0xFF907CFF.toInt()
-                        "Blue" -> 0xFF2F80ED.toInt()
-                        "Green" -> 0xFF27AE60.toInt()
-                        "Red" -> 0xFFEB5757.toInt()
-                        "Amber" -> 0xFFF2994A.toInt()
-                        else -> if (block.fontColor.startsWith("#")) {
-                            try { android.graphics.Color.parseColor(block.fontColor) } catch (e: Exception) { android.graphics.Color.BLACK }
-                        } else android.graphics.Color.BLACK
-                    }
-                    val numPrefix = numberedPrefixes[block.id] ?: "1."
-                    drawTextWithWrap(
-                        text = block.content,
-                        size = fontSize,
-                        isBold = block.isBold || block.isHeader,
-                        isItalic = block.isItalic,
-                        color = colorHex,
-                        isBullet = block.isBullet,
-                        isNumbered = block.isNumbered,
-                        isCollapsedHeader = block.isCollapsedHeader,
-                        indentLevel = block.indentLevel,
-                        numberIndex = 1,
-                        customNumberPrefix = numPrefix
-                    )
-                }
-                is EditorBlock.Table -> {
-                    drawTextWithWrap("[Tabla]", 12f, isBold = true, isItalic = false, color = android.graphics.Color.DKGRAY)
-                    for (row in block.data) {
-                        val rowText = row.joinToString(" | ")
-                        drawTextWithWrap(rowText, 11f, isBold = false, isItalic = false, color = android.graphics.Color.BLACK)
-                    }
-                    yPosition += 10f
-                }
-                is EditorBlock.Image -> {
-                    val caption = if (block.caption.isNotEmpty()) block.caption else "Imagen"
-                    drawTextWithWrap("[Imagen: $caption]", 11f, isBold = false, isItalic = true, color = android.graphics.Color.GRAY)
-                }
-                is EditorBlock.Audio -> {
-                    drawTextWithWrap("[Audio: ${block.name}]", 11f, isBold = false, isItalic = true, color = android.graphics.Color.GRAY)
-                }
-                is EditorBlock.Video -> {
-                    drawTextWithWrap("[Video: ${block.title}]", 11f, isBold = false, isItalic = true, color = android.graphics.Color.GRAY)
-                }
-                is EditorBlock.File -> {
-                    drawTextWithWrap("[Archivo: ${block.name} (${block.size})]", 11f, isBold = false, isItalic = true, color = android.graphics.Color.GRAY)
-                }
-                is EditorBlock.Todo -> {
-                    val box = if (block.isChecked) "[X] " else "[  ] "
-                    drawTextWithWrap(box + block.content, 12f, isBold = false, isItalic = block.isChecked, color = if (block.isChecked) android.graphics.Color.GRAY else android.graphics.Color.BLACK)
-                }
-                is EditorBlock.Callout -> {
-                    drawTextWithWrap("${block.emoji} ${block.content}", 12f, isBold = false, isItalic = false, color = android.graphics.Color.DKGRAY)
-                    yPosition += 4f
-                }
-                is EditorBlock.Quote -> {
-                    val startY = yPosition
-                    val origStyle = paint.style
-                    val origWidth = paint.strokeWidth
-                    val origColor = paint.color
-                    
-                    drawTextWithWrap(
-                        text = block.content,
-                        size = 13f,
-                        isBold = false,
-                        isItalic = true,
-                        color = 0xFF2B2B2B.toInt(),
-                        indentLevel = 1
-                    )
-                    
-                    // Draw vertical quote bar
-                    paint.style = android.graphics.Paint.Style.STROKE
-                    paint.strokeWidth = 3f
-                    paint.color = 0xFF907CFF.toInt()
-                    canvas.drawLine(margin + 4f, startY - 2f, margin + 4f, yPosition - 4f, paint)
-                    paint.style = origStyle
-                    paint.strokeWidth = origWidth
-                    paint.color = origColor
-                }
-                is EditorBlock.Divider -> {
-                    drawTextWithWrap("----------------------------------------", 10f, isBold = false, isItalic = false, color = android.graphics.Color.LTGRAY)
-                }
-                is EditorBlock.Code -> {
-                    drawTextWithWrap("[${block.language}]\n${block.code}", 10f, isBold = false, isItalic = false, color = android.graphics.Color.DKGRAY)
-                }
-            }
-        }
-        
-        pdfDocument.finishPage(page)
-        
-        // Write PDF file to cache directory
-        val rawTitle = note.title.ifEmpty { "Sin_Titulo" }
-        val fileName = "${rawTitle.replace("[^a-zA-Z0-9]".toRegex(), "_")}_export.pdf"
-        val cacheFile = java.io.File(context.cacheDir, fileName)
-        val fileOutputStream = java.io.FileOutputStream(cacheFile)
-        pdfDocument.writeTo(fileOutputStream)
-        pdfDocument.close()
-        fileOutputStream.close()
-        
-        // Share PDF via Intent
-        val fileUri = androidx.core.content.FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.provider",
-            cacheFile
-        )
-        
-        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-            type = "application/pdf"
-            putExtra(android.content.Intent.EXTRA_STREAM, fileUri)
-            putExtra(android.content.Intent.EXTRA_SUBJECT, note.title)
-            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        
-        context.startActivity(android.content.Intent.createChooser(intent, "Compartir PDF de Nota"))
-        Toast.makeText(context, "PDF generado con éxito", Toast.LENGTH_SHORT).show()
-    } catch (e: Exception) {
-        e.printStackTrace()
-        Toast.makeText(context, "Error al generar PDF: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
-    }
+    PdfExportManager.exportAndShareNotePdf(context, note)
 }
 
 fun parseBlocks(content: String): List<EditorBlock> {
@@ -4056,14 +3737,24 @@ fun NoteEditorWorkspace(
     var aiQuery by remember { mutableStateOf("") }
     var inNoteSearchQuery by remember { mutableStateOf("") }
     var isSearchingInNote by remember { mutableStateOf(false) }
+    var activeSearchMatchIndex by remember { mutableIntStateOf(0) }
+    var pendingSelectionRange by remember { mutableStateOf<Triple<String, Int, Int>?>(null) }
 
-    // History undo/redo stacks
+    // History undo/redo stacks (stores title, tags, blocks, and focused block index)
     var editingBlockSettings by remember { mutableStateOf<EditorBlock?>(null) }
-    val undoStack = remember { mutableStateListOf<List<EditorBlock>>() }
-    val redoStack = remember { mutableStateListOf<List<EditorBlock>>() }
+    val undoStack = remember(note.id) { mutableStateListOf<EditorSnapshot>() }
+    val redoStack = remember(note.id) { mutableStateListOf<EditorSnapshot>() }
+    var historyApplyVersion by remember(note.id) { mutableIntStateOf(0) }
+    var lastTypingGroupKey by remember(note.id) { mutableStateOf<String?>(null) }
+    var lastTypingTimestampMs by remember(note.id) { mutableLongStateOf(0L) }
+    var lastTypingOpKind by remember(note.id) { mutableIntStateOf(0) }
 
     val context = LocalContext.current
     val formatter = remember { SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()) }
+
+    val pdfConfigStore = remember(context) { PdfConfigStore(context) }
+    var pdfConfig by remember(note.id) { mutableStateOf(pdfConfigStore.load()) }
+    var showPdfPreview by remember { mutableStateOf(false) }
 
     var selectedBlockIndex by remember { mutableStateOf(-1) }
     val focusRequesters = remember { mutableMapOf<String, FocusRequester>() }
@@ -4075,6 +3766,121 @@ fun NoteEditorWorkspace(
 
     val listState = rememberLazyListState()
 
+    var lastSavedSignature by remember(note.id) {
+        mutableStateOf(
+            Triple(
+                note.title,
+                note.tags,
+                if (isSmallContent) serializeBlocks(blocks) else note.content
+            )
+        )
+    }
+
+    fun commitSaveNow() {
+        if (isLoadingBlocks) return
+        val serialized = serializeBlocks(blocks)
+        lastSavedSignature = Triple(title, tags, serialized)
+        onSave(note.copy(title = title, content = serialized, tags = tags))
+    }
+
+    fun flushAutoSaveIfDirty() {
+        if (isLoadingBlocks) return
+        val serialized = serializeBlocks(blocks)
+        val currentSig = Triple(title, tags, serialized)
+        if (currentSig != lastSavedSignature) {
+            lastSavedSignature = currentSig
+            onSave(note.copy(title = title, content = serialized, tags = tags))
+        }
+    }
+
+    fun resetTypingGroup() {
+        lastTypingGroupKey = null
+        lastTypingTimestampMs = 0L
+        lastTypingOpKind = 0
+    }
+
+    fun captureSnapshot(): EditorSnapshot = EditorSnapshot(
+        title = title,
+        tags = tags,
+        blocks = cloneBlocks(blocks),
+        selectedBlockIndex = selectedBlockIndex
+    )
+
+    fun pushHistory() {
+        resetTypingGroup()
+        if (undoStack.size >= 60) {
+            undoStack.removeAt(0)
+        }
+        undoStack.add(captureSnapshot())
+        redoStack.clear()
+    }
+
+    fun pushTypingHistoryBeforeChange(groupKey: String, oldText: String, newText: String) {
+        val now = System.currentTimeMillis()
+        val opKind = if (newText.length >= oldText.length) 1 else -1
+        val shouldPush = shouldStartNewTypingGroup(
+            prevGroupKey = lastTypingGroupKey,
+            prevTimestampMs = lastTypingTimestampMs,
+            prevOpKind = lastTypingOpKind,
+            currentGroupKey = groupKey,
+            nowMs = now,
+            oldText = oldText,
+            newText = newText
+        )
+        if (shouldPush) {
+            if (undoStack.size >= 60) {
+                undoStack.removeAt(0)
+            }
+            undoStack.add(captureSnapshot())
+            redoStack.clear()
+        }
+        lastTypingGroupKey = groupKey
+        lastTypingTimestampMs = now
+        lastTypingOpKind = opKind
+    }
+
+    fun performUndo() {
+        if (undoStack.isEmpty()) return
+        resetTypingGroup()
+        if (redoStack.size >= 60) {
+            redoStack.removeAt(0)
+        }
+        redoStack.add(captureSnapshot())
+        val prev = undoStack.removeAt(undoStack.size - 1)
+        title = prev.title
+        tags = prev.tags
+        blocks.clear()
+        blocks.addAll(cloneBlocks(prev.blocks))
+        if (prev.selectedBlockIndex in blocks.indices) {
+            selectedBlockIndex = prev.selectedBlockIndex
+        } else if (selectedBlockIndex !in blocks.indices) {
+            selectedBlockIndex = blocks.lastIndex
+        }
+        historyApplyVersion++
+        commitSaveNow()
+    }
+
+    fun performRedo() {
+        if (redoStack.isEmpty()) return
+        resetTypingGroup()
+        if (undoStack.size >= 60) {
+            undoStack.removeAt(0)
+        }
+        undoStack.add(captureSnapshot())
+        val next = redoStack.removeAt(redoStack.size - 1)
+        title = next.title
+        tags = next.tags
+        blocks.clear()
+        blocks.addAll(cloneBlocks(next.blocks))
+        if (next.selectedBlockIndex in blocks.indices) {
+            selectedBlockIndex = next.selectedBlockIndex
+        } else if (selectedBlockIndex !in blocks.indices) {
+            selectedBlockIndex = blocks.lastIndex
+        }
+        historyApplyVersion++
+        commitSaveNow()
+    }
+
     // Asynchronous parsing on background thread for large content to prevent freezing/ANR
     LaunchedEffect(note.id) {
         if (!isSmallContent) {
@@ -4083,38 +3889,58 @@ fun NoteEditorWorkspace(
             }
             blocks.clear()
             blocks.addAll(parsed)
+            lastSavedSignature = Triple(title, tags, serializeBlocks(blocks))
             isLoadingBlocks = false
         }
     }
 
-    // Auto-sync if content was modified externally (e.g. AI Copilot or Sync)
-    LaunchedEffect(note.content) {
-        if (blocks.isNotEmpty()) {
+    // Auto-sync if content was modified externally (e.g. AI Copilot or Sync) and record undo history
+    LaunchedEffect(note.content, note.title) {
+        if (!isLoadingBlocks && blocks.isNotEmpty()) {
             val currentSerialized = serializeBlocks(blocks)
-            if (note.content != currentSerialized && note.content.isNotBlank()) {
-                val parsed = withContext(Dispatchers.Default) {
-                    parseBlocks(note.content)
+            val externalContentChanged = note.content != currentSerialized && note.content.isNotBlank()
+            val externalTitleChanged = note.title != title && note.title.isNotBlank()
+            if (externalContentChanged || externalTitleChanged) {
+                val parsed = if (externalContentChanged) {
+                    withContext(Dispatchers.Default) {
+                        parseBlocks(note.content)
+                    }
+                } else {
+                    blocks.toList()
                 }
-                blocks.clear()
-                blocks.addAll(parsed)
+                pushHistory()
+                if (externalTitleChanged) title = note.title
+                if (externalContentChanged) {
+                    blocks.clear()
+                    blocks.addAll(parsed)
+                }
+                lastSavedSignature = Triple(title, tags, serializeBlocks(blocks))
+                historyApplyVersion++
             }
         }
     }
 
-    // Debounced auto-save at the workspace level (prevents saving on every single keystroke)
-    LaunchedEffect(blocks, title, tags) {
-        delay(2500)
-        if (!isLoadingBlocks && blocks.isNotEmpty()) {
-            onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+    // Reactive periodic 2-second auto-save whenever edits or deletions are pending
+    LaunchedEffect(note.id) {
+        while (true) {
+            delay(2000)
+            flushAutoSaveIfDirty()
         }
     }
 
-    fun pushHistory() {
-        if (undoStack.size >= 25) {
-            undoStack.removeAt(0)
+    // Immediate auto-save when leaving screen or backgrounding app
+    val currentLifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(currentLifecycleOwner, note.id) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
+                flushAutoSaveIfDirty()
+            }
         }
-        undoStack.add(cloneBlocks(blocks))
-        redoStack.clear()
+        currentLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            currentLifecycleOwner.lifecycle.removeObserver(observer)
+            flushAutoSaveIfDirty()
+        }
     }
 
     // Auto-save on block structural change
@@ -4123,7 +3949,7 @@ fun NoteEditorWorkspace(
             blocks.clear()
             blocks.addAll(newBlocks)
         }
-        onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+        commitSaveNow()
     }
 
     // Helper to determine which toggle dropdown (if any) a block belongs to
@@ -4458,6 +4284,75 @@ fun NoteEditorWorkspace(
         }
     }
 
+    fun splitActiveParagraphAtCursor() {
+        val idx = selectedBlockIndex
+        if (idx !in blocks.indices) return
+        val currentBlock = blocks[idx] as? EditorBlock.Text ?: return
+
+        val activeTriple = activeTextBlockState?.takeIf { it.first == idx }
+        val rawSelectionStart = activeTriple?.second?.selection?.start ?: (currentBlock.content.length + 1)
+
+        pushHistory()
+        val mutableBlocks = blocks.toMutableList()
+
+        val effectiveBlock = if (currentBlock.isCollapsedHeader && currentBlock.isCollapsed) {
+            currentBlock.copy(isCollapsed = false)
+        } else {
+            currentBlock
+        }
+
+        val splitResult = splitParagraphTextAtCursor(
+            content = effectiveBlock.content,
+            rawSelectionStart = rawSelectionStart,
+            hasLeadingSentinel = true
+        )
+
+        mutableBlocks[idx] = effectiveBlock.copy(content = splitResult.beforeContent)
+
+        val newBlock = if (effectiveBlock.isCollapsedHeader) {
+            EditorBlock.Text(
+                content = splitResult.afterContent,
+                fontFamily = effectiveBlock.fontFamily,
+                fontColor = effectiveBlock.fontColor,
+                fontSize = 16,
+                alignment = effectiveBlock.alignment,
+                parentToggleId = effectiveBlock.id,
+                indentLevel = 1
+            )
+        } else {
+            EditorBlock.Text(
+                content = splitResult.afterContent,
+                isBold = effectiveBlock.isBold,
+                isItalic = effectiveBlock.isItalic,
+                isUnderline = effectiveBlock.isUnderline,
+                fontSize = if (effectiveBlock.isHeader) 16 else effectiveBlock.fontSize,
+                fontColor = effectiveBlock.fontColor,
+                fontFamily = effectiveBlock.fontFamily,
+                alignment = effectiveBlock.alignment,
+                isBullet = effectiveBlock.isBullet,
+                isNumbered = effectiveBlock.isNumbered,
+                isCollapsedHeader = false,
+                isCollapsed = false,
+                isHeader = false,
+                indentLevel = effectiveBlock.indentLevel,
+                parentToggleId = effectiveBlock.parentToggleId
+            )
+        }
+
+        mutableBlocks.add(idx + 1, newBlock)
+        updateBlocksAndSave(mutableBlocks)
+        selectedBlockIndex = idx + 1
+        pendingCursorOffset = Pair(newBlock.id, 0)
+        historyApplyVersion++
+
+        scope.launch {
+            delay(60)
+            try {
+                focusRequesters[newBlock.id]?.requestFocus()
+            } catch (_: Exception) {}
+        }
+    }
+
     // Precomputed list of visible (index, block) items - ONLY hides items that are INSIDE the collapsed dropdown
     val displayItems by remember(blocks) {
         derivedStateOf {
@@ -4496,6 +4391,71 @@ fun NoteEditorWorkspace(
                 }
             }
             list
+        }
+    }
+
+    val searchMatches by remember(inNoteSearchQuery) {
+        derivedStateOf {
+            findInNoteSearchMatches(blocks.toList(), inNoteSearchQuery)
+        }
+    }
+
+    fun expandParentTogglesForBlock(targetBlockIndex: Int) {
+        if (targetBlockIndex !in blocks.indices) return
+        var toggleIdToExpand = getEffectiveToggleId(targetBlockIndex)
+        val visited = mutableSetOf<String>()
+        while (toggleIdToExpand != null && visited.add(toggleIdToExpand)) {
+            val headerIdx = blocks.indexOfFirst { it.id == toggleIdToExpand }
+            if (headerIdx >= 0) {
+                val hdr = blocks[headerIdx]
+                if (hdr is EditorBlock.Text && hdr.isCollapsedHeader && hdr.isCollapsed) {
+                    blocks[headerIdx] = hdr.copy(isCollapsed = false)
+                }
+                toggleIdToExpand = hdr.parentToggleId
+            } else {
+                break
+            }
+        }
+    }
+
+    fun navigateToSearchMatch(targetIdx: Int, focusAndSelectBlock: Boolean) {
+        if (searchMatches.isEmpty()) return
+        val safeIdx = ((targetIdx % searchMatches.size) + searchMatches.size) % searchMatches.size
+        activeSearchMatchIndex = safeIdx
+        val match = searchMatches[safeIdx]
+        expandParentTogglesForBlock(match.blockIndex)
+        selectedBlockIndex = match.blockIndex
+        if (match.isEditableTextBlock) {
+            pendingSelectionRange = Triple(match.blockId, match.startInContent, match.endInContent)
+        }
+        scope.launch {
+            delay(35)
+            val displayPos = displayItems.indexOfFirst { it.second.id == match.blockId }
+            if (displayPos >= 0) {
+                val headerOffset = 1 + (if (note.reminderTime != null) 1 else 0)
+                try {
+                    listState.animateScrollToItem(headerOffset + displayPos)
+                } catch (_: Exception) {}
+            }
+            if (focusAndSelectBlock && match.isEditableTextBlock) {
+                delay(40)
+                try {
+                    focusRequesters[match.blockId]?.requestFocus()
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    LaunchedEffect(inNoteSearchQuery, searchMatches.size) {
+        if (inNoteSearchQuery.isEmpty() || searchMatches.isEmpty()) {
+            activeSearchMatchIndex = 0
+        } else {
+            val clamped = activeSearchMatchIndex.coerceIn(0, searchMatches.lastIndex)
+            activeSearchMatchIndex = clamped
+            val match = searchMatches[clamped]
+            if (match.isEditableTextBlock) {
+                pendingSelectionRange = Triple(match.blockId, match.startInContent, match.endInContent)
+            }
         }
     }
 
@@ -4799,46 +4759,142 @@ fun NoteEditorWorkspace(
                         .fillMaxWidth()
                         .statusBarsPadding()
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        IconButton(onClick = {
-                            isSearchingInNote = false
-                            inNoteSearchQuery = ""
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Cerrar búsqueda", tint = GeminiBlue)
-                        }
-                        
-                        OutlinedTextField(
-                            value = inNoteSearchQuery,
-                            onValueChange = { inNoteSearchQuery = it },
-                            placeholder = { Text("Buscar en esta nota...", color = TextSecondary, fontSize = 14.sp) },
-                            singleLine = true,
-                            leadingIcon = {
-                                Icon(Icons.Default.Search, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(18.dp))
-                            },
-                            trailingIcon = {
-                                if (inNoteSearchQuery.isNotEmpty()) {
-                                    IconButton(onClick = { inNoteSearchQuery = "" }) {
-                                        Icon(Icons.Default.Close, contentDescription = "Limpiar", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    isSearchingInNote = false
+                                    inNoteSearchQuery = ""
+                                    activeSearchMatchIndex = 0
+                                },
+                                modifier = Modifier.testTag("in_note_search_close_btn")
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Cerrar búsqueda", tint = GeminiBlue)
+                            }
+
+                            OutlinedTextField(
+                                value = inNoteSearchQuery,
+                                onValueChange = {
+                                    inNoteSearchQuery = it
+                                    activeSearchMatchIndex = 0
+                                },
+                                placeholder = { Text(appText("Buscar en esta nota...", "Search in this note..."), color = TextSecondary, fontSize = 14.sp) },
+                                singleLine = true,
+                                leadingIcon = {
+                                    Icon(Icons.Default.Search, contentDescription = null, tint = GeminiCyanAccent, modifier = Modifier.size(18.dp))
+                                },
+                                trailingIcon = {
+                                    if (inNoteSearchQuery.isNotEmpty()) {
+                                        IconButton(onClick = {
+                                            inNoteSearchQuery = ""
+                                            activeSearchMatchIndex = 0
+                                        }) {
+                                            Icon(Icons.Default.Close, contentDescription = "Limpiar", tint = TextSecondary, modifier = Modifier.size(16.dp))
+                                        }
                                     }
+                                },
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = TextPrimary,
+                                    unfocusedTextColor = TextPrimary,
+                                    focusedContainerColor = CosmicBackground,
+                                    unfocusedContainerColor = CosmicBackground,
+                                    focusedBorderColor = GeminiBlue,
+                                    unfocusedBorderColor = CosmicBorder
+                                ),
+                                shape = RoundedCornerShape(24.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("in_note_search_input")
+                            )
+                        }
+
+                        // Match counter ("3/10") + Up / Down match navigation right beneath the search input
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 56.dp, end = 12.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            val displayPos = if (searchMatches.isEmpty()) 0 else (activeSearchMatchIndex.coerceIn(0, searchMatches.lastIndex) + 1)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Surface(
+                                    color = if (searchMatches.isNotEmpty()) GeminiBlue.copy(alpha = 0.16f) else CosmicBackground.copy(alpha = 0.5f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(1.dp, if (searchMatches.isNotEmpty()) GeminiBlue.copy(alpha = 0.45f) else CosmicBorder)
+                                ) {
+                                    Text(
+                                        text = "$displayPos/${searchMatches.size}",
+                                        color = if (searchMatches.isNotEmpty()) GeminiBlue else TextSecondary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier
+                                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                                            .testTag("in_note_search_counter")
+                                    )
                                 }
-                            },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = TextPrimary,
-                                unfocusedTextColor = TextPrimary,
-                                focusedContainerColor = CosmicBackground,
-                                unfocusedContainerColor = CosmicBackground,
-                                focusedBorderColor = GeminiBlue,
-                                unfocusedBorderColor = CosmicBorder
-                            ),
-                            shape = RoundedCornerShape(24.dp),
-                            modifier = Modifier.weight(1f)
-                        )
+                                if (inNoteSearchQuery.isNotEmpty() && searchMatches.isEmpty()) {
+                                    Text(
+                                        text = appText("Sin coincidencias", "No matches"),
+                                        color = TextSecondary,
+                                        fontSize = 11.5.sp
+                                    )
+                                }
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                FilledTonalIconButton(
+                                    onClick = { navigateToSearchMatch(activeSearchMatchIndex - 1, focusAndSelectBlock = true) },
+                                    enabled = searchMatches.isNotEmpty(),
+                                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                        containerColor = CosmicSurfaceVariant,
+                                        contentColor = GeminiBlue,
+                                        disabledContainerColor = CosmicBackground.copy(alpha = 0.45f),
+                                        disabledContentColor = TextTertiary
+                                    ),
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .testTag("in_note_search_prev_btn")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.KeyboardArrowUp,
+                                        contentDescription = appText("Coincidencia anterior", "Previous match"),
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                FilledTonalIconButton(
+                                    onClick = { navigateToSearchMatch(activeSearchMatchIndex + 1, focusAndSelectBlock = true) },
+                                    enabled = searchMatches.isNotEmpty(),
+                                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                        containerColor = CosmicSurfaceVariant,
+                                        contentColor = GeminiBlue,
+                                        disabledContainerColor = CosmicBackground.copy(alpha = 0.45f),
+                                        disabledContentColor = TextTertiary
+                                    ),
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .testTag("in_note_search_next_btn")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.KeyboardArrowDown,
+                                        contentDescription = appText("Siguiente coincidencia", "Next match"),
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             } else {
@@ -4847,7 +4903,7 @@ fun NoteEditorWorkspace(
                     title = { Text(appText("Editor de Nota", "Note Editor"), color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
                     navigationIcon = {
                         IconButton(onClick = {
-                            onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                            commitSaveNow()
                             onDismiss()
                         }, modifier = Modifier.testTag("back_editor_btn")) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = appText("Atrás", "Back"), tint = GeminiBlue)
@@ -4856,11 +4912,11 @@ fun NoteEditorWorkspace(
                     actions = {
                         IconButton(onClick = {
                             isSearchingInNote = true
-                        }) {
+                        }, modifier = Modifier.testTag("open_in_note_search_btn")) {
                             Icon(Icons.Default.Search, contentDescription = appText("Buscar en nota", "Search in note"), tint = GeminiBlue)
                         }
                         IconButton(onClick = {
-                            onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                            commitSaveNow()
                             Toast.makeText(context, savedOkMsg, Toast.LENGTH_SHORT).show()
                         }, modifier = Modifier.testTag("save_note_editor_btn")) {
                             Icon(Icons.Default.Save, contentDescription = appText("Guardar", "Save"), tint = GeminiBlue)
@@ -4868,7 +4924,10 @@ fun NoteEditorWorkspace(
                         
                         var showEditorMenu by remember { mutableStateOf(false) }
                         Box {
-                            IconButton(onClick = { showEditorMenu = true }) {
+                            IconButton(
+                                onClick = { showEditorMenu = true },
+                                modifier = Modifier.testTag("editor_more_menu_btn")
+                            ) {
                                 Icon(Icons.Default.MoreVert, contentDescription = appText("Más opciones", "More options"), tint = GeminiBlue)
                             }
                             DropdownMenu(
@@ -4877,12 +4936,28 @@ fun NoteEditorWorkspace(
                                 modifier = Modifier.background(CosmicSurface)
                             ) {
                                 DropdownMenuItem(
+                                    text = { Text(appText("Vista de PDF", "PDF Preview"), color = TextPrimary) },
+                                    leadingIcon = { Icon(Icons.Default.Visibility, contentDescription = null, tint = GeminiBlue) },
+                                    onClick = {
+                                        showEditorMenu = false
+                                        commitSaveNow()
+                                        showPdfPreview = true
+                                    },
+                                    modifier = Modifier.testTag("menu_pdf_preview_item")
+                                )
+                                DropdownMenuItem(
                                     text = { Text(appText("Exportar como PDF", "Export as PDF"), color = TextPrimary) },
                                     leadingIcon = { Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = GeminiBlue) },
                                     onClick = {
                                         showEditorMenu = false
-                                        exportNoteToPdf(context, note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
-                                    }
+                                        commitSaveNow()
+                                        PdfExportManager.exportAndShareNotePdf(
+                                            context = context,
+                                            note = note.copy(title = title, content = serializeBlocks(blocks), tags = tags),
+                                            config = pdfConfig
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("menu_export_pdf_item")
                                 )
                             }
                         }
@@ -5007,13 +5082,17 @@ fun NoteEditorWorkspace(
                                         onClick = {
                                             val trimmed = floatingAiInstruction.trim()
                                             if (trimmed.isNotEmpty()) {
+                                                commitSaveNow()
                                                 if (activeParagraph != null && activeParagraph.content.isNotBlank() && onAiModifyParagraph != null) {
+                                                    val targetBlockId = activeParagraph.id
                                                     onAiModifyParagraph(selectedBlockIndex, activeParagraph.content, trimmed) { newText ->
-                                                        pushHistory()
-                                                        if (selectedBlockIndex in blocks.indices) {
-                                                            val b = blocks[selectedBlockIndex]
+                                                        val targetIdx = blocks.indexOfFirst { it.id == targetBlockId }
+                                                        if (targetIdx >= 0) {
+                                                            val b = blocks[targetIdx]
                                                             if (b is EditorBlock.Text) {
-                                                                blocks[selectedBlockIndex] = b.copy(content = newText)
+                                                                pushHistory()
+                                                                blocks[targetIdx] = b.copy(content = newText)
+                                                                historyApplyVersion++
                                                                 updateBlocksAndSave(null)
                                                             }
                                                         }
@@ -5085,13 +5164,17 @@ fun NoteEditorWorkspace(
                                 items(paragraphPrompts) { (label, promptText) ->
                                     AssistChip(
                                         onClick = {
+                                            commitSaveNow()
                                             if (onAiModifyParagraph != null) {
+                                                val targetBlockId = activeParagraph.id
                                                 onAiModifyParagraph(selectedBlockIndex, activeParagraph.content, promptText) { newText ->
-                                                    pushHistory()
-                                                    if (selectedBlockIndex in blocks.indices) {
-                                                        val b = blocks[selectedBlockIndex]
+                                                    val targetIdx = blocks.indexOfFirst { it.id == targetBlockId }
+                                                    if (targetIdx >= 0) {
+                                                        val b = blocks[targetIdx]
                                                         if (b is EditorBlock.Text) {
-                                                            blocks[selectedBlockIndex] = b.copy(content = newText)
+                                                            pushHistory()
+                                                            blocks[targetIdx] = b.copy(content = newText)
+                                                            historyApplyVersion++
                                                             updateBlocksAndSave(null)
                                                         }
                                                     }
@@ -5121,6 +5204,7 @@ fun NoteEditorWorkspace(
                                 items(notePrompts) { (label, promptText) ->
                                     AssistChip(
                                         onClick = {
+                                            commitSaveNow()
                                             onAiModify(promptText)
                                         },
                                         label = { Text(label, fontSize = 11.sp, color = TextPrimary) },
@@ -5847,16 +5931,9 @@ fun NoteEditorWorkspace(
                             // Undo
                             item {
                                 IconButton(
-                                    onClick = {
-                                        if (undoStack.isNotEmpty()) {
-                                            redoStack.add(cloneBlocks(blocks))
-                                            val prev = undoStack.removeAt(undoStack.size - 1)
-                                            blocks.clear()
-                                            blocks.addAll(prev)
-                                            updateBlocksAndSave(null)
-                                        }
-                                    },
-                                    enabled = undoStack.isNotEmpty()
+                                    onClick = { performUndo() },
+                                    enabled = undoStack.isNotEmpty(),
+                                    modifier = Modifier.testTag("editor_undo_btn")
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Undo,
@@ -5868,16 +5945,9 @@ fun NoteEditorWorkspace(
                             // Redo
                             item {
                                 IconButton(
-                                    onClick = {
-                                        if (redoStack.isNotEmpty()) {
-                                            undoStack.add(cloneBlocks(blocks))
-                                            val next = redoStack.removeAt(redoStack.size - 1)
-                                            blocks.clear()
-                                            blocks.addAll(next)
-                                            updateBlocksAndSave(null)
-                                        }
-                                    },
-                                    enabled = redoStack.isNotEmpty()
+                                    onClick = { performRedo() },
+                                    enabled = redoStack.isNotEmpty(),
+                                    modifier = Modifier.testTag("editor_redo_btn")
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Redo,
@@ -5962,6 +6032,23 @@ fun NoteEditorWorkspace(
                                     Text(
                                         text = "∓",
                                         color = if (canInsert) TextPrimary else TextTertiary,
+                                        fontSize = 19.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            // Dividir párrafo desde cursor (↪)
+                            item {
+                                val canSplit = selectedBlockIndex in blocks.indices && blocks[selectedBlockIndex] is EditorBlock.Text
+                                IconButton(
+                                    onClick = { splitActiveParagraphAtCursor() },
+                                    enabled = canSplit,
+                                    modifier = Modifier.testTag("editor_split_paragraph_btn")
+                                ) {
+                                    Text(
+                                        text = "↪",
+                                        color = if (canSplit) TextPrimary else TextTertiary,
                                         fontSize = 19.sp,
                                         fontWeight = FontWeight.SemiBold
                                     )
@@ -6207,9 +6294,11 @@ fun NoteEditorWorkspace(
                         // Document Header Title - Borderless
                         TextField(
                             value = title,
-                            onValueChange = {
-                                title = it
-                                onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                            onValueChange = { newTitle ->
+                                if (newTitle != title) {
+                                    pushTypingHistoryBeforeChange("title", title, newTitle)
+                                    title = newTitle
+                                }
                             },
                             placeholder = { Text("Sin Título", color = TextTertiary, fontSize = 24.sp, fontWeight = FontWeight.Bold) },
                             colors = TextFieldDefaults.colors(
@@ -6230,9 +6319,11 @@ fun NoteEditorWorkspace(
                         // Tags - Borderless
                         TextField(
                             value = tags,
-                            onValueChange = {
-                                tags = it
-                                onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                            onValueChange = { newTags ->
+                                if (newTags != tags) {
+                                    pushTypingHistoryBeforeChange("tags", tags, newTags)
+                                    tags = newTags
+                                }
                             },
                             placeholder = { Text("Etiquetas (separadas por comas)", color = TextTertiary.copy(alpha = 0.5f), fontSize = 12.sp) },
                             colors = TextFieldDefaults.colors(
@@ -6291,24 +6382,12 @@ fun NoteEditorWorkspace(
                     key = { it.second.id },
                     contentType = { it.second::class.java.simpleName }
                 ) { (index, block) ->
-                        val matchesSearch = remember(inNoteSearchQuery, block) {
-                            if (inNoteSearchQuery.isEmpty()) false
-                            else {
-                                when (block) {
-                                    is EditorBlock.Text -> block.content.contains(inNoteSearchQuery, ignoreCase = true)
-                                    is EditorBlock.Table -> block.data.any { r -> r.any { c -> c.contains(inNoteSearchQuery, ignoreCase = true) } }
-                                    is EditorBlock.Image -> block.caption.contains(inNoteSearchQuery, ignoreCase = true)
-                                    is EditorBlock.Audio -> block.name.contains(inNoteSearchQuery, ignoreCase = true)
-                                    is EditorBlock.Video -> block.title.contains(inNoteSearchQuery, ignoreCase = true)
-                                    is EditorBlock.File -> block.name.contains(inNoteSearchQuery, ignoreCase = true)
-                                    is EditorBlock.Todo -> block.content.contains(inNoteSearchQuery, ignoreCase = true)
-                                    is EditorBlock.Callout -> block.content.contains(inNoteSearchQuery, ignoreCase = true)
-                                    is EditorBlock.Quote -> block.content.contains(inNoteSearchQuery, ignoreCase = true)
-                                    is EditorBlock.Code -> block.code.contains(inNoteSearchQuery, ignoreCase = true)
-                                    else -> false
-                                }
-                            }
-                        }
+                        val activeMatchForBlock = if (isSearchingInNote && searchMatches.isNotEmpty()) {
+                            val currentMatch = searchMatches.getOrNull(activeSearchMatchIndex)
+                            if (currentMatch != null && currentMatch.blockId == block.id) currentMatch else null
+                        } else null
+                        val matchesSearch = isSearchingInNote && inNoteSearchQuery.isNotEmpty() &&
+                            searchMatches.any { it.blockId == block.id }
 
                         Box(
                             modifier = Modifier
@@ -6322,12 +6401,17 @@ fun NoteEditorWorkspace(
                                     }
                                 )
                                 .then(
-                                    if (matchesSearch) {
-                                        Modifier
-                                            .background(GeminiBlue.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
-                                            .border(1.dp, GeminiBlue.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                                    when {
+                                        activeMatchForBlock != null -> Modifier
+                                            .background(GeminiBlue.copy(alpha = 0.28f), RoundedCornerShape(8.dp))
+                                            .border(1.5.dp, GeminiBlue, RoundedCornerShape(8.dp))
                                             .padding(6.dp)
-                                    } else Modifier
+                                        matchesSearch -> Modifier
+                                            .background(GeminiBlue.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
+                                            .border(1.dp, GeminiBlue.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+                                            .padding(6.dp)
+                                        else -> Modifier
+                                    }
                                 )
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
@@ -6455,21 +6539,29 @@ fun NoteEditorWorkspace(
                                                 mutableStateOf(TextFieldValue(text = initialText, selection = TextRange(sel)))
                                             }
 
-                                            LaunchedEffect(block.content, block.isCollapsed, block.isCollapsedHeader) {
+                                            var lastSyncedHistoryVersion by remember(block.id) { mutableIntStateOf(historyApplyVersion) }
+                                            LaunchedEffect(historyApplyVersion, block.content, block.isCollapsed, block.isCollapsedHeader) {
                                                 val visibleContent = if (block.isCollapsedHeader && block.isCollapsed) {
                                                     block.content.split("\n").firstOrNull() ?: ""
                                                 } else {
                                                     block.content
                                                 }
                                                 val expectedText = "\u200B" + visibleContent
-                                                if (tfValue.text != expectedText && !isFocused) {
+                                                val forceSyncFromHistory = lastSyncedHistoryVersion != historyApplyVersion
+                                                if (tfValue.text != expectedText && (!isFocused || forceSyncFromHistory)) {
                                                     val newSelStart = tfValue.selection.start.coerceIn(1, expectedText.length)
                                                     val newSelEnd = tfValue.selection.end.coerceIn(1, expectedText.length)
                                                     tfValue = tfValue.copy(
                                                         text = expectedText,
                                                         selection = TextRange(newSelStart, newSelEnd)
                                                     )
+                                                    if (isFocused) {
+                                                        activeTextBlockState = Triple(index, tfValue) { newTfv ->
+                                                            tfValue = newTfv
+                                                        }
+                                                    }
                                                 }
+                                                lastSyncedHistoryVersion = historyApplyVersion
                                             }
 
                                             LaunchedEffect(pendingCursorOffset) {
@@ -6478,15 +6570,36 @@ fun NoteEditorWorkspace(
                                                         val expectedOffset = offset + 1
                                                         val safeOffset = expectedOffset.coerceIn(1, tfValue.text.length)
                                                         tfValue = tfValue.copy(selection = TextRange(safeOffset))
+                                                        if (isFocused) {
+                                                            activeTextBlockState = Triple(index, tfValue) { newTfv ->
+                                                                tfValue = newTfv
+                                                            }
+                                                        }
                                                         pendingCursorOffset = null
+                                                    }
+                                                }
+                                            }
+
+                                            LaunchedEffect(pendingSelectionRange) {
+                                                pendingSelectionRange?.let { (targetId, startInContent, endInContent) ->
+                                                    if (targetId == block.id) {
+                                                        val selStart = (startInContent + 1).coerceIn(1, tfValue.text.length)
+                                                        val selEnd = (endInContent + 1).coerceIn(selStart, tfValue.text.length)
+                                                        tfValue = tfValue.copy(selection = TextRange(selStart, selEnd))
+                                                        if (isFocused) {
+                                                            activeTextBlockState = Triple(index, tfValue) { newTfv ->
+                                                                tfValue = newTfv
+                                                            }
+                                                        }
+                                                        pendingSelectionRange = null
                                                     }
                                                 }
                                             }
 
                                             LaunchedEffect(pendingTabInsertionTrigger) {
                                                 if (pendingTabInsertionTrigger == block.id) {
+                                                    pushHistory()
                                                     if (block.isBullet || block.isNumbered || block.isCollapsedHeader || block.indentLevel > 0 || tfValue.selection.start <= 1) {
-                                                        pushHistory()
                                                         val nextIndent = (block.indentLevel + 1).coerceAtMost(4)
                                                         if (index in blocks.indices) {
                                                             val b = blocks[index]
@@ -6494,7 +6607,7 @@ fun NoteEditorWorkspace(
                                                                 blocks[index] = b.copy(indentLevel = nextIndent)
                                                             }
                                                         }
-                                                        onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                                                        commitSaveNow()
                                                         pendingTabInsertionTrigger = null
                                                     } else {
                                                         val currentText = tfValue.text
@@ -6516,7 +6629,7 @@ fun NoteEditorWorkspace(
                                                                 blocks[index] = b.copy(content = textToSave)
                                                             }
                                                         }
-                                                        onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                                                        commitSaveNow()
                                                         pendingTabInsertionTrigger = null
                                                     }
                                                 }
@@ -6534,7 +6647,7 @@ fun NoteEditorWorkspace(
                                                                 blocks[index] = b.copy(indentLevel = prevIndent)
                                                             }
                                                         }
-                                                        onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                                                        commitSaveNow()
                                                     } else if (block.isBullet || block.isNumbered) {
                                                         // Si ya está en nivel 0 y se le quita el tabulador, regresar a texto normal
                                                         if (index in blocks.indices) {
@@ -6543,7 +6656,7 @@ fun NoteEditorWorkspace(
                                                                 blocks[index] = b.copy(isBullet = false, isNumbered = false, indentLevel = 0)
                                                             }
                                                         }
-                                                        onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                                                        commitSaveNow()
                                                     }
                                                     pendingShiftTabTrigger = null
                                                 }
@@ -6800,10 +6913,10 @@ fun NoteEditorWorkspace(
                                                                          if (index in blocks.indices) {
                                                                              val b = blocks[index]
                                                                              if (b is EditorBlock.Text) {
+                                                                                 pushTypingHistoryBeforeChange("block_${block.id}", b.content, textToSave)
                                                                                  blocks[index] = b.copy(content = textToSave)
                                                                              }
                                                                          }
-                                                                         // NO LONGER SAVING ON EVERY KEYSTROKE
                                                                      }
                                                                  }
                                                              }
@@ -6813,7 +6926,9 @@ fun NoteEditorWorkspace(
                                                             isBlockBold = block.isBold,
                                                             isBlockItalic = block.isItalic,
                                                             isBlockUnderline = block.isUnderline,
-                                                            blockColor = textStyle.color
+                                                            blockColor = textStyle.color,
+                                                            searchQuery = if (isSearchingInNote) inNoteSearchQuery else "",
+                                                            activeSearchRangeInRaw = activeMatchForBlock?.let { (it.startInContent + 1)..it.endInContent }
                                                         ),
                                                         modifier = Modifier
                                                             .weight(1f)
@@ -6829,8 +6944,7 @@ fun NoteEditorWorkspace(
                                                                     if (activeTextBlockState?.first == index) {
                                                                         activeTextBlockState = null
                                                                     }
-                                                                    // Save when focus is lost
-                                                                    onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
+                                                                    flushAutoSaveIfDirty()
                                                                 }
                                                             }
 
@@ -6866,7 +6980,22 @@ fun NoteEditorWorkspace(
                                 TableBlockView(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
-                                        pushHistory()
+                                        val isTextOnlyChange = block.rows == updatedBlock.rows &&
+                                            block.cols == updatedBlock.cols &&
+                                            block.headerColor == updatedBlock.headerColor &&
+                                            block.cellColor == updatedBlock.cellColor &&
+                                            block.borderColor == updatedBlock.borderColor &&
+                                            block.tableWidth == updatedBlock.tableWidth &&
+                                            block.margin == updatedBlock.margin
+                                        if (isTextOnlyChange) {
+                                            pushTypingHistoryBeforeChange(
+                                                "table_${block.id}",
+                                                block.data.joinToString("\n") { it.joinToString("|") },
+                                                updatedBlock.data.joinToString("\n") { it.joinToString("|") }
+                                            )
+                                        } else {
+                                            pushHistory()
+                                        }
                                         if (index in blocks.indices) blocks[index] = updatedBlock
                                         updateBlocksAndSave(null)
                                     },
@@ -6933,7 +7062,11 @@ fun NoteEditorWorkspace(
                                 TodoBlockView(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
-                                        pushHistory()
+                                        if (block.isChecked != updatedBlock.isChecked) {
+                                            pushHistory()
+                                        } else {
+                                            pushTypingHistoryBeforeChange("todo_${block.id}", block.content, updatedBlock.content)
+                                        }
                                         if (index in blocks.indices) blocks[index] = updatedBlock
                                         updateBlocksAndSave(null)
                                     },
@@ -6944,7 +7077,15 @@ fun NoteEditorWorkspace(
                                 CalloutBlockView(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
-                                        pushHistory()
+                                        val isTextOnly = block.emoji == updatedBlock.emoji &&
+                                            block.colorVariant == updatedBlock.colorVariant &&
+                                            block.bgColorHex == updatedBlock.bgColorHex &&
+                                            block.textColorHex == updatedBlock.textColorHex
+                                        if (isTextOnly) {
+                                            pushTypingHistoryBeforeChange("callout_${block.id}", block.content, updatedBlock.content)
+                                        } else {
+                                            pushHistory()
+                                        }
                                         if (index in blocks.indices) blocks[index] = updatedBlock
                                         updateBlocksAndSave(null)
                                     },
@@ -6955,7 +7096,7 @@ fun NoteEditorWorkspace(
                                 QuoteBlockView(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
-                                        pushHistory()
+                                        pushTypingHistoryBeforeChange("quote_${block.id}", block.content, updatedBlock.content)
                                         if (index in blocks.indices) blocks[index] = updatedBlock
                                         updateBlocksAndSave(null)
                                     },
@@ -6972,7 +7113,14 @@ fun NoteEditorWorkspace(
                                 CodeBlockView(
                                     block = block,
                                     onBlockChange = { updatedBlock ->
-                                        pushHistory()
+                                        val isCodeOnly = block.language == updatedBlock.language &&
+                                            block.bgColorHex == updatedBlock.bgColorHex &&
+                                            block.textColorHex == updatedBlock.textColorHex
+                                        if (isCodeOnly) {
+                                            pushTypingHistoryBeforeChange("code_${block.id}", block.code, updatedBlock.code)
+                                        } else {
+                                            pushHistory()
+                                        }
                                         if (index in blocks.indices) blocks[index] = updatedBlock
                                         updateBlocksAndSave(null)
                                     },
@@ -7121,6 +7269,27 @@ fun NoteEditorWorkspace(
                     showTextColorPicker = false 
                     showFormattingPanel = true
                 }
+            )
+        }
+
+        if (showPdfPreview) {
+            PdfPreviewScreen(
+                note = note.copy(title = title, content = serializeBlocks(blocks), tags = tags),
+                initialConfig = pdfConfig,
+                onConfigChange = { updated ->
+                    pdfConfig = updated
+                    pdfConfigStore.save(updated)
+                },
+                onExportPdf = { finalConfig ->
+                    pdfConfig = finalConfig
+                    pdfConfigStore.save(finalConfig)
+                    PdfExportManager.exportAndShareNotePdf(
+                        context = context,
+                        note = note.copy(title = title, content = serializeBlocks(blocks), tags = tags),
+                        config = finalConfig
+                    )
+                },
+                onDismiss = { showPdfPreview = false }
             )
         }
     }
@@ -7834,13 +8003,23 @@ class MarkdownVisualTransformation(
     private val isBlockBold: Boolean = false,
     private val isBlockItalic: Boolean = false,
     private val isBlockUnderline: Boolean = false,
-    private val blockColor: Color = Color.White
+    private val blockColor: Color = Color.White,
+    private val searchQuery: String = "",
+    private val activeSearchRangeInRaw: IntRange? = null,
+    private val allMatchHighlightColor: Color = Color(0x45907CFF),
+    private val activeMatchHighlightColor: Color = Color(0xAA907CFF)
 ) : androidx.compose.ui.text.input.VisualTransformation {
 
     override fun filter(text: AnnotatedString): androidx.compose.ui.text.input.TransformedText {
         val raw = text.text
         if (raw.isEmpty()) {
             return androidx.compose.ui.text.input.TransformedText(text, androidx.compose.ui.text.input.OffsetMapping.Identity)
+        }
+
+        val searchRangesInRaw = if (searchQuery.isNotEmpty()) {
+            findAllOccurrencesIgnoreCase(raw, searchQuery)
+        } else {
+            emptyList()
         }
 
         data class HiddenTag(val start: Int, val end: Int)
@@ -7922,6 +8101,22 @@ class MarkdownVisualTransformation(
                 if (isBlockUnderline && raw.isNotEmpty()) addStyle(SpanStyle(textDecoration = TextDecoration.Underline), 0, raw.length)
                 if (isBlockBold && raw.isNotEmpty()) addStyle(SpanStyle(fontWeight = FontWeight.Bold), 0, raw.length)
                 if (isBlockItalic && raw.isNotEmpty()) addStyle(SpanStyle(fontStyle = FontStyle.Italic), 0, raw.length)
+                for (range in searchRangesInRaw) {
+                    val s = range.first.coerceIn(0, raw.length)
+                    val e = (range.last + 1).coerceIn(0, raw.length)
+                    if (s < e) {
+                        val isActive = activeSearchRangeInRaw != null && range == activeSearchRangeInRaw
+                        addStyle(
+                            SpanStyle(
+                                background = if (isActive) activeMatchHighlightColor else allMatchHighlightColor,
+                                color = if (isActive) Color.White else Color.Unspecified,
+                                fontWeight = if (isActive) FontWeight.Bold else null
+                            ),
+                            s,
+                            e
+                        )
+                    }
+                }
             }
             return androidx.compose.ui.text.input.TransformedText(annotated, androidx.compose.ui.text.input.OffsetMapping.Identity)
         }
@@ -7990,6 +8185,23 @@ class MarkdownVisualTransformation(
                 val transEnd = origToTrans.getOrElse(st.endInRaw) { transformedText.length }.coerceIn(0, transformedText.length)
                 if (transStart < transEnd) {
                     addStyle(st.style, transStart, transEnd)
+                }
+            }
+            for (range in searchRangesInRaw) {
+                val rawEnd = (range.last + 1).coerceIn(0, raw.length)
+                val transStart = origToTrans.getOrElse(range.first) { 0 }.coerceIn(0, transformedText.length)
+                val transEnd = origToTrans.getOrElse(rawEnd) { transformedText.length }.coerceIn(0, transformedText.length)
+                if (transStart < transEnd) {
+                    val isActive = activeSearchRangeInRaw != null && range == activeSearchRangeInRaw
+                    addStyle(
+                        SpanStyle(
+                            background = if (isActive) activeMatchHighlightColor else allMatchHighlightColor,
+                            color = if (isActive) Color.White else Color.Unspecified,
+                            fontWeight = if (isActive) FontWeight.Bold else null
+                        ),
+                        transStart,
+                        transEnd
+                    )
                 }
             }
         }

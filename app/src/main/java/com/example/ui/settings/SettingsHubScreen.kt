@@ -400,7 +400,7 @@ fun SettingsHubScreen(
                             HorizontalDivider(color = CosmicBorder.copy(alpha = 0.5f))
                             Spacer(modifier = Modifier.height(10.dp))
                             Text(
-                                text = "UTK Notes · v1.8.03",
+                                text = "UTK Notes · v1.9.01",
                                 color = TextSecondary,
                                 fontSize = 12.sp,
                                 modifier = Modifier.padding(horizontal = 8.dp)

@@ -21,7 +21,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bolt
@@ -57,6 +59,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -492,7 +495,7 @@ fun EngineSettingsScreen(
 }
 
 @Composable
-private fun ExternalProviderEngineCard(
+internal fun ExternalProviderEngineCard(
     provider: ExternalAiProvider,
     isActive: Boolean,
     state: AiApiSettingsState,
@@ -506,6 +509,14 @@ private fun ExternalProviderEngineCard(
     var revealKey by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
     val isValidating = state.validationState is ApiKeyValidationState.Validating
+    val isConnectionValid = state.validationState is ApiKeyValidationState.Valid ||
+        (state.hasApiKey && state.isConnectionVerified)
+
+    LaunchedEffect(isConnectionValid) {
+        if (!isConnectionValid) {
+            showModels = false
+        }
+    }
 
     Surface(
         color = if (isActive) CosmicSurface else CosmicSurfaceVariant.copy(alpha = 0.55f),
@@ -558,10 +569,13 @@ private fun ExternalProviderEngineCard(
                         }
                     }
                     Text(
-                        text = if (state.hasApiKey) {
-                            "${appText("Modelo", "Model")}: ${state.selectedModel} · ${state.maskedKeyPreview}"
-                        } else {
-                            appText("Conecta tu clave (${provider.keyHint})", "Connect your API key (${provider.keyHint})")
+                        text = when {
+                            isConnectionValid -> "${appText("Modelo", "Model")}: ${state.selectedModel} · ${state.maskedKeyPreview}"
+                            state.hasApiKey -> appText(
+                                "Clave guardada (${state.maskedKeyPreview}) · Valida para ver modelos",
+                                "Key saved (${state.maskedKeyPreview}) · Verify to view models"
+                            )
+                            else -> appText("Conecta tu clave (${provider.keyHint})", "Connect your API key (${provider.keyHint})")
                         },
                         color = TextSecondary,
                         fontSize = 11.5.sp,
@@ -683,87 +697,131 @@ private fun ExternalProviderEngineCard(
                         else -> Unit
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Surface(
-                        color = CosmicBackground.copy(alpha = 0.45f),
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, CosmicBorder),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showModels = !showModels }
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = appText("Modelo seleccionado", "Selected model"),
-                                    color = TextSecondary,
-                                    fontSize = 11.sp
-                                )
-                                Text(
-                                    text = state.selectedModel,
-                                    color = TextPrimary,
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 13.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            Icon(
-                                imageVector = if (showModels) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = null,
-                                tint = TextSecondary
-                            )
-                        }
-                    }
-
-                    AnimatedVisibility(visible = showModels) {
+                    AnimatedVisibility(visible = isConnectionValid) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(max = 220.dp)
-                                .padding(top = 6.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                .padding(top = 10.dp)
+                                .testTag("engine_${provider.id}_model_selector_section")
                         ) {
-                            state.discoveredModels.take(12).forEach { model ->
-                                val selected = model.id == state.selectedModel
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = appText("Modelos disponibles (${provider.displayName})", "Available models (${provider.displayName})"),
+                                    color = TextPrimary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
                                 Surface(
-                                    color = if (selected) GeminiBlue.copy(alpha = 0.16f) else CosmicSurfaceVariant.copy(alpha = 0.5f),
-                                    shape = RoundedCornerShape(10.dp),
-                                    border = BorderStroke(1.dp, if (selected) GeminiBlue else CosmicBorder.copy(alpha = 0.5f)),
+                                    color = GeminiBlue.copy(alpha = 0.16f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = appText("${state.discoveredModels.size} disponibles", "${state.discoveredModels.size} available"),
+                                        color = GeminiBlue,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            Surface(
+                                color = CosmicBackground.copy(alpha = 0.45f),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, CosmicBorder),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { showModels = !showModels }
+                                    .testTag("engine_${provider.id}_model_picker")
+                            ) {
+                                Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clickable {
-                                            onSelectModel(model.id)
-                                            showModels = false
-                                        }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = model.displayName.ifBlank { model.id },
-                                            color = if (selected) GeminiBlue else TextPrimary,
-                                            fontSize = 12.5.sp,
-                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                            modifier = Modifier.weight(1f),
+                                            text = appText("Modelo seleccionado", "Selected model"),
+                                            color = TextSecondary,
+                                            fontSize = 11.sp
+                                        )
+                                        Text(
+                                            text = state.selectedModel,
+                                            color = TextPrimary,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 13.sp,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
-                                        if (selected) {
-                                            Icon(
-                                                imageVector = Icons.Default.CheckCircle,
-                                                contentDescription = null,
-                                                tint = GeminiBlue,
-                                                modifier = Modifier.size(16.dp)
-                                            )
+                                    }
+                                    Icon(
+                                        imageVector = if (showModels) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = null,
+                                        tint = TextSecondary
+                                    )
+                                }
+                            }
+
+                            AnimatedVisibility(visible = showModels) {
+                                val modelsContainerModifier = if (state.discoveredModels.size > 6) {
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 260.dp)
+                                        .verticalScroll(rememberScrollState())
+                                        .padding(top = 6.dp)
+                                } else {
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 6.dp)
+                                }
+                                Column(
+                                    modifier = modelsContainerModifier,
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    state.discoveredModels.forEach { model ->
+                                        val selected = model.id == state.selectedModel
+                                        Surface(
+                                            onClick = {
+                                                onSelectModel(model.id)
+                                                showModels = false
+                                            },
+                                            color = if (selected) GeminiBlue.copy(alpha = 0.16f) else CosmicSurfaceVariant.copy(alpha = 0.5f),
+                                            shape = RoundedCornerShape(10.dp),
+                                            border = BorderStroke(1.dp, if (selected) GeminiBlue else CosmicBorder.copy(alpha = 0.5f)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("engine_${provider.id}_model_option_${model.id}")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = model.displayName.ifBlank { model.id },
+                                                    color = if (selected) GeminiBlue else TextPrimary,
+                                                    fontSize = 12.5.sp,
+                                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                                    modifier = Modifier.weight(1f),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                if (selected) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.CheckCircle,
+                                                        contentDescription = null,
+                                                        tint = GeminiBlue,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }

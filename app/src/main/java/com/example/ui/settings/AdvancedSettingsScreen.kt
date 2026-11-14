@@ -315,7 +315,7 @@ fun AdvancedSettingsScreen(
                             }
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = "UTK Notes v1.8.03 · Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})",
+                                text = "UTK Notes v1.9.01 · Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})",
                                 color = TextSecondary,
                                 fontSize = 12.5.sp
                             )

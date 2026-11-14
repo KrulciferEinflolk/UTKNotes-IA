@@ -17,8 +17,8 @@ android {
     applicationId = "utk.notes.gemini"
     minSdk = 24
     targetSdk = 36
-    versionCode = 18
-    versionName = "1.8.03"
+    versionCode = 19
+    versionName = "1.9.01"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
