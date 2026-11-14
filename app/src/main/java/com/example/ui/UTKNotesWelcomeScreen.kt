@@ -279,7 +279,10 @@ fun UTKNotesWelcomeScreen(
                     }
                     
                     Text(
-                        text = "Tu biblioteca inteligente de notas y resúmenes automáticos respaldada de manera segura en la nube.",
+                        text = appText(
+                            "Tu biblioteca inteligente de notas y resúmenes automáticos respaldada de manera segura en la nube.",
+                            "Your smart notes library and automatic summaries safely backed up in the cloud."
+                        ),
                         fontSize = 15.sp,
                         color = TextSecondary,
                         textAlign = TextAlign.Center,
@@ -322,7 +325,7 @@ fun UTKNotesWelcomeScreen(
                             )
                             Spacer(modifier = Modifier.width(12.dp))
                             Text(
-                                text = "Iniciar sesión con Google",
+                                text = appText("Iniciar sesión con Google", "Sign in with Google"),
                                 color = Color(0xFF1F1F1F),
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold
@@ -332,9 +335,10 @@ fun UTKNotesWelcomeScreen(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
+                    val offlineToastMsg = appText("Iniciando en Modo Local (offline)", "Starting in Local Mode (offline)")
                     OutlinedButton(
                         onClick = {
-                            Toast.makeText(context, "Iniciando en Modo Local (offline)", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, offlineToastMsg, Toast.LENGTH_SHORT).show()
                             viewModel.syncManager.connectDrive("offline")
                         },
                         modifier = Modifier
@@ -347,7 +351,7 @@ fun UTKNotesWelcomeScreen(
                         shape = RoundedCornerShape(25.dp)
                     ) {
                         Text(
-                            text = "Omitir y Usar Modo Local (Offline)",
+                            text = appText("Omitir y Usar Modo Local (Offline)", "Skip & Use Local Mode (Offline)"),
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Medium
                         )
@@ -356,7 +360,10 @@ fun UTKNotesWelcomeScreen(
                     Spacer(modifier = Modifier.height(16.dp))
 
                     Text(
-                        text = "Tus datos se guardarán de forma segura en tu cuenta personal de Google Drive.",
+                        text = appText(
+                            "Tus datos se guardarán de forma segura en tu cuenta personal de Google Drive.",
+                            "Your data will be safely stored in your personal Google Drive account."
+                        ),
                         fontSize = 12.sp,
                         color = TextTertiary,
                         textAlign = TextAlign.Center,

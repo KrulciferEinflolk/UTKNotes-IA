@@ -221,4 +221,12 @@ class CustomizationUiRobolectricTest {
 
         assertEquals("Montserrat", chosenFont)
     }
+
+    @Test
+    fun `CreationLab palette tokens match Cosmic Purple base palette`() {
+        assertEquals(com.example.ui.theme.CosmicBackground, com.example.ui.creationlab.VyianoraDarkBackground)
+        assertEquals(com.example.ui.theme.CosmicSurface, com.example.ui.creationlab.VyianoraSurface)
+        assertEquals(com.example.ui.theme.CosmicBorder, com.example.ui.creationlab.VyianoraBorder)
+        assertEquals(com.example.ui.theme.GeminiBlue, com.example.ui.creationlab.VyianoraCyan)
+    }
 }

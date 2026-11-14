@@ -276,15 +276,22 @@ class DriveSyncManager(
                     }
                 }
 
-                // Fetch final merged local data for this specific email to upload
-                val books = dao.getAllBooks(email)
+                // Fetch final merged local data for this specific email to upload, respecting per-book & per-note Drive filters
+                val driveFilter = com.example.data.local.settings.AppSettingsRepository(context).getDriveFilterSnapshot()
+                val books = dao.getAllBooks(email).filter { driveFilter.isBookSynced(it.id) }
+                val allowedBookIds = books.map { it.id }.toHashSet()
                 val pages = mutableListOf<PageEntity>()
                 for (book in books) {
                     pages.addAll(dao.getPagesForBook(book.id))
                 }
-                
-                // Process ALL notes owned by this email so attachments (images, drawings, audio, video) are uploaded
-                val rawNotes = dao.getAllNotes(email)
+                val pageToBookId = pages.associate { it.id to it.bookId }
+
+                // Process only notes enabled for Drive sync so excluded items stay strictly local
+                val rawNotes = dao.getAllNotes(email).filter { note ->
+                    val parentBookId = pageToBookId[note.pageId]
+                    val bookAllowed = parentBookId == null || parentBookId in allowedBookIds
+                    bookAllowed && driveFilter.isNoteSynced(note.id, parentBookId)
+                }
                 val notes = mutableListOf<NoteEntity>()
                 for (n in rawNotes) {
                     val updatedNote = uploadAttachmentsForNote(n)
@@ -634,6 +641,9 @@ class DriveSyncManager(
         if (!_isConnected.value) return@withContext note
         val email = _userEmail.value
         if (email.isNullOrEmpty() || email == "offline") return@withContext note
+        val driveFilter = com.example.data.local.settings.AppSettingsRepository(context).getDriveFilterSnapshot()
+        val parentBookId = database.notesDao().getPageById(note.pageId)?.bookId
+        if (!driveFilter.isNoteSynced(note.id, parentBookId)) return@withContext note
 
         // We need the token
         var token: String? = null
@@ -812,12 +822,19 @@ class DriveSyncManager(
         }
 
         val dao = database.notesDao()
-        val books = dao.getAllBooks(email)
+        val driveFilter = com.example.data.local.settings.AppSettingsRepository(context).getDriveFilterSnapshot()
+        val books = dao.getAllBooks(email).filter { driveFilter.isBookSynced(it.id) }
+        val allowedBookIds = books.map { it.id }.toHashSet()
         val pages = mutableListOf<PageEntity>()
         for (book in books) {
             pages.addAll(dao.getPagesForBook(book.id))
         }
-        val notes = dao.getAllNotes(email)
+        val pageToBookId = pages.associate { it.id to it.bookId }
+        val notes = dao.getAllNotes(email).filter { note ->
+            val parentBookId = pageToBookId[note.pageId]
+            val bookAllowed = parentBookId == null || parentBookId in allowedBookIds
+            bookAllowed && driveFilter.isNoteSynced(note.id, parentBookId)
+        }
         val chatSessions = dao.getAllChatSessions(email)
 
         val rootFolderId = syncDatabaseStructureToDrive(token, email, books, pages, notes, chatSessions)

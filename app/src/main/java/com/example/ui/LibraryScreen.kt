@@ -62,6 +62,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.draw.clipToBounds
 import com.example.ui.creationlab.CreationLabHostScreen
+import com.example.ui.settings.SettingsHubScreen
 
 enum class LibraryViewMode {
     Grid,
@@ -233,10 +234,11 @@ fun BookCustomizationDialog(
             .fillMaxWidth(0.95f)
             .fillMaxHeight(0.9f),
         confirmButton = {
+            val defaultBookName = appText("Nuevo Libro", "New Book")
             Button(
                 onClick = {
                     onConfirm(
-                        if (title.isBlank()) "Nuevo Libro" else title,
+                        if (title.isBlank()) defaultBookName else title,
                         selectedColorHex,
                         selectedTextColorHex,
                         coverUri,
@@ -248,7 +250,10 @@ fun BookCustomizationDialog(
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
             ) {
-                Text(if (editingBook != null) "Guardar" else "Crear Libro", color = GeminiOnPrimary)
+                Text(
+                    if (editingBook != null) appText("Guardar", "Save") else appText("Crear Libro", "Create Book"),
+                    color = GeminiOnPrimary
+                )
             }
         },
         dismissButton = {
@@ -259,19 +264,19 @@ fun BookCustomizationDialog(
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC0392B)),
                         modifier = Modifier.padding(end = 8.dp)
                     ) {
-                        Icon(Icons.Default.Delete, contentDescription = "Eliminar Libro", tint = Color.White, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Delete, contentDescription = appText("Eliminar Libro", "Delete Book"), tint = Color.White, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Eliminar", color = Color.White)
+                        Text(appText("Eliminar", "Delete"), color = Color.White)
                     }
                 }
                 TextButton(onClick = onDismiss) {
-                    Text("Cancelar", color = TextSecondary)
+                    Text(appText("Cancelar", "Cancel"), color = TextSecondary)
                 }
             }
         },
         title = {
             Text(
-                if (editingBook != null) "Personalizar Libro" else "Personalizar Nuevo Libro",
+                if (editingBook != null) appText("Personalizar Libro", "Customize Book") else appText("Personalizar Nuevo Libro", "Customize New Book"),
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,
                 color = TextPrimary
@@ -662,7 +667,7 @@ fun HomeCustomBottomBar(
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = Icons.Default.Search,
-                        contentDescription = "Buscar",
+                        contentDescription = appText("Buscar", "Search"),
                         tint = GeminiBlue,
                         modifier = Modifier.size(24.dp)
                     )
@@ -677,10 +682,10 @@ fun HomeCustomBottomBar(
                     .clip(RoundedCornerShape(24.dp))
                     .background(
                         Brush.horizontalGradient(
-                            listOf(Color(0xFF907CFF).copy(alpha = 0.18f), GeminiBlue.copy(alpha = 0.18f))
+                            listOf(GeminiBlue.copy(alpha = 0.18f), GeminiCyanAccent.copy(alpha = 0.18f))
                         )
                     )
-                    .border(1.2.dp, Color(0xFF907CFF).copy(alpha = 0.6f), RoundedCornerShape(24.dp))
+                    .border(1.2.dp, GeminiBlue.copy(alpha = 0.6f), RoundedCornerShape(24.dp))
                     .clickable {
                         viewModel.openChatbot()
                     }
@@ -694,11 +699,11 @@ fun HomeCustomBottomBar(
                     Icon(
                         imageVector = Icons.Default.AutoAwesome,
                         contentDescription = null,
-                        tint = Color(0xFF907CFF),
+                        tint = GeminiBlue,
                         modifier = Modifier.size(20.dp)
                     )
                     Text(
-                        text = "Pregúntale a la IA...",
+                        text = appText("Pregúntale a la IA...", "Ask AI..."),
                         color = TextPrimary,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
@@ -714,6 +719,7 @@ fun HomeCustomBottomBar(
                     modifier = Modifier
                         .size(48.dp)
                         .clip(CircleShape)
+                        .testTag("home_options_menu_button")
                         .clickable { showMenu = true },
                     color = CosmicSurfaceVariant,
                     border = BorderStroke(1.dp, CosmicBorder)
@@ -721,7 +727,7 @@ fun HomeCustomBottomBar(
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.Default.MoreVert,
-                            contentDescription = "Menú de opciones",
+                            contentDescription = appText("Menú de opciones", "Options menu"),
                             tint = GeminiBlue,
                             modifier = Modifier.size(24.dp)
                         )
@@ -736,7 +742,7 @@ fun HomeCustomBottomBar(
                         .border(1.dp, CosmicBorder, RoundedCornerShape(12.dp))
                 ) {
                     DropdownMenuItem(
-                        text = { Text("Comunidad", color = TextPrimary, fontWeight = FontWeight.Medium) },
+                        text = { Text(appText("Comunidad", "Community"), color = TextPrimary, fontWeight = FontWeight.Medium) },
                         leadingIcon = {
                             Icon(Icons.Default.People, contentDescription = null, tint = GeminiBlue)
                         },
@@ -747,7 +753,7 @@ fun HomeCustomBottomBar(
                     )
                     HorizontalDivider(color = CosmicBorder.copy(alpha = 0.5f))
                     DropdownMenuItem(
-                        text = { Text("Traductor", color = TextPrimary, fontWeight = FontWeight.Medium) },
+                        text = { Text(appText("Traductor", "Translator"), color = TextPrimary, fontWeight = FontWeight.Medium) },
                         leadingIcon = {
                             Icon(Icons.Default.Translate, contentDescription = null, tint = GeminiCyanAccent)
                         },
@@ -758,18 +764,19 @@ fun HomeCustomBottomBar(
                     )
                     HorizontalDivider(color = CosmicBorder.copy(alpha = 0.5f))
                     DropdownMenuItem(
-                        text = { Text("Ajustes", color = TextPrimary, fontWeight = FontWeight.Medium) },
+                        text = { Text(appText("Ajustes", "Settings"), color = TextPrimary, fontWeight = FontWeight.Medium) },
                         leadingIcon = {
                             Icon(Icons.Default.Settings, contentDescription = null, tint = GeminiCyanAccent)
                         },
                         onClick = {
                             showMenu = false
                             onOpenSettings()
-                        }
+                        },
+                        modifier = Modifier.testTag("menu_open_settings_item")
                     )
                     HorizontalDivider(color = CosmicBorder.copy(alpha = 0.5f))
                     DropdownMenuItem(
-                        text = { Text("Papelera", color = Color(0xFFFF5252), fontWeight = FontWeight.Medium) },
+                        text = { Text(appText("Papelera", "Trash"), color = Color(0xFFFF5252), fontWeight = FontWeight.Medium) },
                         leadingIcon = {
                             Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Color(0xFFFF5252))
                         },
@@ -797,8 +804,16 @@ fun LibraryMainScreen(viewModel: AetherViewModel, modifier: Modifier = Modifier)
     var showSettingsDialog by rememberSaveable { mutableStateOf(false) }
 
     if (showSettingsDialog) {
-        androidx.activity.compose.BackHandler { showSettingsDialog = false }
-        AppSettingsDialog(viewModel = viewModel, onDismiss = { showSettingsDialog = false })
+        Surface(
+            modifier = modifier.fillMaxSize(),
+            color = CosmicBackground
+        ) {
+            SettingsHubScreen(
+                viewModel = viewModel,
+                onBack = { showSettingsDialog = false }
+            )
+        }
+        return
     }
     
     if (showAddBookDialog) {
@@ -918,7 +933,7 @@ fun LibraryHomeScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Mi Biblioteca",
+                text = appText("Mi Biblioteca", "My Library"),
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
                 color = TextPrimary
@@ -926,7 +941,7 @@ fun LibraryHomeScreen(
             IconButton(onClick = onToggleViewMode) {
                 Icon(
                     imageVector = if (viewMode == LibraryViewMode.Grid) Icons.Default.ViewCarousel else Icons.Default.GridView,
-                    contentDescription = "Cambiar vista",
+                    contentDescription = appText("Cambiar vista", "Switch view"),
                     tint = GeminiBlue
                 )
             }
@@ -947,14 +962,17 @@ fun LibraryHomeScreen(
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = "La biblioteca está vacía",
+                        text = appText("La biblioteca está vacía", "Your library is empty"),
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Crea tu primer libro personalizado para empezar a organizar tus notas.",
+                        text = appText(
+                            "Crea tu primer libro personalizado para empezar a organizar tus notas.",
+                            "Create your first custom book to start organizing your notes."
+                        ),
                         fontSize = 13.sp,
                         color = TextSecondary,
                         textAlign = TextAlign.Center,
@@ -967,7 +985,7 @@ fun LibraryHomeScreen(
                     ) {
                         Icon(Icons.Default.Add, contentDescription = null, tint = GeminiOnPrimary)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Crear un Libro", color = GeminiOnPrimary)
+                        Text(appText("Crear un Libro", "Create Book"), color = GeminiOnPrimary)
                     }
                 }
             }
@@ -1278,7 +1296,7 @@ fun LibrarySearchScreen(viewModel: AetherViewModel, onBack: () -> Unit = {}) {
                 value = query,
                 onValueChange = { newValue -> viewModel.updateSearchQuery(newValue) },
                 modifier = Modifier.weight(1f).heightIn(min = 52.dp),
-                placeholder = { Text("Buscar libros, notas, contenido...") },
+                placeholder = { Text(appText("Buscar libros, notas, contenido...", "Search books, notes, content...")) },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = GeminiBlue) },
                 singleLine = true,
                 shape = RoundedCornerShape(16.dp),
@@ -1292,7 +1310,7 @@ fun LibrarySearchScreen(viewModel: AetherViewModel, onBack: () -> Unit = {}) {
         
         Spacer(modifier = Modifier.height(16.dp))
         
-        Text("Resultados de búsqueda", color = TextSecondary, fontSize = 14.sp)
+        Text(appText("Resultados de búsqueda", "Search results"), color = TextSecondary, fontSize = 14.sp)
         
         val books by viewModel.books.collectAsState()
         val pages by viewModel.pages.collectAsState()
@@ -1307,7 +1325,7 @@ fun LibrarySearchScreen(viewModel: AetherViewModel, onBack: () -> Unit = {}) {
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             if (filteredBooks.isNotEmpty()) {
-                item { Text("Libros", fontWeight = FontWeight.Bold, color = GeminiBlue) }
+                item { Text(appText("Libros", "Books"), fontWeight = FontWeight.Bold, color = GeminiBlue) }
                 items(filteredBooks.size) { i ->
                     val book = filteredBooks[i]
                     Card(
@@ -1319,7 +1337,7 @@ fun LibrarySearchScreen(viewModel: AetherViewModel, onBack: () -> Unit = {}) {
                 }
             }
             if (filteredPages.isNotEmpty()) {
-                item { Text("Páginas", fontWeight = FontWeight.Bold, color = GeminiBlue) }
+                item { Text(appText("Páginas", "Pages"), fontWeight = FontWeight.Bold, color = GeminiBlue) }
                 items(filteredPages.size) { i ->
                     val page = filteredPages[i]
                     Card(
@@ -1337,7 +1355,7 @@ fun LibrarySearchScreen(viewModel: AetherViewModel, onBack: () -> Unit = {}) {
                 }
             }
             if (filteredNotes.isNotEmpty()) {
-                item { Text("Notas", fontWeight = FontWeight.Bold, color = GeminiBlue) }
+                item { Text(appText("Notas", "Notes"), fontWeight = FontWeight.Bold, color = GeminiBlue) }
                 items(filteredNotes.size) { i ->
                     val note = filteredNotes[i]
                     Card(
@@ -1383,7 +1401,7 @@ fun LibraryCommunityScreen(onBack: () -> Unit = {}) {
             }
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = "Comunidad",
+                text = appText("Comunidad", "Community"),
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,
                 color = TextPrimary
@@ -1401,14 +1419,17 @@ fun LibraryCommunityScreen(onBack: () -> Unit = {}) {
                 Icon(Icons.Default.People, contentDescription = null, modifier = Modifier.size(64.dp), tint = GeminiBlue)
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    text = "Comunidad UTK",
+                    text = appText("Comunidad UTK", "UTK Community"),
                     fontSize = 22.sp,
                     fontWeight = FontWeight.Bold,
                     color = TextPrimary
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Gestión de notas compartidas y colaboración con otros usuarios.",
+                    text = appText(
+                        "Gestión de notas compartidas y colaboración con otros usuarios.",
+                        "Shared notes management and collaboration with other users."
+                    ),
                     color = TextSecondary,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(horizontal = 32.dp)
@@ -1434,93 +1455,11 @@ fun AddBookCard(onClick: () -> Unit) {
                 .clickable { onClick() },
             contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Default.Add, contentDescription = "Añadir Libro", tint = GeminiBlue, modifier = Modifier.size(48.dp))
+            Icon(Icons.Default.Add, contentDescription = appText("Añadir Libro", "Add Book"), tint = GeminiBlue, modifier = Modifier.size(48.dp))
         }
         Spacer(modifier = Modifier.height(16.dp))
-        Text("Nuevo Libro", color = GeminiBlue, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Text(appText("Nuevo Libro", "New Book"), color = GeminiBlue, fontSize = 16.sp, fontWeight = FontWeight.Bold)
     }
-}
-
-@Composable
-fun AppSettingsDialog(
-    viewModel: AetherViewModel,
-    onDismiss: () -> Unit
-) {
-    val scope = rememberCoroutineScope()
-    val currentEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
-    val modelDownloadStatus by viewModel.modelVerifier.status.collectAsStateWithLifecycle()
-    val llmModelState by viewModel.localLlm.modelState.collectAsStateWithLifecycle()
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-        modifier = Modifier
-            .fillMaxWidth(0.94f)
-            .widthIn(max = 560.dp),
-        containerColor = CosmicSurfaceVariant,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Settings, contentDescription = null, tint = GeminiBlue, modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Ajustes y Configuración", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            }
-        },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
-                Text("Cuenta actual:", color = TextSecondary, fontSize = 13.sp)
-                Text(currentEmail ?: "No has iniciado sesión", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                AuraModelSelectorCard(viewModel = viewModel)
-
-                if (currentEmail != null && currentEmail != "offline") {
-                    Spacer(modifier = Modifier.height(14.dp))
-                    OutlinedButton(
-                        onClick = {
-                            viewModel.createDriveDatabaseStructure()
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = GeminiBlue),
-                        border = BorderStroke(1.dp, GeminiBlue)
-                    ) {
-                        Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp), tint = GeminiBlue)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Sincronizar carpetas en Drive", fontSize = 12.sp)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-                HorizontalDivider(color = CosmicBorder.copy(alpha = 0.5f))
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    text = "UTK Notes • Versión 1.8.03",
-                    color = TextSecondary,
-                    fontSize = 12.sp,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = onDismiss,
-                colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
-            ) {
-                Text("Cerrar", color = GeminiOnPrimary)
-            }
-        },
-        dismissButton = {
-            if (currentEmail != null && currentEmail != "offline") {
-                TextButton(onClick = {
-                    viewModel.syncManager.disconnectDrive()
-                    onDismiss()
-                }) {
-                    Text("Cerrar Sesión", color = Color.Red)
-                }
-            }
-        }
-    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1544,11 +1483,14 @@ fun TrashScreen(
             onDismissRequest = { showConfirmEmptyDialog = false },
             containerColor = CosmicSurfaceVariant,
             title = {
-                Text("¿Vaciar papelera?", color = TextPrimary, fontWeight = FontWeight.Bold)
+                Text(appText("¿Vaciar papelera?", "Empty trash?"), color = TextPrimary, fontWeight = FontWeight.Bold)
             },
             text = {
                 Text(
-                    "Esta acción eliminará de forma permanente todos los libros y notas que están en la papelera. No podrás recuperarlos.",
+                    appText(
+                        "Esta acción eliminará de forma permanente todos los libros y notas que están en la papelera. No podrás recuperarlos.",
+                        "This action will permanently delete all books and notes in the trash. You won't be able to recover them."
+                    ),
                     color = TextSecondary,
                     fontSize = 14.sp
                 )
@@ -1561,12 +1503,12 @@ fun TrashScreen(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252))
                 ) {
-                    Text("Eliminar todo", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text(appText("Eliminar todo", "Delete all"), color = Color.White, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showConfirmEmptyDialog = false }) {
-                    Text("Cancelar", color = TextSecondary)
+                    Text(appText("Cancelar", "Cancel"), color = TextSecondary)
                 }
             }
         )
@@ -1587,7 +1529,7 @@ fun TrashScreen(
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = "Papelera",
+                            text = appText("Papelera", "Trash"),
                             color = TextPrimary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 20.sp
@@ -1598,7 +1540,7 @@ fun TrashScreen(
                     IconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Default.ArrowBack,
-                            contentDescription = "Volver al inicio",
+                            contentDescription = appText("Volver al inicio", "Back to home"),
                             tint = TextPrimary
                         )
                     }
@@ -1614,7 +1556,7 @@ fun TrashScreen(
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "Vaciar",
+                                text = appText("Vaciar", "Empty"),
                                 color = Color(0xFFFF5252),
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
@@ -1642,7 +1584,7 @@ fun TrashScreen(
                 FilterChip(
                     selected = selectedFilter == 0,
                     onClick = { selectedFilter = 0 },
-                    label = { Text("Todos (${deletedBooks.size + deletedNotes.size})") },
+                    label = { Text(appText("Todos (${deletedBooks.size + deletedNotes.size})", "All (${deletedBooks.size + deletedNotes.size})")) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = GeminiBlue.copy(alpha = 0.2f),
                         selectedLabelColor = GeminiBlue,
@@ -1652,7 +1594,7 @@ fun TrashScreen(
                 FilterChip(
                     selected = selectedFilter == 1,
                     onClick = { selectedFilter = 1 },
-                    label = { Text("Libros (${deletedBooks.size})") },
+                    label = { Text(appText("Libros (${deletedBooks.size})", "Books (${deletedBooks.size})")) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = GeminiBlue.copy(alpha = 0.2f),
                         selectedLabelColor = GeminiBlue,
@@ -1662,7 +1604,7 @@ fun TrashScreen(
                 FilterChip(
                     selected = selectedFilter == 2,
                     onClick = { selectedFilter = 2 },
-                    label = { Text("Notas (${deletedNotes.size})") },
+                    label = { Text(appText("Notas (${deletedNotes.size})", "Notes (${deletedNotes.size})")) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = GeminiBlue.copy(alpha = 0.2f),
                         selectedLabelColor = GeminiBlue,
@@ -1705,14 +1647,17 @@ fun TrashScreen(
                         }
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
-                            text = "La papelera está vacía",
+                            text = appText("La papelera está vacía", "Trash is empty"),
                             color = TextPrimary,
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 17.sp
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Los libros o notas que elimines aparecerán aquí.",
+                            text = appText(
+                                "Los libros o notas que elimines aparecerán aquí.",
+                                "Deleted books or notes will appear here."
+                            ),
                             color = TextSecondary,
                             fontSize = 13.sp,
                             textAlign = TextAlign.Center
@@ -1728,7 +1673,7 @@ fun TrashScreen(
                     if (showBooks && deletedBooks.isNotEmpty()) {
                         item {
                             Text(
-                                text = "Libros eliminados (${deletedBooks.size})",
+                                text = appText("Libros eliminados (${deletedBooks.size})", "Deleted books (${deletedBooks.size})"),
                                 color = GeminiBlue,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp,
@@ -1814,7 +1759,7 @@ fun TrashScreen(
                     if (showNotes && deletedNotes.isNotEmpty()) {
                         item {
                             Text(
-                                text = "Notas eliminadas (${deletedNotes.size})",
+                                text = appText("Notas eliminadas (${deletedNotes.size})", "Deleted notes (${deletedNotes.size})"),
                                 color = GeminiBlue,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp,
@@ -1919,8 +1864,8 @@ private fun BookTypographyDropdownField(
         Box(modifier = Modifier.fillMaxWidth()) {
             Surface(
                 shape = RoundedCornerShape(12.dp),
-                color = Color(0xFF1B2130),
-                border = BorderStroke(1.dp, if (expanded) GeminiCyanAccent else Color(0xFF2A3142)),
+                color = CosmicSurfaceVariant,
+                border = BorderStroke(1.dp, if (expanded) GeminiBlue else CosmicBorder),
                 modifier = Modifier
                     .fillMaxWidth()
                     .minimumInteractiveComponentSize()
@@ -1939,12 +1884,12 @@ private fun BookTypographyDropdownField(
                         fontFamily = getAppFontFamily(selectedFontFamily),
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        color = TextPrimary
                     )
                     Icon(
                         imageVector = Icons.Default.ArrowDropDown,
                         contentDescription = "Cambiar tipografía",
-                        tint = GeminiCyanAccent
+                        tint = GeminiBlue
                     )
                 }
             }

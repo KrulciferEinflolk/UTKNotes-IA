@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.ui.theme.*
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -275,8 +276,8 @@ fun HexColorPickerDialog(
     ) {
         Surface(
             shape = RoundedCornerShape(16.dp),
-            color = Color(0xFF1F232E),
-            border = BorderStroke(1.dp, Color(0xFF323846)),
+            color = CosmicSurface,
+            border = BorderStroke(1.dp, CosmicBorder),
             tonalElevation = 8.dp,
             modifier = Modifier
                 .padding(horizontal = 24.dp)
@@ -296,7 +297,7 @@ fun HexColorPickerDialog(
                 ) {
                     Text(
                         text = title,
-                        color = Color(0xFFE2E8F0),
+                        color = TextPrimary,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -306,7 +307,7 @@ fun HexColorPickerDialog(
                     ) {
                         Text(
                             text = activeHex,
-                            color = Color(0xFF94A3B8),
+                            color = TextSecondary,
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Medium
@@ -354,7 +355,7 @@ fun HexColorPickerDialog(
                 // Selector de pestañas RGB | HSV | HEX
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF151821),
+                    color = CosmicSurfaceVariant,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -367,7 +368,7 @@ fun HexColorPickerDialog(
                             val selected = activeTab == tab
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
-                                color = if (selected) Color(0xFF2D3343) else Color.Transparent,
+                                color = if (selected) GeminiBlue.copy(alpha = 0.22f) else Color.Transparent,
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(34.dp)
@@ -378,7 +379,7 @@ fun HexColorPickerDialog(
                                 Box(contentAlignment = Alignment.Center) {
                                     Text(
                                         text = tab.label,
-                                        color = if (selected) Color.White else Color(0xFF94A3B8),
+                                        color = if (selected) GeminiBlue else TextSecondary,
                                         fontSize = 12.sp,
                                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
                                     )
@@ -391,7 +392,7 @@ fun HexColorPickerDialog(
                 // Filas de valores editables según pestaña activa
                 Surface(
                     shape = RoundedCornerShape(10.dp),
-                    color = Color(0xFF262B38),
+                    color = CosmicSurfaceVariant,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -462,7 +463,7 @@ fun HexColorPickerDialog(
                                 ) {
                                     Text(
                                         text = "HEX:",
-                                        color = Color(0xFFCBD5E1),
+                                        color = TextSecondary,
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Medium
                                     )
@@ -470,7 +471,8 @@ fun HexColorPickerDialog(
                                         modifier = Modifier
                                             .width(120.dp)
                                             .clip(RoundedCornerShape(6.dp))
-                                            .background(Color(0xFF1A1E28))
+                                            .background(CosmicBackground)
+                                            .border(1.dp, CosmicBorder, RoundedCornerShape(6.dp))
                                             .padding(horizontal = 10.dp, vertical = 6.dp),
                                         contentAlignment = Alignment.CenterEnd
                                     ) {
@@ -496,13 +498,13 @@ fun HexColorPickerDialog(
                                             },
                                             singleLine = true,
                                             textStyle = TextStyle(
-                                                color = Color.White,
+                                                color = TextPrimary,
                                                 fontSize = 13.sp,
                                                 fontFamily = FontFamily.Monospace,
                                                 fontWeight = FontWeight.Bold,
                                                 textAlign = TextAlign.End
                                             ),
-                                            cursorBrush = SolidColor(Color(0xFF64FFDA)),
+                                            cursorBrush = SolidColor(GeminiBlue),
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .testTag("wheel_hex_input")
@@ -526,7 +528,7 @@ fun HexColorPickerDialog(
                             .minimumInteractiveComponentSize()
                             .testTag("color_wheel_cancel_button")
                     ) {
-                        Text("Cancelar", color = Color(0xFF94A3B8), fontSize = 13.sp)
+                        Text("Cancelar", color = TextSecondary, fontSize = 13.sp)
                     }
                     Spacer(modifier = Modifier.width(6.dp))
                     Button(
@@ -534,7 +536,10 @@ fun HexColorPickerDialog(
                             onColorSelected(activeHex)
                             onDismiss()
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2F80ED)),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = GeminiBlue,
+                            contentColor = GeminiOnPrimary
+                        ),
                         shape = RoundedCornerShape(8.dp),
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                         modifier = Modifier
@@ -543,7 +548,7 @@ fun HexColorPickerDialog(
                     ) {
                         Text(
                             text = "Aplicar",
-                            color = Color.White,
+                            color = GeminiOnPrimary,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -571,7 +576,7 @@ private fun CompactNumericChannelRow(
     ) {
         Text(
             text = label,
-            color = Color(0xFFCBD5E1),
+            color = TextSecondary,
             fontSize = 13.sp,
             fontWeight = FontWeight.Medium
         )
@@ -579,7 +584,8 @@ private fun CompactNumericChannelRow(
             modifier = Modifier
                 .width(72.dp)
                 .clip(RoundedCornerShape(6.dp))
-                .background(Color(0xFF1A1E28))
+                .background(CosmicBackground)
+                .border(1.dp, CosmicBorder, RoundedCornerShape(6.dp))
                 .padding(horizontal = 10.dp, vertical = 5.dp),
             contentAlignment = Alignment.CenterEnd
         ) {
@@ -595,13 +601,13 @@ private fun CompactNumericChannelRow(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 textStyle = TextStyle(
-                    color = Color.White,
+                    color = TextPrimary,
                     fontSize = 13.sp,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.End
                 ),
-                cursorBrush = SolidColor(Color(0xFF64FFDA)),
+                cursorBrush = SolidColor(GeminiBlue),
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag(testTag)
@@ -836,7 +842,7 @@ fun HexColorBox(
                 ) {
                     Text(
                         text = label,
-                        color = Color(0xFFB0BEC5),
+                        color = TextSecondary,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -853,7 +859,7 @@ fun HexColorBox(
                         )
                         Text(
                             text = formattedHex,
-                            color = Color(0xFF94A3B8),
+                            color = TextTertiary,
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace
                         )
@@ -884,15 +890,15 @@ fun HexColorBox(
                 ) {
                     Surface(
                         shape = CircleShape,
-                        color = Color(0xFF1E2433),
-                        border = BorderStroke(1.dp, Color(0xFF3A445C)),
+                        color = CosmicSurface,
+                        border = BorderStroke(1.dp, CosmicBorder),
                         modifier = Modifier.size(30.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Default.Add,
                                 contentDescription = "Abrir selector de color avanzado",
-                                tint = Color.White,
+                                tint = GeminiBlue,
                                 modifier = Modifier.size(16.dp)
                             )
                         }

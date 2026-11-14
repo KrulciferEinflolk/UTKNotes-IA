@@ -160,7 +160,7 @@ fun TypographyDropdownMenu(
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
-        containerColor = Color(0xFF1A1F2B),
+        containerColor = CosmicSurface,
         modifier = modifier
             .widthIn(min = 220.dp, max = 260.dp)
             .testTag("typography_dropdown_menu")
@@ -190,7 +190,7 @@ fun TypographyDropdownMenu(
             }
 
             HorizontalDivider(
-                color = Color(0xFF2D3548),
+                color = CosmicBorder,
                 modifier = Modifier.padding(vertical = 4.dp)
             )
 
@@ -221,12 +221,12 @@ private fun TypographySectionHeader(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        color = Color(0xFF141822),
+        color = CosmicSurfaceVariant,
         modifier = modifier.fillMaxWidth()
     ) {
         Text(
             text = title,
-            color = Color(0xFF94A3B8),
+            color = TextSecondary,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
@@ -241,7 +241,7 @@ private fun TypographyDropdownItemRow(
     tagPrefix: String,
     onClick: () -> Unit
 ) {
-    val highlightBg = if (isSelected) Color(0xFF263654) else Color.Transparent
+    val highlightBg = if (isSelected) GeminiBlue.copy(alpha = 0.20f) else Color.Transparent
 
     DropdownMenuItem(
         text = {
@@ -254,13 +254,13 @@ private fun TypographyDropdownItemRow(
                     text = fontOption.name,
                     fontFamily = fontOption.fontFamily,
                     fontSize = 15.sp,
-                    color = if (isSelected) Color(0xFF8AB4F8) else Color.White
+                    color = if (isSelected) GeminiBlue else TextPrimary
                 )
                 if (isSelected) {
                     Icon(
                         imageVector = Icons.Default.Check,
                         contentDescription = "Tipografía seleccionada",
-                        tint = Color(0xFF8AB4F8),
+                        tint = GeminiBlue,
                         modifier = Modifier.size(16.dp)
                     )
                 }

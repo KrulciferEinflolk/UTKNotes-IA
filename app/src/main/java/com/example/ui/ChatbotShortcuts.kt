@@ -145,13 +145,20 @@ fun resolveAuraActiveModelLabel(
     aiSettings: AiApiSettingsState,
     modelDownloadStatus: ModelDownloadStatus,
     llmModelState: LlmModelState,
-    activeLocalModelName: String
+    activeLocalModelName: String,
+    externalEngineStates: Map<AiEngineType, AiApiSettingsState> = emptyMap()
 ): String? {
     return when (selectedEngine) {
         AiEngineType.GOOGLE_AI_STUDIO -> {
             val isReady = aiSettings.hasApiKey &&
                 (aiSettings.isConnectionVerified || aiSettings.validationState is ApiKeyValidationState.Valid)
             if (isReady && aiSettings.selectedModel.isNotBlank()) aiSettings.selectedModel else null
+        }
+        AiEngineType.GROQ, AiEngineType.OPENAI, AiEngineType.CLAUDE -> {
+            val ext = externalEngineStates[selectedEngine] ?: return null
+            val isReady = ext.hasApiKey &&
+                (ext.isConnectionVerified || ext.validationState is ApiKeyValidationState.Valid)
+            if (isReady && ext.selectedModel.isNotBlank()) ext.selectedModel else null
         }
         AiEngineType.AURA_LOCAL -> {
             val isLocalReady = modelDownloadStatus is ModelDownloadStatus.Ready ||
@@ -917,10 +924,11 @@ fun AuraHeaderTitlePill(
         )
         if (!activeModelLabel.isNullOrBlank()) {
             Spacer(modifier = Modifier.size(2.dp))
+            val isCloud = selectedEngine != AiEngineType.AURA_LOCAL
             Box(
                 modifier = Modifier
                     .background(
-                        color = if (selectedEngine == AiEngineType.GOOGLE_AI_STUDIO) GeminiCyanAccent.copy(alpha = 0.2f) else TextSecondary.copy(alpha = 0.15f),
+                        color = if (isCloud) GeminiCyanAccent.copy(alpha = 0.2f) else TextSecondary.copy(alpha = 0.15f),
                         shape = RoundedCornerShape(10.dp)
                     )
                     .testTag("chatbot_active_model_badge")
@@ -930,15 +938,15 @@ fun AuraHeaderTitlePill(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = if (selectedEngine == AiEngineType.GOOGLE_AI_STUDIO) Icons.Default.AutoAwesome else Icons.Default.Memory,
+                        imageVector = if (isCloud) Icons.Default.AutoAwesome else Icons.Default.Memory,
                         contentDescription = null,
-                        tint = if (selectedEngine == AiEngineType.GOOGLE_AI_STUDIO) GeminiCyanAccent else TextSecondary,
+                        tint = if (isCloud) GeminiCyanAccent else TextSecondary,
                         modifier = Modifier.size(11.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
                         text = activeModelLabel,
-                        color = if (selectedEngine == AiEngineType.GOOGLE_AI_STUDIO) GeminiCyanAccent else TextSecondary,
+                        color = if (isCloud) GeminiCyanAccent else TextSecondary,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,

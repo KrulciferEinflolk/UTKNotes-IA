@@ -116,7 +116,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MyApplicationTheme {
+            val appearance by viewModel.appearanceState.collectAsStateWithLifecycle()
+            MyApplicationTheme(
+                themeId = appearance.themeId,
+                colorSchemeMode = appearance.colorSchemeMode,
+                pureBlackDarkMode = appearance.pureBlackDarkMode,
+                fontScale = appearance.fontScale,
+                appLanguage = appearance.appLanguage
+            ) {
                 val showChatbotGlobal by viewModel.showChatbot.collectAsStateWithLifecycle()
                 val aiMessageGlobal by viewModel.aiMessage.collectAsStateWithLifecycle()
                 val rootContext = LocalContext.current
@@ -848,14 +855,14 @@ fun AetherAppScreen(
                                 CircularProgressIndicator(color = GeminiBlue)
                                 Spacer(modifier = Modifier.height(16.dp))
                                 Text(
-                                    "Consultando a Gemini...",
+                                    appText("Consultando a la IA...", "Querying AI..."),
                                     color = TextPrimary,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    "IA rediseñando y puliendo tu nota",
+                                    appText("IA rediseñando y puliendo tu nota", "AI refining and polishing your note"),
                                     color = TextSecondary,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Light
@@ -993,8 +1000,8 @@ fun AetherTopBar(
                     .fillMaxWidth()
                     .height(56.dp)
                     .testTag("search_notes_input"),
-                placeholder = { Text("Buscar notas, etiquetas, contenidos...", color = TextTertiary, fontSize = 14.sp) },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Buscar", tint = TextSecondary) },
+                placeholder = { Text(appText("Buscar notas, etiquetas, contenidos...", "Search notes, tags, content..."), color = TextTertiary, fontSize = 14.sp) },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = appText("Buscar", "Search"), tint = TextSecondary) },
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) {
                         IconButton(onClick = { onSearchQueryChange("") }) {
@@ -1128,14 +1135,17 @@ fun NotesWorkspace(
                 )
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    "Esta página está vacía",
+                    appText("Esta página está vacía", "This page is empty"),
                     color = TextPrimary,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    "Pulsa el botón '+' abajo a la derecha para crear tu primera nota.",
+                    appText(
+                        "Pulsa el botón '+' abajo a la derecha para crear tu primera nota.",
+                        "Tap the '+' button at bottom right to create your first note."
+                    ),
                     color = TextSecondary,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Light,
@@ -2865,7 +2875,7 @@ fun ImageBlockView(
                 if (isPlaceholder) {
                     Box(
                         modifier = mod
-                            .background(Brush.linearGradient(listOf(Color(0xFF4285F4), Color(0xFF9B72F3))))
+                            .background(Brush.linearGradient(listOf(Purple40, Color(0xFF8C7CFF))))
                             .clickable { onOpenSettings() }
                             .testTag("image_empty_placeholder"),
                         contentAlignment = Alignment.Center
@@ -3954,9 +3964,9 @@ fun CodeBlockView(
 ) {
     val context = LocalContext.current
     val bgColor = if (!block.bgColorHex.isNullOrEmpty()) {
-        try { Color(android.graphics.Color.parseColor(block.bgColorHex)) } catch (e: Exception) { Color(0xFF131720) }
+        try { Color(android.graphics.Color.parseColor(block.bgColorHex)) } catch (e: Exception) { CosmicSurfaceVariant }
     } else {
-        Color(0xFF131720)
+        CosmicSurfaceVariant
     }
     val textColor = if (!block.textColorHex.isNullOrEmpty()) {
         try { Color(android.graphics.Color.parseColor(block.textColorHex)) } catch (e: Exception) { Color(0xFFE6EDF3) }
@@ -3970,7 +3980,7 @@ fun CodeBlockView(
             .padding(vertical = 5.dp),
         shape = RoundedCornerShape(8.dp),
         color = bgColor,
-        border = BorderStroke(1.dp, Color(0xFF282E3A))
+        border = BorderStroke(1.dp, CosmicBorder)
     ) {
         Column(modifier = Modifier.padding(10.dp)) {
             Row(
@@ -4832,33 +4842,34 @@ fun NoteEditorWorkspace(
                     }
                 }
             } else {
+                val savedOkMsg = appText("Guardado exitosamente", "Saved successfully")
                 TopAppBar(
-                    title = { Text("Editor de Nota", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+                    title = { Text(appText("Editor de Nota", "Note Editor"), color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
                     navigationIcon = {
                         IconButton(onClick = {
                             onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
                             onDismiss()
                         }, modifier = Modifier.testTag("back_editor_btn")) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Atrás", tint = GeminiBlue)
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = appText("Atrás", "Back"), tint = GeminiBlue)
                         }
                     },
                     actions = {
                         IconButton(onClick = {
                             isSearchingInNote = true
                         }) {
-                            Icon(Icons.Default.Search, contentDescription = "Buscar en nota", tint = GeminiBlue)
+                            Icon(Icons.Default.Search, contentDescription = appText("Buscar en nota", "Search in note"), tint = GeminiBlue)
                         }
                         IconButton(onClick = {
                             onSave(note.copy(title = title, content = serializeBlocks(blocks), tags = tags))
-                            Toast.makeText(context, "Guardado exitosamente", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, savedOkMsg, Toast.LENGTH_SHORT).show()
                         }, modifier = Modifier.testTag("save_note_editor_btn")) {
-                            Icon(Icons.Default.Save, contentDescription = "Guardar", tint = GeminiBlue)
+                            Icon(Icons.Default.Save, contentDescription = appText("Guardar", "Save"), tint = GeminiBlue)
                         }
                         
                         var showEditorMenu by remember { mutableStateOf(false) }
                         Box {
                             IconButton(onClick = { showEditorMenu = true }) {
-                                Icon(Icons.Default.MoreVert, contentDescription = "Más opciones", tint = GeminiBlue)
+                                Icon(Icons.Default.MoreVert, contentDescription = appText("Más opciones", "More options"), tint = GeminiBlue)
                             }
                             DropdownMenu(
                                 expanded = showEditorMenu,
@@ -4866,7 +4877,7 @@ fun NoteEditorWorkspace(
                                 modifier = Modifier.background(CosmicSurface)
                             ) {
                                 DropdownMenuItem(
-                                    text = { Text("Exportar como PDF", color = TextPrimary) },
+                                    text = { Text(appText("Exportar como PDF", "Export as PDF"), color = TextPrimary) },
                                     leadingIcon = { Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = GeminiBlue) },
                                     onClick = {
                                         showEditorMenu = false
@@ -5052,7 +5063,7 @@ fun NoteEditorWorkspace(
                                     onClick = {
                                         showFloatingAiInput = !showFloatingAiInput
                                     },
-                                    label = { Text("⚡ Escribir Instrucción", fontSize = 11.sp, color = GeminiCyanAccent, fontWeight = FontWeight.Bold) },
+                                    label = { Text(appText("⚡ Escribir Instrucción", "⚡ Write Instruction"), fontSize = 11.sp, color = GeminiCyanAccent, fontWeight = FontWeight.Bold) },
                                     leadingIcon = { Icon(Icons.Default.Edit, null, modifier = Modifier.size(14.dp), tint = GeminiCyanAccent) },
                                     colors = AssistChipDefaults.assistChipColors(
                                         containerColor = if (showFloatingAiInput) GeminiCyanAccent.copy(alpha = 0.25f) else GeminiCyanAccent.copy(alpha = 0.12f),
@@ -7218,7 +7229,7 @@ fun TableSettingsContent(block: EditorBlock.Table, onBlockChange: (EditorBlock) 
                     selected = block.cellColor == align,
                     onClick = { onBlockChange(block.copy(cellColor = align)) },
                     label = { Text(align, fontSize = 10.sp) },
-                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = Color.White)
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = GeminiOnPrimary)
                 )
             }
         }
@@ -7238,7 +7249,7 @@ fun TableSettingsContent(block: EditorBlock.Table, onBlockChange: (EditorBlock) 
                     selected = block.tableWidth == w,
                     onClick = { onBlockChange(block.copy(tableWidth = w)) },
                     label = { Text(w, fontSize = 10.sp) },
-                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = Color.White)
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = GeminiOnPrimary)
                 )
             }
         }
@@ -7296,12 +7307,12 @@ fun ImageSettingsContent(block: EditorBlock.Image, onBlockChange: (EditorBlock) 
                     )
                 )
             },
-            colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
+            colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue, contentColor = GeminiOnPrimary),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Icon(Icons.Default.PhotoLibrary, null, tint = Color.White)
+            Icon(Icons.Default.PhotoLibrary, null, tint = GeminiOnPrimary)
             Spacer(Modifier.width(8.dp))
-            Text("Seleccionar / Cambiar Imagen", color = Color.White)
+            Text("Seleccionar / Cambiar Imagen", color = GeminiOnPrimary)
         }
         Text("Ancho", color = TextPrimary)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -7310,7 +7321,7 @@ fun ImageSettingsContent(block: EditorBlock.Image, onBlockChange: (EditorBlock) 
                     selected = block.width == w,
                     onClick = { onBlockChange(block.copy(width = w)) },
                     label = { Text(label, fontSize = 11.sp) },
-                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = Color.White)
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = GeminiOnPrimary)
                 )
             }
         }
@@ -7321,7 +7332,7 @@ fun ImageSettingsContent(block: EditorBlock.Image, onBlockChange: (EditorBlock) 
                     selected = block.height == h,
                     onClick = { onBlockChange(block.copy(height = h)) },
                     label = { Text(label, fontSize = 11.sp) },
-                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = Color.White)
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = GeminiOnPrimary)
                 )
             }
         }
@@ -7357,12 +7368,12 @@ fun AudioSettingsContent(block: EditorBlock.Audio, onBlockChange: (EditorBlock) 
         )
         Button(
             onClick = { launcher.launch(arrayOf("audio/*")) },
-            colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
+            colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue, contentColor = GeminiOnPrimary),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Icon(Icons.Default.AudioFile, null, tint = Color.White)
+            Icon(Icons.Default.AudioFile, null, tint = GeminiOnPrimary)
             Spacer(Modifier.width(8.dp))
-            Text("Seleccionar Audio", color = Color.White)
+            Text("Seleccionar Audio", color = GeminiOnPrimary)
         }
     }
 }
@@ -7398,12 +7409,12 @@ fun VideoSettingsContent(block: EditorBlock.Video, onBlockChange: (EditorBlock) 
                     )
                 )
             },
-            colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
+            colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue, contentColor = GeminiOnPrimary),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Icon(Icons.Default.VideoFile, null, tint = Color.White)
+            Icon(Icons.Default.VideoFile, null, tint = GeminiOnPrimary)
             Spacer(Modifier.width(8.dp))
-            Text("Seleccionar Vídeo", color = Color.White)
+            Text("Seleccionar Vídeo", color = GeminiOnPrimary)
         }
         Text("Ancho", color = TextPrimary)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -7412,7 +7423,7 @@ fun VideoSettingsContent(block: EditorBlock.Video, onBlockChange: (EditorBlock) 
                     selected = block.width == w,
                     onClick = { onBlockChange(block.copy(width = w)) },
                     label = { Text(w, fontSize = 10.sp) },
-                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = Color.White)
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = GeminiOnPrimary)
                 )
             }
         }
@@ -7423,7 +7434,7 @@ fun VideoSettingsContent(block: EditorBlock.Video, onBlockChange: (EditorBlock) 
                     selected = block.height == h,
                     onClick = { onBlockChange(block.copy(height = h)) },
                     label = { Text(h, fontSize = 10.sp) },
-                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = Color.White)
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = GeminiOnPrimary)
                 )
             }
         }
@@ -7458,12 +7469,12 @@ fun FileSettingsContent(block: EditorBlock.File, onBlockChange: (EditorBlock) ->
         )
         Button(
             onClick = { launcher.launch(arrayOf("*/*")) },
-            colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
+            colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue, contentColor = GeminiOnPrimary),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Icon(Icons.Default.Folder, null, tint = Color.White)
+            Icon(Icons.Default.Folder, null, tint = GeminiOnPrimary)
             Spacer(Modifier.width(8.dp))
-            Text("Seleccionar Archivo (Max 500MB)", color = Color.White)
+            Text("Seleccionar Archivo (Max 500MB)", color = GeminiOnPrimary)
         }
         if (block.sourceUrl.isNotEmpty()) {
             Text("Archivo seleccionado: ${block.name}", color = TextSecondary, fontSize = 12.sp)
@@ -7512,7 +7523,7 @@ fun DividerSettingsContent(block: EditorBlock.Divider, onBlockChange: (EditorBlo
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Estilo de Línea", color = TextPrimary, fontWeight = FontWeight.Bold)
         HexColorBox(
-            selectedColorHex = block.colorHex ?: "#2A3142",
+            selectedColorHex = block.colorHex ?: "#49454F",
             onColorSelected = { onBlockChange(block.copy(colorHex = it)) },
             label = "Color de Línea (HEX)"
         )
@@ -7522,7 +7533,7 @@ fun DividerSettingsContent(block: EditorBlock.Divider, onBlockChange: (EditorBlo
                     selected = block.style == style,
                     onClick = { onBlockChange(block.copy(style = style)) },
                     label = { Text(style, fontSize = 12.sp) },
-                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = Color.White)
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = GeminiBlue, selectedLabelColor = GeminiOnPrimary)
                 )
             }
         }
@@ -8667,6 +8678,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
     val context = LocalContext.current
 
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var settingsInitialDestination by remember { mutableStateOf(com.example.ui.settings.SettingsDestination.HUB) }
     val currentEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
     val selectedNote by viewModel.selectedNote.collectAsStateWithLifecycle()
     val selectedBook by viewModel.selectedBook.collectAsStateWithLifecycle()
@@ -8674,64 +8686,32 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
     val activeLocalModel by viewModel.modelVerifier.activeModel.collectAsStateWithLifecycle()
     val llmModelState by viewModel.localLlm.modelState.collectAsStateWithLifecycle()
     val aiSettings by viewModel.aiSettingsState.collectAsStateWithLifecycle()
+    val externalProviderStates by viewModel.externalProviderStates.collectAsStateWithLifecycle()
     val selectedAiEngine by viewModel.selectedAiEngine.collectAsStateWithLifecycle()
 
     if (showSettingsDialog) {
-        AlertDialog(
+        androidx.compose.ui.window.Dialog(
             onDismissRequest = { showSettingsDialog = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
-            modifier = Modifier
-                .fillMaxWidth(0.94f)
-                .widthIn(max = 560.dp),
-            containerColor = CosmicSurfaceVariant,
-            title = { Text("Ajustes de IA", color = TextPrimary, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                    Text("Cuenta actual:", color = TextSecondary, fontSize = 14.sp)
-                    Text(currentEmail ?: "No has iniciado sesión", color = TextPrimary, fontWeight = FontWeight.Bold)
-                    
-                    Spacer(modifier = Modifier.height(16.dp))
-                    
-                    com.example.ui.AuraModelSelectorCard(viewModel = viewModel)
-
-                    if (currentEmail != null && currentEmail != "offline") {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        OutlinedButton(
-                            onClick = {
-                                viewModel.createDriveDatabaseStructure()
-                                showSettingsDialog = false
-                            },
-                            modifier = Modifier.fillMaxWidth().testTag("create_drive_db_structure_btn"),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = GeminiBlue),
-                            border = BorderStroke(1.dp, GeminiBlue)
-                        ) {
-                            Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp), tint = GeminiBlue)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Estructurar BD en Google Drive", fontSize = 13.sp)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = { showSettingsDialog = false },
-                    colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue)
-                ) {
-                    Text("Cerrar", color = GeminiOnPrimary)
-                }
-            },
-            dismissButton = {
-                if (currentEmail != null) {
-                    TextButton(onClick = {
-                        viewModel.syncManager.disconnectDrive()
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false
+            )
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = CosmicBackground
+            ) {
+                com.example.ui.settings.SettingsHubScreen(
+                    viewModel = viewModel,
+                    initialDestination = settingsInitialDestination,
+                    onBack = { showSettingsDialog = false },
+                    onAccountSignedOut = {
                         showSettingsDialog = false
                         onDismiss()
-                    }) {
-                        Text("Cerrar Sesión", color = Color.Red)
                     }
-                }
+                )
             }
-        )
+        }
     }
 
 
@@ -8865,13 +8845,14 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             // Left Group: History Icon + New Chat Icon
+            val newEmptyChatMsg = appText("Nuevo Chat Vacío", "New Empty Chat")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = {
                     showHistoryBottomSheet = true
                 }) {
                     Icon(
                         imageVector = Icons.Default.History,
-                        contentDescription = "Historial",
+                        contentDescription = appText("Historial", "History"),
                         tint = TextPrimary
                     )
                 }
@@ -8890,11 +8871,11 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     activeTokens = emptyList()
                     userMsgMenuIndex = null
                     editingUserMsgIndex = null
-                    Toast.makeText(context, "Nuevo Chat Vacío", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, newEmptyChatMsg, Toast.LENGTH_SHORT).show()
                 }) {
                     Icon(
                         imageVector = Icons.Default.Add,
-                        contentDescription = "Nuevo Chat",
+                        contentDescription = appText("Nuevo Chat", "New Chat"),
                         tint = TextPrimary
                     )
                 }
@@ -8906,56 +8887,70 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                 aiSettings = aiSettings,
                 modelDownloadStatus = modelDownloadStatus,
                 llmModelState = llmModelState,
-                activeLocalModelName = activeLocalModel.name
+                activeLocalModelName = activeLocalModel.name,
+                externalEngineStates = externalProviderStates
             )
+            val engineToastPrefix = appText("Motor activado", "Active engine")
             com.example.ui.AuraHeaderTitlePill(
                 selectedEngine = selectedAiEngine,
                 activeModelLabel = activeModelLabel,
                 onClick = {
-                    val nextEngine = if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) {
-                        com.example.ui.AiEngineType.AURA_LOCAL
-                    } else {
-                        com.example.ui.AiEngineType.GOOGLE_AI_STUDIO
+                    val configuredEngines = buildList {
+                        add(com.example.ui.AiEngineType.GOOGLE_AI_STUDIO)
+                        listOf(
+                            com.example.ui.AiEngineType.GROQ,
+                            com.example.ui.AiEngineType.OPENAI,
+                            com.example.ui.AiEngineType.CLAUDE
+                        ).forEach { eng ->
+                            if (externalProviderStates[eng]?.hasApiKey == true) add(eng)
+                        }
+                        add(com.example.ui.AiEngineType.AURA_LOCAL)
                     }
+                    val currentIdx = configuredEngines.indexOf(selectedAiEngine)
+                    val nextEngine = configuredEngines[(currentIdx + 1) % configuredEngines.size]
                     viewModel.setAiEngine(nextEngine)
-                    Toast.makeText(
-                        context,
-                        if (nextEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO) {
-                            "Motor activado: Google AI Studio (${aiSettings.selectedModel})"
-                        } else {
-                            "Motor activado: Aura Local (Offline)"
-                        },
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    val nextDetail = when (nextEngine) {
+                        com.example.ui.AiEngineType.GOOGLE_AI_STUDIO -> "Gemini (${aiSettings.selectedModel})"
+                        com.example.ui.AiEngineType.GROQ -> "Groq (${externalProviderStates[nextEngine]?.selectedModel.orEmpty()})"
+                        com.example.ui.AiEngineType.OPENAI -> "ChatGPT (${externalProviderStates[nextEngine]?.selectedModel.orEmpty()})"
+                        com.example.ui.AiEngineType.CLAUDE -> "Claude (${externalProviderStates[nextEngine]?.selectedModel.orEmpty()})"
+                        com.example.ui.AiEngineType.AURA_LOCAL -> "Aura Local (Offline)"
+                    }
+                    Toast.makeText(context, "$engineToastPrefix: $nextDetail", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier.weight(1f, fill = false)
             )
 
             // Right Group: Sound/Speaker Toggle + Settings Icon
+            val mutedToastMsg = appText("Voz silenciada", "Voice muted")
+            val soundOnToastMsg = appText("Sonido activado", "Sound enabled")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = {
                     isMuted = !isMuted
                     if (isMuted) {
                         tts?.stop()
-                        Toast.makeText(context, "Voz silenciada", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, mutedToastMsg, Toast.LENGTH_SHORT).show()
                     } else {
-                        Toast.makeText(context, "Sonido activado", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, soundOnToastMsg, Toast.LENGTH_SHORT).show()
                     }
                 }) {
                     Icon(
                         imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                        contentDescription = "Sonido",
+                        contentDescription = appText("Sonido", "Sound"),
                         tint = TextPrimary
                     )
                 }
                 Spacer(modifier = Modifier.width(4.dp))
                 IconButton(
-                    onClick = { showSettingsDialog = true },
+                    onClick = {
+                        settingsInitialDestination = com.example.ui.settings.SettingsDestination.HUB
+                        showSettingsDialog = true
+                    },
                     modifier = Modifier.testTag("chatbot_settings_button")
                 ) {
                     Icon(
                         imageVector = Icons.Default.Settings,
-                        contentDescription = "Configuración",
+                        contentDescription = appText("Configuración", "Settings"),
                         tint = TextPrimary
                     )
                 }
@@ -8983,20 +8978,28 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     Icon(
                         imageVector = Icons.Default.AutoAwesome,
                         contentDescription = "Aura AI Sparkle",
-                        tint = Color(0xFF907CFF),
+                        tint = GeminiBlue,
                         modifier = Modifier
                             .size(72.dp)
                             .padding(bottom = 16.dp)
                     )
                     Text(
-                        text = "¿Qué tienes en mente?",
+                        text = appText("¿Qué tienes en mente?", "What's on your mind?"),
                         color = TextPrimary,
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Light,
                         textAlign = TextAlign.Center
                     )
 
-                    if (selectedAiEngine == com.example.ui.AiEngineType.GOOGLE_AI_STUDIO && !aiSettings.hasApiKey) {
+                    val selectedCloudNeedsKey = when (selectedAiEngine) {
+                        com.example.ui.AiEngineType.GOOGLE_AI_STUDIO -> !aiSettings.hasApiKey
+                        com.example.ui.AiEngineType.GROQ,
+                        com.example.ui.AiEngineType.OPENAI,
+                        com.example.ui.AiEngineType.CLAUDE -> externalProviderStates[selectedAiEngine]?.hasApiKey != true
+                        com.example.ui.AiEngineType.AURA_LOCAL -> false
+                    }
+
+                    if (selectedCloudNeedsKey) {
                         Spacer(modifier = Modifier.height(20.dp))
                         Surface(
                             color = CosmicSurface,
@@ -9009,14 +9012,17 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
-                                    text = "Conecta tu clave API gratuita",
+                                    text = appText("Conecta tu clave API", "Connect your API key"),
                                     color = TextPrimary,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 14.sp
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    text = "Pega tu clave de Google AI Studio y elige cualquier modelo Gemini directamente en Ajustes de IA, o usa Aura Local sin conexión.",
+                                    text = appText(
+                                        "Configura tu clave de Gemini, Groq, ChatGPT o Claude en Motores de IA, o usa Aura Local sin conexión.",
+                                        "Configure your Gemini, Groq, ChatGPT, or Claude API key in AI Engines, or use Aura Local offline."
+                                    ),
                                     color = TextSecondary,
                                     fontSize = 12.sp,
                                     textAlign = TextAlign.Center,
@@ -9028,7 +9034,10 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Button(
-                                        onClick = { showSettingsDialog = true },
+                                        onClick = {
+                                            settingsInitialDestination = com.example.ui.settings.SettingsDestination.ENGINE
+                                            showSettingsDialog = true
+                                        },
                                         colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
                                         modifier = Modifier
                                             .weight(1f)
@@ -9037,7 +9046,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                     ) {
                                         Icon(Icons.Default.Key, contentDescription = null, tint = GeminiOnPrimary, modifier = Modifier.size(16.dp))
                                         Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Configurar API", color = GeminiOnPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        Text(appText("Configurar API", "Configure API"), color = GeminiOnPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                     }
                                     OutlinedButton(
                                         onClick = { viewModel.setAiEngine(com.example.ui.AiEngineType.AURA_LOCAL) },
@@ -9295,7 +9304,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                                     text = "Abrir en editor",
                                                     fontSize = 12.sp,
                                                     fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF090C15)
+                                                    color = GeminiOnPrimary
                                                 )
                                             }
                                         }
@@ -9362,9 +9371,9 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                                         modifier = Modifier.weight(1f)
                                                     ) {
-                                                        Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(13.dp))
+                                                        Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = GeminiOnPrimary, modifier = Modifier.size(13.dp))
                                                         Spacer(modifier = Modifier.width(4.dp))
-                                                        Text("Reemplazar selección", fontSize = 11.sp, color = Color(0xFF090C15), fontWeight = FontWeight.Bold)
+                                                        Text("Reemplazar selección", fontSize = 11.sp, color = GeminiOnPrimary, fontWeight = FontWeight.Bold)
                                                     }
                                                     OutlinedButton(
                                                         onClick = {
@@ -9393,9 +9402,9 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                                         modifier = Modifier.weight(1f)
                                                     ) {
-                                                        Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(13.dp))
+                                                        Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = GeminiOnPrimary, modifier = Modifier.size(13.dp))
                                                         Spacer(modifier = Modifier.width(4.dp))
-                                                        Text("Reemplazar nota", fontSize = 11.sp, color = Color(0xFF090C15), fontWeight = FontWeight.Bold)
+                                                        Text("Reemplazar nota", fontSize = 11.sp, color = GeminiOnPrimary, fontWeight = FontWeight.Bold)
                                                     }
                                                     OutlinedButton(
                                                         onClick = {
@@ -9424,9 +9433,9 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                                         modifier = Modifier.weight(1f)
                                                     ) {
-                                                        Icon(Icons.Default.AddCircleOutline, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(13.dp))
+                                                        Icon(Icons.Default.AddCircleOutline, contentDescription = null, tint = GeminiOnPrimary, modifier = Modifier.size(13.dp))
                                                         Spacer(modifier = Modifier.width(4.dp))
-                                                        Text("Insertar en nota", fontSize = 11.sp, color = Color(0xFF090C15), fontWeight = FontWeight.Bold)
+                                                        Text("Insertar en nota", fontSize = 11.sp, color = GeminiOnPrimary, fontWeight = FontWeight.Bold)
                                                     }
 
                                                     OutlinedButton(
@@ -9443,7 +9452,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                                     ) {
                                                         Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = Color(0xFFFF897D), modifier = Modifier.size(13.dp))
                                                         Spacer(modifier = Modifier.width(4.dp))
-                                                        Text("Reemplazar", fontSize = 11.sp, color = Color(0xFFFF897D), fontWeight = FontWeight.Bold)
+                                                        Text(appText("Reemplazar", "Replace"), fontSize = 11.sp, color = Color(0xFFFF897D), fontWeight = FontWeight.Bold)
                                                     }
                                                 }
                                             }
@@ -9455,7 +9464,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                                     onClick = { dismissedNoteCards = dismissedNoteCards + index },
                                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                                                 ) {
-                                                    Text("Mantener solo en chat", fontSize = 11.sp, color = TextSecondary)
+                                                    Text(appText("Mantener solo en chat", "Keep in chat only"), fontSize = 11.sp, color = TextSecondary)
                                                 }
                                             }
                                         }
@@ -9483,7 +9492,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                      ) {
                                          Icon(Icons.Default.NoteAdd, contentDescription = null, modifier = Modifier.size(13.dp))
                                          Spacer(modifier = Modifier.width(3.dp))
-                                         Text("Nueva Nota", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                         Text(appText("Nueva Nota", "New Note"), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                      }
 
                                      TextButton(
@@ -9502,7 +9511,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                                      ) {
                                          Icon(Icons.Default.Dashboard, contentDescription = null, modifier = Modifier.size(13.dp))
                                          Spacer(modifier = Modifier.width(3.dp))
-                                         Text("En Bloques", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                         Text(appText("En Bloques", "As Blocks"), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                      }
                                  }
                             }
@@ -9512,7 +9521,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
 
                 if (isSending) {
                     item {
-                        val statusMessage = chatbotStatusText ?: "Aura está pensando..."
+                        val statusMessage = chatbotStatusText ?: appText("Aura está pensando...", "Aura is thinking...")
                         val hasThinkingText = !liveThinkingText.isNullOrBlank()
 
                         Row(
@@ -9782,16 +9791,16 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     modifier = Modifier.background(CosmicSurface)
                 ) {
                     DropdownMenuItem(
-                        text = { Text("Adjuntar Imagen", color = TextPrimary) },
-                        leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, tint = Color(0xFF907CFF)) },
+                        text = { Text(appText("Adjuntar Imagen", "Attach Image"), color = TextPrimary) },
+                        leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, tint = GeminiBlue) },
                         onClick = {
                             showAttachmentMenu = false
                             imagePickerLauncher.launch(arrayOf("image/*"))
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("Adjuntar Archivo de Texto", color = TextPrimary) },
-                        leadingIcon = { Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = Color(0xFF907CFF)) },
+                        text = { Text(appText("Adjuntar Archivo de Texto", "Attach Text File"), color = TextPrimary) },
+                        leadingIcon = { Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = GeminiBlue) },
                         onClick = {
                             showAttachmentMenu = false
                             filePickerLauncher.launch(arrayOf("*/*"))
@@ -9815,7 +9824,7 @@ fun ChatbotUI(viewModel: AetherViewModel, onDismiss: () -> Unit) {
                     messageTfv = reconciledTfv
                     activeTokens = reconciledTokens
                 },
-                placeholderText = "Usa /, !, @ o haz una pregunta",
+                placeholderText = appText("Usa /, !, @ o haz una pregunta", "Use /, !, @ or ask a question"),
                 modifier = Modifier
                     .weight(1f)
                     .testTag("chatbot_message_input")

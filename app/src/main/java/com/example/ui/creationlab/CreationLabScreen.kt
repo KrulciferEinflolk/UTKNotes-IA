@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -53,12 +54,12 @@ import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-// Paleta de Estilo Laboratorio Lingüístico
-val VyianoraDarkBackground = Color(0xFF090C15)
-val VyianoraSurface = Color(0xFF131826)
-val VyianoraBorder = Color(0xFF26304A)
+// Paleta de Estilo Laboratorio Lingüístico (Unificada dinámicamente al tema activo)
+val VyianoraDarkBackground: Color get() = CosmicBackground
+val VyianoraSurface: Color get() = CosmicSurface
+val VyianoraBorder: Color get() = CosmicBorder
 val VyianoraPurple = Color(0xFF8C7CFF)
-val VyianoraCyan = Color(0xFF00CEC9)
+val VyianoraCyan: Color get() = GeminiBlue
 val VyianoraGold = Color(0xFFFFD166)
 val VyianoraRose = Color(0xFFFF7675)
 
@@ -140,11 +141,14 @@ fun CreationLabScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         IconButton(
                             onClick = onBack,
                             modifier = Modifier.testTag("lab_back_btn")
@@ -156,14 +160,19 @@ fun CreationLabScreen(
                             )
                         }
                         Spacer(modifier = Modifier.width(4.dp))
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
                                 Text(
                                     text = labTitle,
                                     fontSize = 17.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = VyianoraCyan,
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
                                 IconButton(
@@ -175,15 +184,15 @@ fun CreationLabScreen(
                                     Icon(
                                         imageVector = Icons.Default.Edit,
                                         contentDescription = "Editar nombre del laboratorio o idioma",
-                                        tint = VyianoraPurple,
+                                        tint = GeminiBlue,
                                         modifier = Modifier.size(15.dp)
                                     )
                                 }
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
-                                    color = VyianoraPurple.copy(alpha = 0.2f),
-                                    border = BorderStroke(1.dp, VyianoraPurple.copy(alpha = 0.5f))
+                                    color = GeminiBlue.copy(alpha = 0.16f),
+                                    border = BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.45f))
                                 ) {
                                     Row(
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
@@ -192,7 +201,7 @@ fun CreationLabScreen(
                                         Icon(
                                             imageVector = Icons.Default.AutoAwesome,
                                             contentDescription = null,
-                                            tint = VyianoraPurple,
+                                            tint = GeminiBlue,
                                             modifier = Modifier.size(11.dp)
                                         )
                                         Spacer(modifier = Modifier.width(3.dp))
@@ -200,7 +209,9 @@ fun CreationLabScreen(
                                             text = "Aura IA",
                                             fontSize = 10.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = VyianoraPurple
+                                            color = GeminiBlue,
+                                            maxLines = 1,
+                                            softWrap = false
                                         )
                                     }
                                 }
@@ -208,10 +219,14 @@ fun CreationLabScreen(
                             Text(
                                 text = "Léxico, morfología, frases y biblioteca",
                                 fontSize = 11.sp,
-                                color = TextSecondary
+                                color = TextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
+
+                    Spacer(modifier = Modifier.width(6.dp))
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         // Botón Lienzo de Escritura
@@ -220,14 +235,20 @@ fun CreationLabScreen(
                             shape = RoundedCornerShape(10.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                             colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = VyianoraPurple.copy(alpha = 0.2f),
-                                contentColor = VyianoraPurple
+                                containerColor = GeminiBlue.copy(alpha = 0.18f),
+                                contentColor = GeminiBlue
                             ),
-                            border = BorderStroke(1.dp, VyianoraPurple.copy(alpha = 0.4f))
+                            border = BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.45f))
                         ) {
                             Icon(Icons.Default.Brush, contentDescription = "Lienzo de escritura", modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Lienzo", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                text = "Lienzo",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
                         }
 
                         IconButton(onClick = onReopenTutorial) {
@@ -371,7 +392,7 @@ fun CreationLabScreen(
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = VyianoraCyan)
                         ) {
-                            Text("Guardar", color = Color(0xFF090C15), fontWeight = FontWeight.Bold)
+                            Text("Guardar", color = GeminiOnPrimary, fontWeight = FontWeight.Bold)
                         }
                     },
                     dismissButton = {
@@ -682,11 +703,11 @@ fun NucleiSubMenu(
                             colors = ButtonDefaults.buttonColors(containerColor = VyianoraCyan)
                         ) {
                             if (isGeneratingByAi) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color(0xFF090C15), strokeWidth = 2.dp)
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = GeminiOnPrimary, strokeWidth = 2.dp)
                             } else {
-                                Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = GeminiOnPrimary, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Forjar con Aura", color = Color(0xFF090C15), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("Forjar con Aura", color = GeminiOnPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -777,7 +798,7 @@ fun NucleiSubMenu(
                                         shape = RoundedCornerShape(8.dp),
                                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
                                     ) {
-                                        Text("Aplicar", color = Color(0xFF090C15), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Text("Aplicar", color = GeminiOnPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     }
                                 }
                             }
@@ -986,11 +1007,11 @@ fun MorphologySubMenu(
                             colors = ButtonDefaults.buttonColors(containerColor = VyianoraCyan)
                         ) {
                             if (isGeneratingByAi) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color(0xFF090C15), strokeWidth = 2.dp)
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = GeminiOnPrimary, strokeWidth = 2.dp)
                             } else {
-                                Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = GeminiOnPrimary, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Forjar con Aura", color = Color(0xFF090C15), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("Forjar con Aura", color = GeminiOnPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -1077,7 +1098,7 @@ fun MorphologySubMenu(
                                         shape = RoundedCornerShape(8.dp),
                                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
                                     ) {
-                                        Text("Aplicar", color = Color(0xFF090C15), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Text("Aplicar", color = GeminiOnPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     }
                                 }
                             }
@@ -1270,11 +1291,11 @@ fun CategoriesSubMenu(
                             colors = ButtonDefaults.buttonColors(containerColor = VyianoraCyan)
                         ) {
                             if (isGeneratingByAi) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color(0xFF090C15), strokeWidth = 2.dp)
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = GeminiOnPrimary, strokeWidth = 2.dp)
                             } else {
-                                Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = GeminiOnPrimary, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Sugerir con Aura", color = Color(0xFF090C15), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("Sugerir con Aura", color = GeminiOnPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -1360,7 +1381,7 @@ fun CategoriesSubMenu(
                                         shape = RoundedCornerShape(8.dp),
                                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
                                     ) {
-                                        Text("Aplicar", color = Color(0xFF090C15), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Text("Aplicar", color = GeminiOnPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     }
                                 }
                             }
@@ -1583,9 +1604,9 @@ fun GeneratorMorphemesModule(
                                 shape = RoundedCornerShape(12.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = VyianoraCyan)
                             ) {
-                                Icon(Icons.Default.BookmarkAdd, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.BookmarkAdd, contentDescription = null, tint = GeminiOnPrimary, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Guardar en Biblioteca", color = Color(0xFF090C15), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text("Guardar en Biblioteca", color = GeminiOnPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             }
 
                             OutlinedButton(
@@ -1964,13 +1985,13 @@ fun PhrasesModule(
                         colors = ButtonDefaults.buttonColors(containerColor = VyianoraCyan)
                     ) {
                         if (isAnalyzingWithAura) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color(0xFF090C15), strokeWidth = 2.dp)
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), color = GeminiOnPrimary, strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Aura analizando la frase...", color = Color(0xFF090C15), fontWeight = FontWeight.Bold)
+                            Text("Aura analizando la frase...", color = GeminiOnPrimary, fontWeight = FontWeight.Bold)
                         } else {
-                            Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color(0xFF090C15))
+                            Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = GeminiOnPrimary)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Construir Morfología con Aura", color = Color(0xFF090C15), fontWeight = FontWeight.Bold)
+                            Text("Construir Morfología con Aura", color = GeminiOnPrimary, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -2011,8 +2032,8 @@ fun PhrasesModule(
                                 color = when {
                                     analyzedPowerLevel >= 9 -> Color(0xFF381E72)
                                     analyzedPowerLevel >= 7 -> Color(0xFF2C244A)
-                                    analyzedPowerLevel >= 5 -> Color(0xFF1E283F)
-                                    else -> Color(0xFF1A2234)
+                                    analyzedPowerLevel >= 5 -> Color(0xFF282238)
+                                    else -> CosmicSurfaceVariant
                                 },
                                 border = BorderStroke(
                                     1.dp,
@@ -2397,8 +2418,8 @@ fun LibraryLabModule(
                                         color = when {
                                             item.powerLevel >= 9 -> Color(0xFF381E72)
                                             item.powerLevel >= 7 -> Color(0xFF2C244A)
-                                            item.powerLevel >= 5 -> Color(0xFF1E283F)
-                                            else -> Color(0xFF1A2234)
+                                            item.powerLevel >= 5 -> Color(0xFF282238)
+                                            else -> CosmicSurfaceVariant
                                         },
                                         border = BorderStroke(1.dp, if (item.powerLevel >= 7) VyianoraGold else VyianoraCyan)
                                     ) {
@@ -2693,9 +2714,9 @@ fun WritingCanvasDialog(
                         enabled = paths.isNotEmpty(),
                         colors = ButtonDefaults.buttonColors(containerColor = VyianoraCyan)
                     ) {
-                        Icon(Icons.Default.Save, contentDescription = null, tint = Color(0xFF090C15), modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Save, contentDescription = null, tint = GeminiOnPrimary, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Guardar Glifo", color = Color(0xFF090C15), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Guardar Glifo", color = GeminiOnPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
 

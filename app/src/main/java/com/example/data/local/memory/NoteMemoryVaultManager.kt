@@ -197,6 +197,32 @@ class NoteMemoryVaultManager(private val context: Context) {
         }
     }
 
+    suspend fun listAllMemoryBanks(): List<NoteMemoryBank> = withContext(Dispatchers.IO) {
+        try {
+            vaultRoot.listFiles { f -> f.isDirectory && f.name.startsWith("note_") }
+                ?.mapNotNull { folder ->
+                    val bankFile = File(folder, "memory_bank.json")
+                    if (!bankFile.exists()) return@mapNotNull null
+                    runCatching { memoryBankAdapter.fromJson(bankFile.readText()) }.getOrNull()
+                }
+                ?.filter { it.summary.isNotBlank() || it.keyFacts.isNotEmpty() || it.topics.isNotEmpty() }
+                ?.sortedByDescending { it.lastUpdated }
+                ?: emptyList()
+        } catch (e: Exception) {
+            Log.e(tag, "Error listing all memory banks", e)
+            emptyList()
+        }
+    }
+
+    suspend fun clearMemoryBank(noteId: String) = withContext(Dispatchers.IO) {
+        try {
+            val file = File(getNoteFolder(noteId), "memory_bank.json")
+            if (file.exists()) file.delete()
+        } catch (e: Exception) {
+            Log.e(tag, "Error clearing memory bank for note $noteId", e)
+        }
+    }
+
     companion object {
         const val PERMANENT_AI_NAME = "Aura"
         const val PERMANENT_AI_FULL_NAME = "Aura Kioko"

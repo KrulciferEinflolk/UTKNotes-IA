@@ -55,9 +55,16 @@ internal data class GeminiContentTurnPayload(
 )
 
 @JsonClass(generateAdapter = true)
+internal data class GeminiGenerationConfigPayload(
+    val temperature: Float? = null,
+    val maxOutputTokens: Int? = null
+)
+
+@JsonClass(generateAdapter = true)
 internal data class GeminiGenerateContentRequestPayload(
     @Json(name = "system_instruction") val systemInstruction: GeminiContentTurnPayload? = null,
-    val contents: List<GeminiContentTurnPayload>
+    val contents: List<GeminiContentTurnPayload>,
+    val generationConfig: GeminiGenerationConfigPayload? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -177,6 +184,8 @@ class GoogleAiStudioManager(
         includeThoughtBlock: Boolean = false,
         apiKeyOverride: String? = null,
         modelOverride: String? = null,
+        maxOutputTokens: Int? = null,
+        temperature: Float? = null,
         onStatusUpdate: ((String) -> Unit)? = null
     ): String = withContext(Dispatchers.IO) {
         val apiKey = resolveApiKey(apiKeyOverride)
@@ -193,7 +202,9 @@ class GoogleAiStudioManager(
             systemInstruction = systemInstruction,
             imageBase64 = imageBase64,
             imageMimeType = imageMimeType,
-            history = history
+            history = history,
+            maxOutputTokens = maxOutputTokens,
+            temperature = temperature
         )
         val mediaType = "application/json; charset=utf-8".toMediaType()
 
@@ -380,7 +391,9 @@ class GoogleAiStudioManager(
             systemInstruction: String? = null,
             imageBase64: String? = null,
             imageMimeType: String? = null,
-            history: List<Pair<String, String>> = emptyList()
+            history: List<Pair<String, String>> = emptyList(),
+            maxOutputTokens: Int? = null,
+            temperature: Float? = null
         ): GeminiGenerateContentRequestPayload {
             val sysTurn = systemInstruction?.trim()?.takeIf { it.isNotEmpty() }?.let { sys ->
                 GeminiContentTurnPayload(
@@ -428,9 +441,19 @@ class GoogleAiStudioManager(
                 )
             }
 
+            val genConfig = if (maxOutputTokens != null || temperature != null) {
+                GeminiGenerationConfigPayload(
+                    temperature = temperature,
+                    maxOutputTokens = maxOutputTokens
+                )
+            } else {
+                null
+            }
+
             return GeminiGenerateContentRequestPayload(
                 systemInstruction = sysTurn,
-                contents = contents
+                contents = contents,
+                generationConfig = genConfig
             )
         }
 
@@ -439,7 +462,9 @@ class GoogleAiStudioManager(
             systemInstruction: String? = null,
             imageBase64: String? = null,
             imageMimeType: String? = null,
-            history: List<Pair<String, String>> = emptyList()
+            history: List<Pair<String, String>> = emptyList(),
+            maxOutputTokens: Int? = null,
+            temperature: Float? = null
         ): String {
             return requestAdapter.toJson(
                 buildGenerateContentRequest(
@@ -447,7 +472,9 @@ class GoogleAiStudioManager(
                     systemInstruction = systemInstruction,
                     imageBase64 = imageBase64,
                     imageMimeType = imageMimeType,
-                    history = history
+                    history = history,
+                    maxOutputTokens = maxOutputTokens,
+                    temperature = temperature
                 )
             )
         }

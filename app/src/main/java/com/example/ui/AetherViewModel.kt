@@ -18,10 +18,25 @@ import com.example.data.local.ai.ApiKeyValidationState
 import com.example.data.local.llm.LocalLlmManager
 import com.example.data.local.llm.ModelDownloadVerifier
 import com.example.data.local.llm.ModelDownloadStatus
+import com.example.data.local.memory.NoteMemoryBank
 import com.example.data.local.memory.NoteMemoryVaultManager
+import com.example.data.local.settings.AiBehaviorState
+import com.example.data.local.settings.AppAppearanceState
+import com.example.data.local.settings.AppSettingsRepository
+import com.example.data.local.settings.CrashReportEntry
+import com.example.data.local.settings.CrashReportManager
+import com.example.data.local.settings.DriveFilterState
+import com.example.data.local.settings.StorageMetricsCalculator
+import com.example.data.local.settings.StorageOverviewMetrics
+import com.example.data.remote.ai.ExternalAiProvider
+import com.example.data.remote.ai.ExternalAiProviderClient
+import com.example.data.remote.ai.ExternalProviderConfigStore
 import com.example.data.remote.gemini.GoogleAiStudioManager
 import com.example.data.remote.gemini.MissingApiKeyException
 import com.example.ui.reminders.NotificationHelper
+import com.example.ui.theme.AppLanguage
+import com.example.ui.theme.AppThemeId
+import com.example.ui.theme.ColorSchemeMode
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +53,9 @@ data class AuraActionResponse(
 
 enum class AiEngineType {
     GOOGLE_AI_STUDIO,
+    GROQ,
+    OPENAI,
+    CLAUDE,
     AURA_LOCAL
 }
 
@@ -158,6 +176,181 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    val appSettingsRepo = AppSettingsRepository(application)
+    val crashReportManager = CrashReportManager(application).apply {
+        installUncaughtHandler { _selectedAiEngine.value.name }
+    }
+
+    val appearanceState: StateFlow<AppAppearanceState> = appSettingsRepo.appearanceState
+    val aiBehaviorState: StateFlow<AiBehaviorState> = appSettingsRepo.aiBehaviorState
+    val driveFilterState: StateFlow<DriveFilterState> = appSettingsRepo.driveFilterState
+    val crashReports: StateFlow<List<CrashReportEntry>> = crashReportManager.reports
+
+    private val _storageMetrics = MutableStateFlow(StorageOverviewMetrics())
+    val storageMetrics: StateFlow<StorageOverviewMetrics> = _storageMetrics.asStateFlow()
+
+    private val _noteMemoryBanks = MutableStateFlow<List<NoteMemoryBank>>(emptyList())
+    val noteMemoryBanks: StateFlow<List<NoteMemoryBank>> = _noteMemoryBanks.asStateFlow()
+
+    private val externalProviderClient = ExternalAiProviderClient()
+    private val externalStores: Map<ExternalAiProvider, ExternalProviderConfigStore> = mapOf(
+        ExternalAiProvider.GROQ to ExternalProviderConfigStore(application, ExternalAiProvider.GROQ),
+        ExternalAiProvider.OPENAI to ExternalProviderConfigStore(application, ExternalAiProvider.OPENAI),
+        ExternalAiProvider.CLAUDE to ExternalProviderConfigStore(application, ExternalAiProvider.CLAUDE)
+    )
+
+    private val _externalProviderStates = MutableStateFlow<Map<AiEngineType, AiApiSettingsState>>(
+        externalStores.entries.associate { (provider, store) ->
+            provider.engineType to store.getSettingsSnapshot()
+        }
+    )
+    val externalProviderStates: StateFlow<Map<AiEngineType, AiApiSettingsState>> = _externalProviderStates.asStateFlow()
+
+    // --- APPEARANCE & LANGUAGE ---
+    fun setThemeId(themeId: AppThemeId) = appSettingsRepo.setThemeId(themeId)
+    fun setColorSchemeMode(mode: ColorSchemeMode) = appSettingsRepo.setColorSchemeMode(mode)
+    fun setPureBlackDarkMode(enabled: Boolean) = appSettingsRepo.setPureBlackDarkMode(enabled)
+    fun setFontScale(scale: Float) = appSettingsRepo.setFontScale(scale)
+    fun setAppLanguage(language: AppLanguage) = appSettingsRepo.setAppLanguage(language)
+
+    // --- AI BEHAVIOR (MEMORIES, PROFILE, TOKENS) ---
+    fun setAiMemoryEnabled(enabled: Boolean) = appSettingsRepo.setAiMemoryEnabled(enabled)
+    fun addGlobalMemory(fact: String) = appSettingsRepo.addGlobalMemory(fact)
+    fun removeGlobalMemory(index: Int) = appSettingsRepo.removeGlobalMemory(index)
+    fun clearGlobalMemories() = appSettingsRepo.clearGlobalMemories()
+    fun setAboutUser(about: String) = appSettingsRepo.setAboutUser(about)
+    fun setMaxOutputTokens(tokens: Int) = appSettingsRepo.setMaxOutputTokens(tokens)
+    fun setTemperature(temp: Float) = appSettingsRepo.setTemperature(temp)
+    fun setHistoryTurnsLimit(limit: Int) = appSettingsRepo.setHistoryTurnsLimit(limit)
+
+    fun refreshNoteMemoryBanks() {
+        viewModelScope.launch {
+            _noteMemoryBanks.value = memoryVault.listAllMemoryBanks()
+        }
+    }
+
+    fun clearNoteMemoryBank(noteId: String) {
+        viewModelScope.launch {
+            memoryVault.clearMemoryBank(noteId)
+            _noteMemoryBanks.value = memoryVault.listAllMemoryBanks()
+        }
+    }
+
+    // --- EXTERNAL AI PROVIDERS (GROQ, OPENAI, CLAUDE) ---
+    private fun updateExternalState(provider: ExternalAiProvider, newState: AiApiSettingsState) {
+        val current = _externalProviderStates.value.toMutableMap()
+        current[provider.engineType] = newState
+        _externalProviderStates.value = current
+    }
+
+    fun saveExternalApiKey(provider: ExternalAiProvider, rawKey: String) {
+        val store = externalStores[provider] ?: return
+        val updated = store.saveApiKey(rawKey).copy(validationState = ApiKeyValidationState.Idle)
+        updateExternalState(provider, updated)
+    }
+
+    fun clearExternalApiKey(provider: ExternalAiProvider) {
+        val store = externalStores[provider] ?: return
+        val updated = store.clearApiKey().copy(validationState = ApiKeyValidationState.Idle)
+        updateExternalState(provider, updated)
+    }
+
+    fun setExternalModel(provider: ExternalAiProvider, modelId: String) {
+        val store = externalStores[provider] ?: return
+        val currentValidation = _externalProviderStates.value[provider.engineType]?.validationState ?: ApiKeyValidationState.Idle
+        val updated = store.saveSelectedModel(modelId).copy(validationState = currentValidation)
+        updateExternalState(provider, updated)
+    }
+
+    fun testExternalConnection(provider: ExternalAiProvider, candidateApiKey: String? = null) {
+        val store = externalStores[provider] ?: return
+        val effectiveKey = candidateApiKey?.trim()?.takeIf { it.isNotEmpty() } ?: store.getDecryptedApiKey().orEmpty()
+        viewModelScope.launch {
+            val current = _externalProviderStates.value[provider.engineType] ?: store.getSettingsSnapshot()
+            updateExternalState(provider, current.copy(validationState = ApiKeyValidationState.Validating))
+            try {
+                val models = externalProviderClient.listModels(provider, effectiveKey)
+                if (!candidateApiKey.isNullOrBlank()) {
+                    store.saveApiKey(candidateApiKey)
+                }
+                var updated = store.saveDiscoveredModels(models, markVerified = true)
+                if (models.isNotEmpty() && models.none { it.id.equals(updated.selectedModel, ignoreCase = true) }) {
+                    val preferred = models.firstOrNull { it.id.equals(provider.defaultModel, ignoreCase = true) }?.id
+                        ?: models.first().id
+                    updated = store.saveSelectedModel(preferred)
+                }
+                updateExternalState(
+                    provider,
+                    updated.copy(
+                        validationState = ApiKeyValidationState.Valid(models.size),
+                        isConnectionVerified = true
+                    )
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val safeError = com.example.util.sanitizeSensitiveDetails(
+                    e.localizedMessage.orEmpty(),
+                    effectiveKey
+                ).ifBlank { "No se pudo verificar la clave en ${provider.displayName}." }
+                val updated = store.setConnectionVerified(false)
+                updateExternalState(
+                    provider,
+                    updated.copy(
+                        validationState = ApiKeyValidationState.Invalid(safeError),
+                        isConnectionVerified = false
+                    )
+                )
+            }
+        }
+    }
+
+    // --- STORAGE & SELECTIVE DRIVE SYNC ---
+    fun setBookDriveSyncEnabled(bookId: String, enabled: Boolean) {
+        appSettingsRepo.setBookDriveSyncEnabled(bookId, enabled)
+        refreshStorageMetrics()
+    }
+
+    fun setNoteDriveSyncEnabled(noteId: String, enabled: Boolean) {
+        appSettingsRepo.setNoteDriveSyncEnabled(noteId, enabled)
+        refreshStorageMetrics()
+    }
+
+    fun refreshStorageMetrics() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val email = currentEmail.value
+            val allBooks = repository.getAllBooksList(email)
+            val pages = mutableListOf<PageEntity>()
+            allBooks.forEach { b -> pages.addAll(repository.getPagesForBookList(b.id)) }
+            val allNotes = repository.searchNotesList("", email)
+            val metrics = StorageMetricsCalculator.computeMetrics(
+                context = getApplication(),
+                books = allBooks,
+                pages = pages,
+                notes = allNotes,
+                filterState = appSettingsRepo.getDriveFilterSnapshot(),
+                crashLogsBytes = crashReportManager.getReportsFileSizeBytes()
+            )
+            _storageMetrics.value = metrics
+        }
+    }
+
+    // --- CRASH REPORTS (ADVANCED) ---
+    fun clearAllCrashReports() {
+        crashReportManager.clearReports()
+        refreshStorageMetrics()
+    }
+
+    fun recordDiagnosticTestCrash() {
+        val simException = IllegalStateException("Diagnóstico manual de registro de fallos (simulación controlada)")
+        crashReportManager.recordException(
+            source = "DiagnosticCheck",
+            throwable = simException,
+            engineLabel = _selectedAiEngine.value.name
+        )
+        refreshStorageMetrics()
+    }
+
     init {
         viewModelScope.launch {
             try {
@@ -168,6 +361,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 }
             } catch (e: Exception) {
                 android.util.Log.e("AetherViewModel", "Error al inicializar modelo local", e)
+                crashReportManager.recordException("InitLocalLlm", e)
             }
         }
     }
@@ -414,9 +608,10 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         val sId = ensureCurrentSessionId()
-        val isGeminiEngine = _selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO
-        val historyTurnCap = if (isGeminiEngine) 8 else 4
-        val historyCharCap = if (isGeminiEngine) 4_000 else 800
+        val isCloudEngine = _selectedAiEngine.value != AiEngineType.AURA_LOCAL
+        val configuredTurns = aiBehaviorState.value.historyTurnsLimit
+        val historyTurnCap = if (isCloudEngine) configuredTurns else minOf(configuredTurns, 4)
+        val historyCharCap = if (isCloudEngine) 4_000 else 800
 
         chatbotJob?.cancel()
         chatbotJob = viewModelScope.launch {
@@ -494,8 +689,8 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     ): String {
         val sId = _currentChatSessionId.value
         val sessionSource = if (sId != null) sessionSourceMap[sId] else null
-        val isGeminiEngine = _selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO
-        val contextLimit = if (isGeminiEngine) 35_000 else 4_500
+        val isCloudEngine = _selectedAiEngine.value != AiEngineType.AURA_LOCAL
+        val contextLimit = if (isCloudEngine) 35_000 else 4_500
 
         val isGreeting = isGreetingOrGeneralQuery(userMsg) && extraShortcutContext.isBlank()
         val isIndependent = com.example.util.ChatNotePipeline.isIndependentGeneralTopic(userMsg)
@@ -766,9 +961,9 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 imageOcrText = com.example.util.LocalMediaAnalyzer.analyzeImage(context, imgUri)
             }
 
-            val isGeminiEngine = _selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO
-            val docLimit = if (isGeminiEngine) 35_000 else 4_500
-            val noteLimit = if (isGeminiEngine) 35_000 else 3_000
+            val isCloudEngine = _selectedAiEngine.value != AiEngineType.AURA_LOCAL
+            val docLimit = if (isCloudEngine) 35_000 else 4_500
+            val noteLimit = if (isCloudEngine) 35_000 else 3_000
 
             val isGreeting = isGreetingOrGeneralQuery(rawUserMsg) &&
                 actualFileContent.isNullOrBlank() && imgUri == null && pNote == null && pText.isNullOrBlank() && extraShortcutContext.isBlank()
@@ -1303,12 +1498,12 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 return@launch
             }
 
-            if (_selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO) {
-                val activeModelId = _aiSettingsState.value.selectedModel
+            val activeCloudModel = getActiveCloudModelLabel()
+            if (_selectedAiEngine.value != AiEngineType.AURA_LOCAL) {
                 val summary = currentNotes.take(5).joinToString("\n") { "• ${it.title}: ${it.content.take(80)}" }
                 val suggestions = try {
                     val prompt = "En base a estas notas del usuario:\n$summary\nGenera 3 sugerencias breves de qué nota escribir o investigar a continuación. Devuelve exactamente 3 líneas separadas por salto de línea sin viñetas."
-                    val resp = googleAiStudio.generateContent(
+                    val resp = generateCloudAiResponse(
                         prompt = prompt,
                         includeThoughtBlock = false
                     )
@@ -1316,14 +1511,14 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    android.util.Log.e("AetherViewModel", "Error generando sugerencias con Google AI Studio ($activeModelId)", e)
+                    android.util.Log.e("AetherViewModel", "Error generando sugerencias con $activeCloudModel", e)
                     _aiMessage.value = com.example.util.sanitizeSensitiveDetails(
                         e.localizedMessage.orEmpty()
-                    ).ifBlank { "No se pudo conectar con Google AI Studio ($activeModelId)." }
+                    ).ifBlank { "No se pudo conectar con $activeCloudModel." }
                     emptyList()
                 }
                 _aiSuggestions.value = if (suggestions.isNotEmpty()) suggestions else listOf(
-                    "Sintetiza tus notas recientes con Google AI Studio.",
+                    "Sintetiza tus notas recientes con IA.",
                     "Crea una nueva nota de resumen para tus proyectos.",
                     "Organiza tus notas clave con etiquetas y colores."
                 )
@@ -1372,11 +1567,11 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 2. Si la instrucción pide corregir, devuelve el párrafo corregido. Si pide expandir, devuelve el párrafo expandido. Si pide resumir, devuelve la síntesis en un párrafo o lista concisa.
             """.trimIndent()
 
-            if (_selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO) {
-                val activeModelId = _aiSettingsState.value.selectedModel
+            if (_selectedAiEngine.value != AiEngineType.AURA_LOCAL) {
+                val activeModelId = getActiveCloudModelLabel()
                 var errorHandled = false
                 val response = try {
-                    googleAiStudio.generateContent(
+                    generateCloudAiResponse(
                         prompt = prompt,
                         systemInstruction = sysPrompt,
                         includeThoughtBlock = false
@@ -1384,10 +1579,10 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    android.util.Log.e("AetherViewModel", "Error mejorando párrafo con Google AI Studio ($activeModelId)", e)
+                    android.util.Log.e("AetherViewModel", "Error mejorando párrafo con $activeModelId", e)
                     _aiMessage.value = com.example.util.sanitizeSensitiveDetails(
                         e.localizedMessage.orEmpty()
-                    ).ifBlank { "Error al mejorar el párrafo con Google AI Studio ($activeModelId)." }
+                    ).ifBlank { "Error al mejorar el párrafo con $activeModelId." }
                     errorHandled = true
                     null
                 }
@@ -1426,13 +1621,13 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             _aiLoading.value = true
             _aiMessage.value = "Modificando nota..."
 
-            if (_selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO) {
-                val activeModelId = _aiSettingsState.value.selectedModel
+            if (_selectedAiEngine.value != AiEngineType.AURA_LOCAL) {
+                val activeModelId = getActiveCloudModelLabel()
                 val readableContent = com.example.convertBlocksToMarkdown(note.content).ifBlank { note.content }
                 val prompt = "Título actual: ${note.title}\nContenido actual:\n$readableContent\n\nInstrucción:\n$instruction\n\nDevuelve la nota actualizada en formato:\nTITULO: <nuevo o mismo titulo>\nCONTENIDO: <nuevo contenido completo en Markdown compatible (headings #, ##, desplegables <details><summary>...</summary>...</details>, listas, estilos **, *, <u>, [color:...])>"
                 var errorHandled = false
                 val response = try {
-                    googleAiStudio.generateContent(
+                    generateCloudAiResponse(
                         prompt = prompt,
                         systemInstruction = "Eres un asistente editorial experto en UTK Notes. Modifica la nota siguiendo rigurosamente las instrucciones del usuario.",
                         includeThoughtBlock = false
@@ -1440,10 +1635,10 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    android.util.Log.e("AetherViewModel", "Error modificando nota con Google AI Studio ($activeModelId)", e)
+                    android.util.Log.e("AetherViewModel", "Error modificando nota con $activeModelId", e)
                     _aiMessage.value = com.example.util.sanitizeSensitiveDetails(
                         e.localizedMessage.orEmpty()
-                    ).ifBlank { "Error al modificar la nota con Google AI Studio." }
+                    ).ifBlank { "Error al modificar la nota con $activeModelId." }
                     errorHandled = true
                     null
                 }
@@ -1470,7 +1665,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                     _selectedNote.value = updatedNote
                     _aiMessage.value = "Nota modificada exitosamente con $activeModelId"
                 } else if (!errorHandled) {
-                    _aiMessage.value = "No se pudieron aplicar cambios con Google AI Studio."
+                    _aiMessage.value = "No se pudieron aplicar cambios con $activeModelId."
                 }
                 _aiLoading.value = false
                 return@launch
@@ -1511,12 +1706,12 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             _aiLoading.value = true
             _aiMessage.value = "Generando nueva nota..."
 
-            if (_selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO) {
-                val activeModelId = _aiSettingsState.value.selectedModel
+            if (_selectedAiEngine.value != AiEngineType.AURA_LOCAL) {
+                val activeModelId = getActiveCloudModelLabel()
                 val prompt = "Crea una nota completa, bien estructurada y detallada en español sobre: $instruction\nFormato de salida:\nTITULO: <titulo breve y representativo>\nCONTENIDO: <contenido completo estructurado en Markdown compatible con UTK Notes>"
                 var errorHandled = false
                 val response = try {
-                    googleAiStudio.generateContent(
+                    generateCloudAiResponse(
                         prompt = prompt,
                         systemInstruction = "Eres Aura impulsada por $activeModelId. Redacta notas informativas, claras y útiles con formato Markdown estructurado.",
                         includeThoughtBlock = false
@@ -1524,10 +1719,10 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    android.util.Log.e("AetherViewModel", "Error creando nota con Google AI Studio ($activeModelId)", e)
+                    android.util.Log.e("AetherViewModel", "Error creando nota con $activeModelId", e)
                     _aiMessage.value = com.example.util.sanitizeSensitiveDetails(
                         e.localizedMessage.orEmpty()
-                    ).ifBlank { "Error al crear la nota con Google AI Studio ($activeModelId)." }
+                    ).ifBlank { "Error al crear la nota con $activeModelId." }
                     errorHandled = true
                     null
                 }
@@ -1548,13 +1743,13 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                         pageId = currentPage.id,
                         title = newTitle,
                         content = com.example.serializeBlocks(trimmedBlocks),
-                        tags = "Gemini, IA",
+                        tags = "IA, Aura",
                         userEmail = currentEmail.value
                     )
                     _selectedNote.value = newNote
                     _aiMessage.value = "Nota creada con $activeModelId"
                 } else if (!errorHandled) {
-                    _aiMessage.value = "No se pudo generar la nota con Google AI Studio."
+                    _aiMessage.value = "No se pudo generar la nota con $activeModelId."
                 }
                 _aiLoading.value = false
                 return@launch
@@ -1708,11 +1903,119 @@ enum class QueryComplexity {
     }
 
     fun buildAgentSystemPrompt(userQuery: String = "", complexity: QueryComplexity = QueryComplexity.INTERMEDIATE): String {
-        return com.example.util.ChatNotePipeline.buildSystemPrompt(
+        val base = com.example.util.ChatNotePipeline.buildSystemPrompt(
             userQuery = userQuery,
-            isGoogleAiStudio = _selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO,
+            isGoogleAiStudio = _selectedAiEngine.value != AiEngineType.AURA_LOCAL,
             isSimpleQuery = complexity == QueryComplexity.SIMPLE,
             isComplexQuery = complexity == QueryComplexity.COMPLEX
+        )
+        val behavior = aiBehaviorState.value
+        val extra = buildString {
+            if (behavior.aboutUser.isNotBlank()) {
+                append("\n\n=== SOBRE EL USUARIO ===\n")
+                append(behavior.aboutUser.trim())
+            }
+            if (behavior.memoryEnabled && behavior.globalMemories.isNotEmpty()) {
+                append("\n\n=== MEMORIAS GUARDADAS DEL USUARIO ===\n")
+                behavior.globalMemories.take(15).forEach { fact ->
+                    append("• ").append(fact).append("\n")
+                }
+            }
+        }
+        return base + extra
+    }
+
+    fun getActiveCloudModelLabel(): String {
+        val engine = _selectedAiEngine.value
+        return when (engine) {
+            AiEngineType.GOOGLE_AI_STUDIO -> _aiSettingsState.value.selectedModel
+            AiEngineType.GROQ, AiEngineType.OPENAI, AiEngineType.CLAUDE -> {
+                val ext = ExternalAiProvider.fromEngineType(engine)
+                _externalProviderStates.value[engine]?.selectedModel ?: ext?.defaultModel ?: engine.name
+            }
+            AiEngineType.AURA_LOCAL -> modelVerifier.activeModel.value.name
+        }
+    }
+
+    private suspend fun generateCloudAiResponse(
+        prompt: String,
+        systemInstruction: String? = null,
+        imageBase64: String? = null,
+        imageMimeType: String? = null,
+        history: List<Pair<String, String>> = emptyList(),
+        includeThoughtBlock: Boolean = false,
+        maxTokensOverride: Int? = null,
+        onStatusUpdate: ((String) -> Unit)? = null
+    ): String {
+        val behavior = aiBehaviorState.value
+        val maxTokens = maxTokensOverride ?: behavior.maxOutputTokens
+        val temp = behavior.temperature
+        return when (val engine = _selectedAiEngine.value) {
+            AiEngineType.GOOGLE_AI_STUDIO -> {
+                googleAiStudio.generateContent(
+                    prompt = prompt,
+                    systemInstruction = systemInstruction,
+                    imageBase64 = imageBase64,
+                    imageMimeType = imageMimeType,
+                    history = history,
+                    includeThoughtBlock = includeThoughtBlock,
+                    maxOutputTokens = maxTokens,
+                    temperature = temp,
+                    onStatusUpdate = onStatusUpdate
+                )
+            }
+            AiEngineType.GROQ, AiEngineType.OPENAI, AiEngineType.CLAUDE -> {
+                val provider = ExternalAiProvider.fromEngineType(engine)
+                    ?: throw IllegalStateException("Proveedor no soportado: $engine")
+                val store = externalStores[provider]
+                    ?: throw IllegalStateException("Almacén no disponible para ${provider.displayName}")
+                val apiKey = store.getDecryptedApiKey().orEmpty()
+                val modelId = _externalProviderStates.value[engine]?.selectedModel ?: provider.defaultModel
+                externalAiClientGenerate(
+                    provider = provider,
+                    apiKey = apiKey,
+                    modelId = modelId,
+                    prompt = prompt,
+                    systemInstruction = systemInstruction,
+                    imageBase64 = imageBase64,
+                    imageMimeType = imageMimeType,
+                    history = history,
+                    maxOutputTokens = maxTokens,
+                    temperature = temp,
+                    onStatusUpdate = onStatusUpdate
+                )
+            }
+            AiEngineType.AURA_LOCAL -> {
+                throw IllegalStateException("Aura Local no utiliza proveedor nube.")
+            }
+        }
+    }
+
+    private suspend fun externalAiClientGenerate(
+        provider: ExternalAiProvider,
+        apiKey: String,
+        modelId: String,
+        prompt: String,
+        systemInstruction: String?,
+        imageBase64: String?,
+        imageMimeType: String?,
+        history: List<Pair<String, String>>,
+        maxOutputTokens: Int,
+        temperature: Float,
+        onStatusUpdate: ((String) -> Unit)?
+    ): String {
+        return externalProviderClient.generateContent(
+            provider = provider,
+            apiKey = apiKey,
+            modelId = modelId,
+            prompt = prompt,
+            systemInstruction = systemInstruction,
+            imageBase64 = imageBase64,
+            imageMimeType = imageMimeType,
+            history = history,
+            maxOutputTokens = maxOutputTokens,
+            temperature = temperature,
+            onStatusUpdate = onStatusUpdate
         )
     }
 
@@ -2018,6 +2321,17 @@ enum class QueryComplexity {
         prompt: String,
         systemInstruction: String = "Eres Aura, motor lingüístico y fonotáctico rápido, preciso y sin alucinaciones para creación de lenguas y conlangs. Responde estrictamente lo solicitado."
     ): String? {
+        if (_selectedAiEngine.value != AiEngineType.AURA_LOCAL) {
+            val cloudResult = runCatching {
+                generateCloudAiResponse(
+                    prompt = prompt,
+                    systemInstruction = systemInstruction,
+                    includeThoughtBlock = false
+                )
+            }.getOrNull()
+            if (!cloudResult.isNullOrBlank()) return cloudResult
+        }
+
         val status = modelVerifier.checkCurrentStatus()
         if (status !is ModelDownloadStatus.Ready) {
             return null
@@ -2045,7 +2359,8 @@ enum class QueryComplexity {
         rawUserPrompt: String = message
     ): String? {
         val noteId = _selectedNote.value?.id
-        val isGeminiEngine = _selectedAiEngine.value == AiEngineType.GOOGLE_AI_STUDIO
+        val isCloudEngine = _selectedAiEngine.value != AiEngineType.AURA_LOCAL
+        val behavior = aiBehaviorState.value
         val cleanMsg = rawUserPrompt.trim().lowercase()
         val isBareSummaryWithoutTopic = (cleanMsg == "dame un resumen" ||
             cleanMsg == "resumen" ||
@@ -2069,30 +2384,43 @@ enum class QueryComplexity {
         val isGreeting = complexity == QueryComplexity.SIMPLE
         val refsActiveNote = com.example.util.ChatNotePipeline.detectActiveNoteReference(rawUserPrompt)
 
-        val memoryContext = if (noteId != null && !isGreeting && refsActiveNote) {
+        val memoryContext = if (behavior.memoryEnabled && noteId != null && !isGreeting && refsActiveNote) {
             val bank = memoryVault.getMemoryBank(noteId)
-            if (bank.summary.isNotBlank()) "\n\n=== RESUMEN DE LA NOTA ACTUAL ===\n${bank.summary.take(500)}" else ""
+            buildString {
+                if (bank.summary.isNotBlank()) {
+                    append("\n\n=== RESUMEN DE LA NOTA ACTUAL ===\n${bank.summary.take(500)}")
+                }
+                if (bank.keyFacts.isNotEmpty()) {
+                    append("\n\n=== HECHOS DE MEMORIA DE LA NOTA ===\n")
+                    bank.keyFacts.take(8).forEach { append("• $it\n") }
+                }
+            }
         } else ""
 
         val finalSystemPrompt = agentPrompt + memoryContext
 
-        val expectedOutputTokens = when (complexity) {
+        val baseLocalTokens = when (complexity) {
             QueryComplexity.SIMPLE -> 200
             QueryComplexity.INTERMEDIATE -> 600
             QueryComplexity.COMPLEX -> 1200
+        }
+        val expectedOutputTokens = if (isCloudEngine) {
+            behavior.maxOutputTokens
+        } else {
+            minOf(baseLocalTokens, behavior.maxOutputTokens)
         }
 
         val imageDisclaimer = if (!imageBase64.isNullOrBlank() && !message.contains("INFORMACIÓN DE LA IMAGEN") && !message.contains("OCR")) {
             "\n\n[Nota: Aura procesará el contexto y texto asociado a tu imagen]."
         } else ""
 
-        val maxLen = if (isGeminiEngine) 45_000 else ((expectedOutputTokens) * 12).coerceAtLeast(3000)
+        val maxLen = if (isCloudEngine) 45_000 else ((expectedOutputTokens) * 12).coerceAtLeast(3000)
         val safeMessage = if (message.length > maxLen) message.take(maxLen) + "\n...[Contenido condensado para análisis global]" else message
 
         val isIndependentSummaryOrTopic = com.example.util.ChatNotePipeline.isIndependentGeneralTopic(rawUserPrompt) &&
             !message.contains("=== DOCUMENTO") && !message.contains("=== NOTA")
 
-        val historyLimit = if (isGeminiEngine) 8 else 4
+        val historyLimit = if (isCloudEngine) behavior.historyTurnsLimit else minOf(behavior.historyTurnsLimit, 4)
         val sanitizedHistory = history.filter { (_, text) ->
             val lower = text.lowercase()
             val isCorrupt = lower.contains("newy") ||
@@ -2102,25 +2430,26 @@ enum class QueryComplexity {
             !isCorrupt
         }
 
-        val effectiveHistory = if (complexity == QueryComplexity.SIMPLE || isIndependentSummaryOrTopic) {
+        val effectiveHistory = if (complexity == QueryComplexity.SIMPLE || isIndependentSummaryOrTopic || historyLimit <= 0) {
             emptyList()
         } else {
             sanitizedHistory.takeLast(historyLimit)
         }
 
         var isTransportError = false
-        val rawResponse = if (isGeminiEngine) {
-            val activeModelId = _aiSettingsState.value.selectedModel
-            _chatbotStatusText.value = "Conectando con Google AI Studio ($activeModelId)..."
+        val rawResponse = if (isCloudEngine) {
+            val activeModelId = getActiveCloudModelLabel()
+            _chatbotStatusText.value = "Conectando con ${_selectedAiEngine.value.name} ($activeModelId)..."
             _liveThinkingText.value = null
             try {
-                googleAiStudio.generateContent(
+                generateCloudAiResponse(
                     prompt = safeMessage + imageDisclaimer,
                     systemInstruction = finalSystemPrompt,
                     imageBase64 = imageBase64,
                     imageMimeType = mimeType,
                     history = effectiveHistory,
                     includeThoughtBlock = true,
+                    maxTokensOverride = expectedOutputTokens,
                     onStatusUpdate = { status ->
                         _chatbotStatusText.value = status
                         _liveThinkingText.value = status
@@ -2130,14 +2459,15 @@ enum class QueryComplexity {
                 throw e
             } catch (e: MissingApiKeyException) {
                 isTransportError = true
-                e.message ?: "Configura tu clave API de Google AI Studio en Ajustes de IA (engranaje) o cambia al motor 'Aura Local'."
+                e.message ?: "Configura tu clave API en Ajustes -> Motores de IA o cambia al motor 'Aura Local'."
             } catch (e: Exception) {
                 isTransportError = true
-                android.util.Log.e("AetherViewModel", "Error en Google AI Studio ($activeModelId)", e)
+                android.util.Log.e("AetherViewModel", "Error en motor nube ($activeModelId)", e)
+                crashReportManager.recordException("CloudAiEngine($activeModelId)", e)
                 val safeError = com.example.util.sanitizeSensitiveDetails(
                     e.localizedMessage ?: "Error de conexión"
-                ).ifBlank { "Error de conexión con Google AI Studio ($activeModelId)" }
-                "$safeError\n\nSi el problema es de cuota, puedes cambiar de modelo o alternar a 'Aura Local' en Ajustes de IA."
+                ).ifBlank { "Error de conexión con $activeModelId" }
+                "$safeError\n\nPuedes cambiar de modelo/motor o alternar a 'Aura Local' en Ajustes -> Motores de IA."
             } finally {
                 _chatbotStatusText.value = null
                 _liveThinkingText.value = null
@@ -2145,7 +2475,7 @@ enum class QueryComplexity {
         } else {
             val status = modelVerifier.checkCurrentStatus()
             if (status !is ModelDownloadStatus.Ready) {
-                return "El modelo local Aura aún no está descargado.\n\nVe a Ajustes de IA y pulsa 'Descargar Modelo' para habilitar las funciones de inteligencia artificial 100% privada y local, o activa el motor Google AI Studio con tu clave API gratuita."
+                return "El modelo local Aura aún no está descargado.\n\nVe a Ajustes -> Motores de IA y pulsa 'Descargar Modelo' para habilitar las funciones de inteligencia artificial 100% privada y local, o activa un motor en la nube (Gemini, Groq, ChatGPT, Claude)."
             }
 
             val requiredContext = localLlm.calculateElasticContext(
@@ -2179,7 +2509,7 @@ enum class QueryComplexity {
             return rawResponse
         }
 
-        if (noteId != null && refsActiveNote) {
+        if (behavior.memoryEnabled && noteId != null && refsActiveNote) {
             viewModelScope.launch {
                 memoryVault.saveChat(
                     com.example.data.local.memory.NoteChatRecord(

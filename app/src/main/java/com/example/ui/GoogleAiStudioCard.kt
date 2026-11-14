@@ -128,7 +128,7 @@ fun GoogleAiStudioEngineCard(
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Text(
-                                text = "API Propia Gratis",
+                                text = appText("API Propia Gratis", "Free Own API"),
                                 color = GeminiCyanAccent,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
@@ -138,7 +138,10 @@ fun GoogleAiStudioEngineCard(
                     }
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "Conexión directa con tu clave API de Google AI Studio.",
+                        text = appText(
+                            "Conexión directa con tu clave API de Google AI Studio.",
+                            "Direct connection with your Google AI Studio API key."
+                        ),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp,
                         lineHeight = 16.sp
@@ -161,15 +164,15 @@ fun GoogleAiStudioEngineCard(
                             else -> MaterialTheme.colorScheme.onSurfaceVariant
                         }
                         val statusText = when {
-                            aiSettings.validationState is ApiKeyValidationState.Validating -> "Probando conexión..."
-                            aiSettings.validationState is ApiKeyValidationState.Invalid -> "Revisa tu clave API"
+                            aiSettings.validationState is ApiKeyValidationState.Validating -> appText("Probando conexión...", "Testing connection...")
+                            aiSettings.validationState is ApiKeyValidationState.Invalid -> appText("Revisa tu clave API", "Check your API key")
                             isConnectionValid -> {
                                 val count = (aiSettings.validationState as? ApiKeyValidationState.Valid)?.modelCount
                                     ?: availableModels.size
-                                "Conectada ($count modelos) • ${aiSettings.selectedModel}"
+                                appText("Conectada ($count modelos)", "Connected ($count models)") + " • ${aiSettings.selectedModel}"
                             }
-                            aiSettings.hasApiKey -> "Clave guardada (${aiSettings.maskedKeyPreview})"
-                            else -> "Sin clave configurada"
+                            aiSettings.hasApiKey -> appText("Clave guardada (${aiSettings.maskedKeyPreview})", "Key saved (${aiSettings.maskedKeyPreview})")
+                            else -> appText("Sin clave configurada", "No key configured")
                         }
                         Icon(
                             statusIcon,
@@ -344,7 +347,7 @@ fun GoogleAiStudioEngineCard(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "Probando conexión...",
+                                    text = appText("Probando conexión...", "Testing connection..."),
                                     color = GeminiOnPrimary,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
@@ -358,7 +361,7 @@ fun GoogleAiStudioEngineCard(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Probar conexión",
+                                    text = appText("Probar conexión", "Test connection"),
                                     color = GeminiOnPrimary,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
@@ -440,7 +443,7 @@ fun GoogleAiStudioEngineCard(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "Modelo de Gemini a usar",
+                                    text = appText("Modelo de Gemini a usar", "Gemini model to use"),
                                     color = MaterialTheme.colorScheme.onSurface,
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 13.sp
@@ -450,7 +453,7 @@ fun GoogleAiStudioEngineCard(
                                     shape = RoundedCornerShape(6.dp)
                                 ) {
                                     Text(
-                                        text = "${availableModels.size} disponibles",
+                                        text = appText("${availableModels.size} disponibles", "${availableModels.size} available"),
                                         color = emeraldAccent,
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.SemiBold,
@@ -502,7 +505,7 @@ fun GoogleAiStudioEngineCard(
                                     expanded = modelDropdownExpanded,
                                     onDismissRequest = { modelDropdownExpanded = false },
                                     modifier = Modifier
-                                        .background(Color(0xFF1B2130))
+                                        .background(CosmicSurface)
                                         .testTag("gemini_model_dropdown_menu")
                                 ) {
                                     availableModels.forEach { modelInfo ->

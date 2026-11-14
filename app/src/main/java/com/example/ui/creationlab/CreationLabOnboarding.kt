@@ -75,8 +75,8 @@ fun CreationLabOnboardingScreen(
             subtitle = "Arquitectura de morfemas y raíces",
             description = "Descubre y forja raíces base, prefijos y sufijos esenciales para expandir tu propia lengua construida. Mezcla morfemas para descubrir nuevos significados y resonancias al instante.",
             icon = Icons.Default.Extension,
-            accentColor = Color(0xFF00CEC9),
-            secondaryColor = Color(0xFF8C7CFF),
+            accentColor = GeminiBlue,
+            secondaryColor = PurpleGrey80,
             tagText = "Paso 1 de 3 • Morfología"
         ),
         OnboardingStep(
