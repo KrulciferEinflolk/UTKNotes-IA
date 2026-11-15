@@ -810,7 +810,8 @@ fun LibraryMainScreen(viewModel: AetherViewModel, modifier: Modifier = Modifier)
         ) {
             SettingsHubScreen(
                 viewModel = viewModel,
-                onBack = { showSettingsDialog = false }
+                onBack = { showSettingsDialog = false },
+                onAccountSignedOut = { showSettingsDialog = false }
             )
         }
         return

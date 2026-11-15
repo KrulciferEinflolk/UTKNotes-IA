@@ -148,7 +148,7 @@ interface NotesDao {
     @Query("SELECT * FROM chat_sessions WHERE id = :id")
     suspend fun getChatSessionById(id: String): com.example.data.model.ChatSessionEntity?
 
-    // --- MIGRATION QUERIES ---
+    // --- MIGRATION & MULTI-ACCOUNT QUERIES ---
     @Query("UPDATE books SET userEmail = :newEmail WHERE userEmail = 'offline' OR userEmail = ''")
     suspend fun migrateOfflineBooks(newEmail: String)
 
@@ -160,5 +160,38 @@ interface NotesDao {
 
     @Query("UPDATE chat_sessions SET userEmail = :newEmail WHERE userEmail = 'offline' OR userEmail = ''")
     suspend fun migrateOfflineChatSessions(newEmail: String)
+
+    @Query("UPDATE books SET userEmail = 'offline' WHERE userEmail = ''")
+    suspend fun normalizeEmptyBooksToOffline()
+
+    @Query("UPDATE pages SET userEmail = 'offline' WHERE userEmail = ''")
+    suspend fun normalizeEmptyPagesToOffline()
+
+    @Query("UPDATE notes SET userEmail = 'offline' WHERE userEmail = ''")
+    suspend fun normalizeEmptyNotesToOffline()
+
+    @Query("UPDATE chat_sessions SET userEmail = 'offline' WHERE userEmail = ''")
+    suspend fun normalizeEmptyChatSessionsToOffline()
+
+    @Query("SELECT DISTINCT userEmail FROM books WHERE isDeleted = 0 AND userEmail != ''")
+    suspend fun getDistinctBookAccounts(): List<String>
+
+    @Query("SELECT DISTINCT userEmail FROM notes WHERE isDeleted = 0 AND userEmail != ''")
+    suspend fun getDistinctNoteAccounts(): List<String>
+
+    @Query("SELECT DISTINCT userEmail FROM chat_sessions WHERE userEmail != ''")
+    suspend fun getDistinctChatAccounts(): List<String>
+
+    @Query("UPDATE books SET userEmail = :targetEmail, updatedAt = :timestamp WHERE id = :bookId")
+    suspend fun reassignBookOwner(bookId: String, targetEmail: String, timestamp: Long = System.currentTimeMillis())
+
+    @Query("UPDATE pages SET userEmail = :targetEmail, updatedAt = :timestamp WHERE bookId = :bookId")
+    suspend fun reassignPagesOwnerForBook(bookId: String, targetEmail: String, timestamp: Long = System.currentTimeMillis())
+
+    @Query("UPDATE notes SET userEmail = :targetEmail, isSynced = 0, updatedAt = :timestamp WHERE pageId IN (SELECT id FROM pages WHERE bookId = :bookId)")
+    suspend fun reassignNotesOwnerForBook(bookId: String, targetEmail: String, timestamp: Long = System.currentTimeMillis())
+
+    @Query("UPDATE notes SET pageId = :targetPageId, userEmail = :targetEmail, isSynced = 0, updatedAt = :timestamp WHERE id = :noteId")
+    suspend fun moveNoteToPageAndAccount(noteId: String, targetPageId: String, targetEmail: String, timestamp: Long = System.currentTimeMillis())
 }
 

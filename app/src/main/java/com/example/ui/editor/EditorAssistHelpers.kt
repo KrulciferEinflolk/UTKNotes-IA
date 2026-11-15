@@ -31,6 +31,35 @@ fun splitParagraphTextAtCursor(
     )
 }
 
+data class MergeParagraphResult(
+    val mergedContent: String,
+    val cursorOffsetInMerged: Int
+)
+
+fun mergeParagraphContentsWithSpace(
+    firstContent: String,
+    secondContent: String
+): MergeParagraphResult {
+    return when {
+        firstContent.isEmpty() -> MergeParagraphResult(
+            mergedContent = secondContent,
+            cursorOffsetInMerged = 0
+        )
+        secondContent.isEmpty() -> MergeParagraphResult(
+            mergedContent = firstContent,
+            cursorOffsetInMerged = firstContent.length
+        )
+        firstContent.last().isWhitespace() || secondContent.first().isWhitespace() -> MergeParagraphResult(
+            mergedContent = firstContent + secondContent,
+            cursorOffsetInMerged = firstContent.length
+        )
+        else -> MergeParagraphResult(
+            mergedContent = "$firstContent $secondContent",
+            cursorOffsetInMerged = firstContent.length + 1
+        )
+    }
+}
+
 /**
  * Determines whether an incoming inline text edit should push a new undo checkpoint.
  * Groups continuous single-word typing, breaking at pauses (~850ms), field switches,

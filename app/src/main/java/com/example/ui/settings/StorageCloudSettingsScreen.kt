@@ -21,19 +21,29 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.ManageAccounts
+import androidx.compose.material.icons.filled.RadioButtonChecked
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,11 +52,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -54,7 +67,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -63,6 +78,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.local.settings.AccountStorageSummary
+import com.example.data.local.settings.AccountTransferMode
 import com.example.data.local.settings.BookStorageItem
 import com.example.data.local.settings.StorageMetricsCalculator
 import com.example.data.remote.SyncState
@@ -76,6 +93,13 @@ import com.example.ui.theme.GeminiOnPrimary
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.appText
+
+private data class TransferDialogRequest(
+    val id: String,
+    val title: String,
+    val isBook: Boolean,
+    val sourceAccountId: String
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -91,10 +115,20 @@ fun StorageCloudSettingsScreen(
     }
 
     val metrics by viewModel.storageMetrics.collectAsStateWithLifecycle()
+    val availableAccounts by viewModel.availableStorageAccounts.collectAsStateWithLifecycle()
+    val inspectedAccountId by viewModel.inspectedAccountId.collectAsStateWithLifecycle()
+    val transferStatusMessage by viewModel.transferStatusMessage.collectAsStateWithLifecycle()
     val currentEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
     val isConnected by viewModel.syncManager.isConnected.collectAsStateWithLifecycle()
     val syncState by viewModel.syncManager.syncState.collectAsStateWithLifecycle()
     val expandedBooks = remember { mutableStateMapOf<String, Boolean>() }
+    var transferRequest by remember { mutableStateOf<TransferDialogRequest?>(null) }
+
+    val activeAccountId = currentEmail?.takeIf { it.isNotBlank() } ?: "offline"
+    val selectedAccountId = inspectedAccountId ?: activeAccountId
+    val isInspectingActiveAccount = selectedAccountId == activeAccountId
+    val selectedAccountLabel = if (selectedAccountId == "offline") appText("Modo Local", "Local Mode") else selectedAccountId
+    val activeAccountLabel = if (activeAccountId == "offline") appText("Modo Local", "Local Mode") else activeAccountId
 
     val totalAppBytes = metrics.totalLibraryBytes + metrics.totalModelsBytes + metrics.totalBackupsBytes + metrics.totalCrashLogsBytes
 
@@ -153,10 +187,134 @@ fun StorageCloudSettingsScreen(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .widthIn(max = 640.dp),
+                    .widthIn(max = 640.dp)
+                    .testTag("storage_cloud_lazy_column"),
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // Multi-Account Isolated Storage Selector Card
+                if (availableAccounts.isNotEmpty()) {
+                    item {
+                        Surface(
+                            color = CosmicSurface,
+                            shape = RoundedCornerShape(18.dp),
+                            border = BorderStroke(1.dp, CosmicBorder),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("storage_accounts_selector_card")
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.ManageAccounts, contentDescription = null, tint = GeminiBlue)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = appText("Almacenamiento por cuenta", "Per-Account Storage"),
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = appText(
+                                        "Cada usuario conserva su propio espacio separado. Toca una cuenta para inspeccionar su peso y mover o copiar libros y notas.",
+                                        "Each user keeps separate storage. Tap an account to inspect its weight and move or copy books and notes."
+                                    ),
+                                    color = TextSecondary,
+                                    fontSize = 12.sp
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    items(availableAccounts, key = { it.accountId }) { summary ->
+                                        val isSelected = summary.accountId == selectedAccountId
+                                        AccountStorageChip(
+                                            summary = summary,
+                                            isSelected = isSelected,
+                                            onClick = { viewModel.selectStorageAccount(summary.accountId) }
+                                        )
+                                    }
+                                }
+                                if (!isInspectingActiveAccount) {
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Surface(
+                                        color = GeminiBlue.copy(alpha = 0.12f),
+                                        shape = RoundedCornerShape(12.dp),
+                                        border = BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.35f)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.SwapHoriz,
+                                                contentDescription = null,
+                                                tint = GeminiBlue,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = appText(
+                                                    "Inspeccionando $selectedAccountLabel. Usa ⇄ para transferir hacia $activeAccountLabel u otra cuenta.",
+                                                    "Inspecting $selectedAccountLabel. Tap ⇄ to transfer to $activeAccountLabel or another account."
+                                                ),
+                                                color = TextPrimary,
+                                                fontSize = 11.5.sp,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Transfer status banner
+                if (!transferStatusMessage.isNullOrBlank()) {
+                    item {
+                        Surface(
+                            color = GeminiBlue.copy(alpha = 0.14f),
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.5f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("storage_transfer_status_banner")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = GeminiBlue, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = transferStatusMessage.orEmpty(),
+                                    color = TextPrimary,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = { viewModel.clearTransferStatusMessage() },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = appText("Cerrar aviso", "Dismiss"),
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Summary Storage Card
                 item {
                     Surface(
@@ -171,15 +329,27 @@ fun StorageCloudSettingsScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
                                     Icon(Icons.Default.Storage, contentDescription = null, tint = GeminiBlue)
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = appText("Uso en el dispositivo", "Device Storage Usage"),
-                                        color = TextPrimary,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 15.sp
-                                    )
+                                    Column {
+                                        Text(
+                                            text = appText("Uso en el dispositivo", "Device Storage Usage"),
+                                            color = TextPrimary,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp
+                                        )
+                                        Text(
+                                            text = selectedAccountLabel,
+                                            color = TextSecondary,
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
                                 }
                                 Text(
                                     text = StorageMetricsCalculator.formatByteSize(totalAppBytes),
@@ -196,7 +366,7 @@ fun StorageCloudSettingsScreen(
                                 value = StorageMetricsCalculator.formatByteSize(metrics.totalLibraryBytes)
                             )
                             StorageBreakdownRow(
-                                label = appText("Modelos de IA local", "Local AI models"),
+                                label = appText("Modelos de IA local (compartido)", "Local AI models (shared)"),
                                 value = StorageMetricsCalculator.formatByteSize(metrics.totalModelsBytes)
                             )
                             StorageBreakdownRow(
@@ -294,7 +464,7 @@ fun StorageCloudSettingsScreen(
                                 Spacer(modifier = Modifier.height(8.dp))
                                 OutlinedButton(
                                     onClick = {
-                                        viewModel.syncManager.disconnectDrive()
+                                        viewModel.switchAccountSession()
                                         onSignedOut?.invoke()
                                     },
                                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.6f)),
@@ -307,19 +477,23 @@ fun StorageCloudSettingsScreen(
                     }
                 }
 
-                // Per-book & per-note Drive sync switches + weights
+                // Per-book & per-note Drive sync switches + transfer controls + weights
                 item {
                     Column(modifier = Modifier.padding(top = 4.dp)) {
                         Text(
-                            text = appText("Sincronización selectiva con Drive", "Selective Google Drive Sync"),
+                            text = if (isInspectingActiveAccount) {
+                                appText("Libros, notas y transferencia", "Books, Notes & Transfer")
+                            } else {
+                                appText("Contenido de $selectedAccountLabel", "Content in $selectedAccountLabel")
+                            },
                             color = GeminiBlue,
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp
                         )
                         Text(
                             text = appText(
-                                "Activa o desactiva qué libros y notas se respaldan en Google Drive y revisa su peso en la app.",
-                                "Toggle which books and notes back up to Google Drive and inspect their exact app weight."
+                                "Toca ⇄ para mover o copiar libros y notas entre cuentas, o activa los interruptores de Drive.",
+                                "Tap ⇄ to move or copy books and notes between accounts, or toggle Drive backup switches."
                             ),
                             color = TextSecondary,
                             fontSize = 12.sp
@@ -337,8 +511,8 @@ fun StorageCloudSettingsScreen(
                         ) {
                             Text(
                                 text = appText(
-                                    "Aún no hay libros o notas en esta cuenta.",
-                                    "There are no books or notes in this account yet."
+                                    "Aún no hay libros o notas en esta cuenta ($selectedAccountLabel).",
+                                    "There are no books or notes in this account ($selectedAccountLabel) yet."
                                 ),
                                 color = TextSecondary,
                                 fontSize = 13.sp,
@@ -352,12 +526,29 @@ fun StorageCloudSettingsScreen(
                         BookDriveSyncCard(
                             item = bookItem,
                             isExpanded = isExpanded,
+                            allowDriveSwitches = isInspectingActiveAccount,
                             onToggleExpand = { expandedBooks[bookItem.book.id] = !isExpanded },
                             onToggleBookSync = { enabled ->
                                 viewModel.setBookDriveSyncEnabled(bookItem.book.id, enabled)
                             },
                             onToggleNoteSync = { noteId, enabled ->
                                 viewModel.setNoteDriveSyncEnabled(noteId, enabled)
+                            },
+                            onTransferBook = {
+                                transferRequest = TransferDialogRequest(
+                                    id = bookItem.book.id,
+                                    title = bookItem.book.title.ifBlank { "Libro sin título" },
+                                    isBook = true,
+                                    sourceAccountId = selectedAccountId
+                                )
+                            },
+                            onTransferNote = { noteItem ->
+                                transferRequest = TransferDialogRequest(
+                                    id = noteItem.note.id,
+                                    title = noteItem.note.title.ifBlank { "Nota sin título" },
+                                    isBook = false,
+                                    sourceAccountId = selectedAccountId
+                                )
                             }
                         )
                     }
@@ -365,6 +556,346 @@ fun StorageCloudSettingsScreen(
             }
         }
     }
+
+    transferRequest?.let { req ->
+        AccountTransferDialog(
+            request = req,
+            availableAccounts = availableAccounts,
+            preferredDestinationAccount = if (req.sourceAccountId != activeAccountId) activeAccountId else null,
+            onDismiss = { transferRequest = null },
+            onConfirmTransfer = { targetAccountId, mode ->
+                if (req.isBook) {
+                    viewModel.transferBookBetweenAccounts(req.id, targetAccountId, mode)
+                } else {
+                    viewModel.transferNoteBetweenAccounts(req.id, targetAccountId, mode)
+                }
+                transferRequest = null
+            }
+        )
+    }
+}
+
+@Composable
+private fun AccountStorageChip(
+    summary: AccountStorageSummary,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = if (isSelected) GeminiBlue.copy(alpha = 0.16f) else CosmicSurfaceVariant,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(
+            width = if (isSelected) 1.5.dp else 1.dp,
+            color = if (isSelected) GeminiBlue else CosmicBorder
+        ),
+        modifier = Modifier.testTag("storage_account_chip_${summary.accountId}")
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = if (summary.accountId == "offline") Icons.Default.Smartphone else Icons.Default.AccountCircle,
+                contentDescription = null,
+                tint = if (isSelected) GeminiBlue else TextSecondary,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = summary.displayName,
+                        color = TextPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.5.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (summary.isCurrentAccount) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            color = GeminiBlue.copy(alpha = 0.22f),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = appText("Activa", "Active"),
+                                color = GeminiBlue,
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                }
+                Text(
+                    text = "${summary.bookCount} lib · ${summary.noteCount} not · ${StorageMetricsCalculator.formatByteSize(summary.totalBytes)}",
+                    color = TextSecondary,
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccountTransferDialog(
+    request: TransferDialogRequest,
+    availableAccounts: List<AccountStorageSummary>,
+    preferredDestinationAccount: String?,
+    onDismiss: () -> Unit,
+    onConfirmTransfer: (String, AccountTransferMode) -> Unit
+) {
+    val destinationCandidates = remember(availableAccounts, request.sourceAccountId) {
+        availableAccounts.filter { it.accountId != request.sourceAccountId }
+    }
+    var selectedMode by remember { mutableStateOf(AccountTransferMode.COPY) }
+    var useCustomEmail by remember { mutableStateOf(destinationCandidates.isEmpty()) }
+    var selectedTargetId by remember(request, destinationCandidates, preferredDestinationAccount) {
+        mutableStateOf(
+            preferredDestinationAccount?.takeIf { pref -> destinationCandidates.any { it.accountId == pref } }
+                ?: destinationCandidates.firstOrNull()?.accountId
+                ?: ""
+        )
+    }
+    var customEmailText by remember { mutableStateOf("") }
+
+    val sourceLabel = if (request.sourceAccountId == "offline") appText("Modo Local", "Local Mode") else request.sourceAccountId
+    val resolvedTarget = if (useCustomEmail) customEmailText.trim() else selectedTargetId.trim()
+    val canConfirm = resolvedTarget.isNotBlank() &&
+        resolvedTarget != request.sourceAccountId &&
+        (!useCustomEmail || resolvedTarget == "offline" || resolvedTarget.contains("@"))
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = CosmicSurface,
+        modifier = Modifier.testTag("account_transfer_dialog"),
+        title = {
+            Column {
+                Text(
+                    text = if (request.isBook) appText("Transferir libro", "Transfer Book") else appText("Transferir nota", "Transfer Note"),
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "\"${request.title}\" · ${appText("Origen", "Source")}: $sourceLabel",
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = appText("Acción de transferencia", "Transfer action"),
+                    color = GeminiBlue,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.5.sp
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        onClick = { selectedMode = AccountTransferMode.MOVE },
+                        color = if (selectedMode == AccountTransferMode.MOVE) GeminiBlue.copy(alpha = 0.18f) else CosmicSurfaceVariant,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(
+                            width = if (selectedMode == AccountTransferMode.MOVE) 1.5.dp else 1.dp,
+                            color = if (selectedMode == AccountTransferMode.MOVE) GeminiBlue else CosmicBorder
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("transfer_mode_move")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SwapHoriz,
+                                contentDescription = null,
+                                tint = if (selectedMode == AccountTransferMode.MOVE) GeminiBlue else TextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = appText("Mover", "Move"),
+                                color = if (selectedMode == AccountTransferMode.MOVE) GeminiBlue else TextPrimary,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                    Surface(
+                        onClick = { selectedMode = AccountTransferMode.COPY },
+                        color = if (selectedMode == AccountTransferMode.COPY) GeminiBlue.copy(alpha = 0.18f) else CosmicSurfaceVariant,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(
+                            width = if (selectedMode == AccountTransferMode.COPY) 1.5.dp else 1.dp,
+                            color = if (selectedMode == AccountTransferMode.COPY) GeminiBlue else CosmicBorder
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("transfer_mode_copy")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = null,
+                                tint = if (selectedMode == AccountTransferMode.COPY) GeminiBlue else TextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = appText("Copiar", "Copy"),
+                                color = if (selectedMode == AccountTransferMode.COPY) GeminiBlue else TextPrimary,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+                Text(
+                    text = if (selectedMode == AccountTransferMode.MOVE) {
+                        appText("Mueve el elemento a la cuenta elegida y lo quita de la cuenta origen.", "Moves the item to the target account and removes it from source.")
+                    } else {
+                        appText("Crea una copia independiente en la cuenta destino conservando el original.", "Creates an independent copy in the destination account while keeping the original.")
+                    },
+                    color = TextSecondary,
+                    fontSize = 11.5.sp
+                )
+
+                Text(
+                    text = appText("Cuenta destino", "Destination account"),
+                    color = GeminiBlue,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.5.sp
+                )
+
+                destinationCandidates.forEach { acc ->
+                    val checked = !useCustomEmail && selectedTargetId == acc.accountId
+                    Surface(
+                        onClick = {
+                            useCustomEmail = false
+                            selectedTargetId = acc.accountId
+                        },
+                        color = if (checked) GeminiBlue.copy(alpha = 0.14f) else CosmicSurfaceVariant,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, if (checked) GeminiBlue else CosmicBorder),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("transfer_target_option_${acc.accountId}")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (checked) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
+                                contentDescription = null,
+                                tint = if (checked) GeminiBlue else TextSecondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = acc.displayName,
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${acc.bookCount} lib · ${StorageMetricsCalculator.formatByteSize(acc.totalBytes)}",
+                                    color = TextSecondary,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Surface(
+                    onClick = { useCustomEmail = true },
+                    color = if (useCustomEmail) GeminiBlue.copy(alpha = 0.14f) else CosmicSurfaceVariant,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, if (useCustomEmail) GeminiBlue else CosmicBorder),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("transfer_target_custom_option")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (useCustomEmail) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
+                            contentDescription = null,
+                            tint = if (useCustomEmail) GeminiBlue else TextSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = appText("Otra cuenta de Google (correo)...", "Another Google account (email)..."),
+                            color = TextPrimary,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+
+                if (useCustomEmail) {
+                    OutlinedTextField(
+                        value = customEmailText,
+                        onValueChange = { customEmailText = it },
+                        singleLine = true,
+                        label = { Text(appText("Correo de Google destino", "Target Google email")) },
+                        placeholder = { Text("usuario@gmail.com") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = GeminiBlue,
+                            unfocusedBorderColor = CosmicBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedLabelColor = GeminiBlue,
+                            unfocusedLabelColor = TextSecondary
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("transfer_custom_email_input")
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirmTransfer(resolvedTarget, selectedMode) },
+                enabled = canConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
+                modifier = Modifier.testTag("confirm_transfer_btn")
+            ) {
+                Text(
+                    text = if (selectedMode == AccountTransferMode.MOVE) appText("Mover", "Move") else appText("Copiar", "Copy"),
+                    color = GeminiOnPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(appText("Cancelar", "Cancel"), color = TextSecondary)
+            }
+        }
+    )
 }
 
 @Composable
@@ -384,9 +915,12 @@ private fun StorageBreakdownRow(label: String, value: String) {
 private fun BookDriveSyncCard(
     item: BookStorageItem,
     isExpanded: Boolean,
+    allowDriveSwitches: Boolean,
     onToggleExpand: () -> Unit,
     onToggleBookSync: (Boolean) -> Unit,
-    onToggleNoteSync: (String, Boolean) -> Unit
+    onToggleNoteSync: (String, Boolean) -> Unit,
+    onTransferBook: () -> Unit,
+    onTransferNote: (com.example.data.local.settings.NoteStorageItem) -> Unit
 ) {
     Surface(
         color = CosmicSurfaceVariant,
@@ -432,21 +966,36 @@ private fun BookDriveSyncCard(
                         fontSize = 11.5.sp
                     )
                 }
+                IconButton(
+                    onClick = onTransferBook,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("transfer_book_btn_${item.book.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SwapHoriz,
+                        contentDescription = appText("Transferir libro", "Transfer book"),
+                        tint = GeminiBlue,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
                 Icon(
                     imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                     contentDescription = appText("Ver notas", "Show notes"),
                     tint = TextSecondary
                 )
-                Spacer(modifier = Modifier.width(6.dp))
-                Switch(
-                    checked = item.isDriveSyncEnabled,
-                    onCheckedChange = onToggleBookSync,
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = GeminiOnPrimary,
-                        checkedTrackColor = GeminiBlue
-                    ),
-                    modifier = Modifier.testTag("drive_book_switch_${item.book.id}")
-                )
+                if (allowDriveSwitches) {
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Switch(
+                        checked = item.isDriveSyncEnabled,
+                        onCheckedChange = onToggleBookSync,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = GeminiOnPrimary,
+                            checkedTrackColor = GeminiBlue
+                        ),
+                        modifier = Modifier.testTag("drive_book_switch_${item.book.id}")
+                    )
+                }
             }
 
             AnimatedVisibility(visible = isExpanded && item.notes.isNotEmpty()) {
@@ -481,23 +1030,38 @@ private fun BookDriveSyncCard(
                                 )
                                 Text(
                                     text = StorageMetricsCalculator.formatByteSize(noteItem.sizeBytes) +
-                                        if (!item.isDriveSyncEnabled) {
+                                        if (allowDriveSwitches && !item.isDriveSyncEnabled) {
                                             appText(" · Libro excluido de Drive", " · Book excluded from Drive")
                                         } else "",
                                     color = TextSecondary,
                                     fontSize = 11.sp
                                 )
                             }
-                            Switch(
-                                checked = noteItem.isDriveSyncEnabled,
-                                enabled = item.isDriveSyncEnabled,
-                                onCheckedChange = { onToggleNoteSync(noteItem.note.id, it) },
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = GeminiOnPrimary,
-                                    checkedTrackColor = GeminiBlue
-                                ),
-                                modifier = Modifier.testTag("drive_note_switch_${noteItem.note.id}")
-                            )
+                            IconButton(
+                                onClick = { onTransferNote(noteItem) },
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("transfer_note_btn_${noteItem.note.id}")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.SwapHoriz,
+                                    contentDescription = appText("Transferir nota", "Transfer note"),
+                                    tint = GeminiBlue,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            if (allowDriveSwitches) {
+                                Switch(
+                                    checked = noteItem.isDriveSyncEnabled,
+                                    enabled = item.isDriveSyncEnabled,
+                                    onCheckedChange = { onToggleNoteSync(noteItem.note.id, it) },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = GeminiOnPrimary,
+                                        checkedTrackColor = GeminiBlue
+                                    ),
+                                    modifier = Modifier.testTag("drive_note_switch_${noteItem.note.id}")
+                                )
+                            }
                         }
                     }
                 }

@@ -92,6 +92,7 @@ import com.example.ui.editor.findAllOccurrencesIgnoreCase
 import com.example.ui.editor.findInNoteSearchMatches
 import com.example.ui.editor.shouldStartNewTypingGroup
 import com.example.ui.editor.splitParagraphTextAtCursor
+import com.example.ui.editor.mergeParagraphContentsWithSpace
 import com.example.ui.pdf.PdfConfigStore
 import com.example.ui.pdf.PdfExportManager
 import com.example.ui.pdf.PdfPreviewScreen
@@ -153,7 +154,7 @@ class MainActivity : ComponentActivity() {
                 ) { result ->
                     viewModel.syncManager.clearRecoveryIntent()
                     if (result.resultCode == android.app.Activity.RESULT_OK) {
-                        viewModel.triggerDriveSync()
+                        viewModel.retryLastDriveActionAfterAuth()
                     }
                 }
 
@@ -164,6 +165,30 @@ class MainActivity : ComponentActivity() {
                         } catch (e: Exception) {
                             android.util.Log.e("MainActivity", "Failed to launch recovery intent", e)
                             viewModel.syncManager.clearRecoveryIntent()
+                        }
+                    }
+                }
+
+                val pendingAuthIntentSender by viewModel.syncManager.pendingAuthIntentSender.collectAsStateWithLifecycle()
+                val authIntentSenderLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.StartIntentSenderForResult()
+                ) { result ->
+                    val authorized = viewModel.syncManager.onAuthorizationResultFromIntent(result.data)
+                    if (authorized || result.resultCode == android.app.Activity.RESULT_OK) {
+                        viewModel.retryLastDriveActionAfterAuth()
+                    } else {
+                        viewModel.syncManager.clearPendingAuthIntentSender()
+                    }
+                }
+
+                LaunchedEffect(pendingAuthIntentSender) {
+                    pendingAuthIntentSender?.let { sender ->
+                        try {
+                            val req = androidx.activity.result.IntentSenderRequest.Builder(sender).build()
+                            authIntentSenderLauncher.launch(req)
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "Failed to launch Drive OAuth IntentSender", e)
+                            viewModel.syncManager.clearPendingAuthIntentSender()
                         }
                     }
                 }
@@ -4353,6 +4378,72 @@ fun NoteEditorWorkspace(
         }
     }
 
+    fun mergeActiveParagraphUp() {
+        val idx = selectedBlockIndex
+        if (idx <= 0 || idx !in blocks.indices) return
+        val currentBlock = blocks[idx] as? EditorBlock.Text ?: return
+        val upperBlock = blocks[idx - 1] as? EditorBlock.Text ?: return
+
+        pushHistory()
+        val mutableBlocks = blocks.toMutableList()
+        val merged = mergeParagraphContentsWithSpace(
+            firstContent = upperBlock.content,
+            secondContent = currentBlock.content
+        )
+        val effectiveUpper = if (upperBlock.isCollapsedHeader && upperBlock.isCollapsed) {
+            upperBlock.copy(content = merged.mergedContent, isCollapsed = false)
+        } else {
+            upperBlock.copy(content = merged.mergedContent)
+        }
+
+        mutableBlocks[idx - 1] = effectiveUpper
+        mutableBlocks.removeAt(idx)
+        updateBlocksAndSave(mutableBlocks)
+        selectedBlockIndex = idx - 1
+        pendingCursorOffset = Pair(effectiveUpper.id, merged.cursorOffsetInMerged)
+        historyApplyVersion++
+
+        scope.launch {
+            delay(60)
+            try {
+                focusRequesters[effectiveUpper.id]?.requestFocus()
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun mergeActiveParagraphDown() {
+        val idx = selectedBlockIndex
+        if (idx !in 0 until blocks.lastIndex) return
+        val currentBlock = blocks[idx] as? EditorBlock.Text ?: return
+        val lowerBlock = blocks[idx + 1] as? EditorBlock.Text ?: return
+
+        pushHistory()
+        val mutableBlocks = blocks.toMutableList()
+        val merged = mergeParagraphContentsWithSpace(
+            firstContent = currentBlock.content,
+            secondContent = lowerBlock.content
+        )
+        val effectiveCurrent = if (currentBlock.isCollapsedHeader && currentBlock.isCollapsed) {
+            currentBlock.copy(content = merged.mergedContent, isCollapsed = false)
+        } else {
+            currentBlock.copy(content = merged.mergedContent)
+        }
+
+        mutableBlocks[idx] = effectiveCurrent
+        mutableBlocks.removeAt(idx + 1)
+        updateBlocksAndSave(mutableBlocks)
+        selectedBlockIndex = idx
+        pendingCursorOffset = Pair(effectiveCurrent.id, merged.cursorOffsetInMerged)
+        historyApplyVersion++
+
+        scope.launch {
+            delay(60)
+            try {
+                focusRequesters[effectiveCurrent.id]?.requestFocus()
+            } catch (_: Exception) {}
+        }
+    }
+
     // Precomputed list of visible (index, block) items - ONLY hides items that are INSIDE the collapsed dropdown
     val displayItems by remember(blocks) {
         derivedStateOf {
@@ -6049,6 +6140,45 @@ fun NoteEditorWorkspace(
                                     Text(
                                         text = "↪",
                                         color = if (canSplit) TextPrimary else TextTertiary,
+                                        fontSize = 19.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            // Fusionar con párrafo de arriba (⤴)
+                            item {
+                                val canMergeUp = selectedBlockIndex > 0 &&
+                                    selectedBlockIndex in blocks.indices &&
+                                    blocks[selectedBlockIndex] is EditorBlock.Text &&
+                                    blocks[selectedBlockIndex - 1] is EditorBlock.Text
+                                IconButton(
+                                    onClick = { mergeActiveParagraphUp() },
+                                    enabled = canMergeUp,
+                                    modifier = Modifier.testTag("editor_merge_up_btn")
+                                ) {
+                                    Text(
+                                        text = "⤴",
+                                        color = if (canMergeUp) TextPrimary else TextTertiary,
+                                        fontSize = 19.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            // Fusionar con párrafo de abajo (⤵)
+                            item {
+                                val canMergeDown = selectedBlockIndex in 0 until blocks.lastIndex &&
+                                    blocks[selectedBlockIndex] is EditorBlock.Text &&
+                                    blocks[selectedBlockIndex + 1] is EditorBlock.Text
+                                IconButton(
+                                    onClick = { mergeActiveParagraphDown() },
+                                    enabled = canMergeDown,
+                                    modifier = Modifier.testTag("editor_merge_down_btn")
+                                ) {
+                                    Text(
+                                        text = "⤵",
+                                        color = if (canMergeDown) TextPrimary else TextTertiary,
                                         fontSize = 19.sp,
                                         fontWeight = FontWeight.SemiBold
                                     )

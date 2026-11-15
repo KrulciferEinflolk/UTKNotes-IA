@@ -8,14 +8,20 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface LabDao {
 
-    @Query("SELECT * FROM lab_items WHERE (userEmail = :userEmail OR userEmail = '') ORDER BY createdAt DESC")
+    @Query("SELECT * FROM lab_items WHERE (userEmail = :userEmail OR (:userEmail = 'offline' AND userEmail = '')) ORDER BY createdAt DESC")
     fun getAllLabItemsFlow(userEmail: String): Flow<List<LabItemEntity>>
 
-    @Query("SELECT * FROM lab_items WHERE (userEmail = :userEmail OR userEmail = '') AND itemType = :type ORDER BY createdAt DESC")
+    @Query("SELECT * FROM lab_items WHERE (userEmail = :userEmail OR (:userEmail = 'offline' AND userEmail = '')) AND itemType = :type ORDER BY createdAt DESC")
     fun getLabItemsByTypeFlow(userEmail: String, type: LabItemType): Flow<List<LabItemEntity>>
 
-    @Query("SELECT * FROM lab_items WHERE (userEmail = :userEmail OR userEmail = '') AND itemType = :type ORDER BY termLanguage ASC")
+    @Query("SELECT * FROM lab_items WHERE (userEmail = :userEmail OR (:userEmail = 'offline' AND userEmail = '')) AND itemType = :type ORDER BY termLanguage ASC")
     fun getLabItemsByTypeAlphabeticalFlow(userEmail: String, type: LabItemType): Flow<List<LabItemEntity>>
+
+    @Query("SELECT DISTINCT userEmail FROM lab_items WHERE userEmail != ''")
+    suspend fun getDistinctLabAccounts(): List<String>
+
+    @Query("UPDATE lab_items SET userEmail = 'offline' WHERE userEmail = ''")
+    suspend fun normalizeEmptyLabItemsToOffline()
 
     @Query("SELECT * FROM lab_items WHERE id = :id LIMIT 1")
     suspend fun getLabItemById(id: String): LabItemEntity?

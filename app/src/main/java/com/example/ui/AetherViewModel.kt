@@ -20,6 +20,8 @@ import com.example.data.local.llm.ModelDownloadVerifier
 import com.example.data.local.llm.ModelDownloadStatus
 import com.example.data.local.memory.NoteMemoryBank
 import com.example.data.local.memory.NoteMemoryVaultManager
+import com.example.data.local.settings.AccountStorageSummary
+import com.example.data.local.settings.AccountTransferMode
 import com.example.data.local.settings.AiBehaviorState
 import com.example.data.local.settings.AppAppearanceState
 import com.example.data.local.settings.AppSettingsRepository
@@ -189,6 +191,15 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     private val _storageMetrics = MutableStateFlow(StorageOverviewMetrics())
     val storageMetrics: StateFlow<StorageOverviewMetrics> = _storageMetrics.asStateFlow()
 
+    private val _availableStorageAccounts = MutableStateFlow<List<AccountStorageSummary>>(emptyList())
+    val availableStorageAccounts: StateFlow<List<AccountStorageSummary>> = _availableStorageAccounts.asStateFlow()
+
+    private val _inspectedAccountId = MutableStateFlow<String?>(null)
+    val inspectedAccountId: StateFlow<String?> = _inspectedAccountId.asStateFlow()
+
+    private val _transferStatusMessage = MutableStateFlow<String?>(null)
+    val transferStatusMessage: StateFlow<String?> = _transferStatusMessage.asStateFlow()
+
     private val _noteMemoryBanks = MutableStateFlow<List<NoteMemoryBank>>(emptyList())
     val noteMemoryBanks: StateFlow<List<NoteMemoryBank>> = _noteMemoryBanks.asStateFlow()
 
@@ -316,22 +327,151 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         refreshStorageMetrics()
     }
 
-    fun refreshStorageMetrics() {
+    fun selectStorageAccount(accountId: String) {
+        val cleanId = accountId.trim().ifBlank { "offline" }
+        _inspectedAccountId.value = cleanId
+        refreshStorageMetrics(cleanId)
+    }
+
+    fun clearTransferStatusMessage() {
+        _transferStatusMessage.value = null
+    }
+
+    fun switchAccountSession() {
+        _selectedBook.value = null
+        _selectedPage.value = null
+        _selectedNote.value = null
+        _inspectedAccountId.value = null
+        syncManager.disconnectDrive()
+    }
+
+    fun refreshStorageMetrics(targetAccountId: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
-            val email = currentEmail.value
-            val allBooks = repository.getAllBooksList(email)
-            val pages = mutableListOf<PageEntity>()
-            allBooks.forEach { b -> pages.addAll(repository.getPagesForBookList(b.id)) }
-            val allNotes = repository.searchNotesList("", email)
+            repository.normalizeEmptyAccountRecords()
+            database.labDao().normalizeEmptyLabItemsToOffline()
+
+            val activeAccount = currentEmail.value.ifBlank { "offline" }
+            val discoveredAccounts = linkedSetOf<String>().apply {
+                add(activeAccount)
+                add("offline")
+                addAll(repository.getDistinctAccountEmails())
+                addAll(database.labDao().getDistinctLabAccounts())
+                addAll(syncManager.getKnownAccounts())
+            }.map { it.trim().ifBlank { "offline" } }
+                .distinct()
+                .sortedWith(
+                    compareBy<String>(
+                        { it != activeAccount },
+                        { it != "offline" },
+                        { it.lowercase() }
+                    )
+                )
+
+            val filterSnapshot = appSettingsRepo.getDriveFilterSnapshot()
+            val crashBytes = crashReportManager.getReportsFileSizeBytes()
+            val accountCache = mutableMapOf<String, Triple<List<BookEntity>, List<PageEntity>, List<NoteEntity>>>()
+            val summaries = mutableListOf<AccountStorageSummary>()
+
+            for (accountId in discoveredAccounts) {
+                val accountBooks = repository.getAllBooksList(accountId)
+                val accountPages = mutableListOf<PageEntity>()
+                accountBooks.forEach { b -> accountPages.addAll(repository.getPagesForBookList(b.id)) }
+                val accountNotes = repository.searchNotesList("", accountId)
+                accountCache[accountId] = Triple(accountBooks, accountPages, accountNotes)
+                summaries.add(
+                    StorageMetricsCalculator.computeAccountSummary(
+                        context = getApplication(),
+                        accountId = accountId,
+                        displayName = if (accountId == "offline") "Modo Local" else accountId,
+                        isCurrentAccount = accountId == activeAccount,
+                        books = accountBooks,
+                        pages = accountPages,
+                        notes = accountNotes
+                    )
+                )
+            }
+            _availableStorageAccounts.value = summaries
+
+            val inspectedAccount = (targetAccountId ?: _inspectedAccountId.value)
+                ?.takeIf { accountCache.containsKey(it) }
+                ?: activeAccount
+            _inspectedAccountId.value = inspectedAccount
+
+            val (inspectedBooks, inspectedPages, inspectedNotes) = accountCache[inspectedAccount]
+                ?: Triple(emptyList(), emptyList(), emptyList())
+
             val metrics = StorageMetricsCalculator.computeMetrics(
                 context = getApplication(),
-                books = allBooks,
-                pages = pages,
-                notes = allNotes,
-                filterState = appSettingsRepo.getDriveFilterSnapshot(),
-                crashLogsBytes = crashReportManager.getReportsFileSizeBytes()
+                books = inspectedBooks,
+                pages = inspectedPages,
+                notes = inspectedNotes,
+                filterState = filterSnapshot,
+                crashLogsBytes = crashBytes,
+                accountEmail = inspectedAccount
             )
             _storageMetrics.value = metrics
+        }
+    }
+
+    fun transferBookBetweenAccounts(
+        bookId: String,
+        targetAccount: String,
+        mode: AccountTransferMode
+    ) {
+        val cleanTarget = targetAccount.trim().ifBlank { "offline" }
+        viewModelScope.launch(Dispatchers.IO) {
+            syncManager.registerKnownAccount(cleanTarget)
+            val bookTitle = repository.getBook(bookId)?.title.orEmpty().ifBlank { "Libro" }
+            val success = repository.transferBookToAccount(
+                bookId = bookId,
+                targetAccount = cleanTarget,
+                mode = mode,
+                memoryVault = memoryVault
+            )
+            if (success) {
+                val activeAccount = currentEmail.value.ifBlank { "offline" }
+                if (mode == AccountTransferMode.MOVE && _selectedBook.value?.id == bookId && cleanTarget != activeAccount) {
+                    _selectedBook.value = null
+                    _selectedPage.value = null
+                    _selectedNote.value = null
+                }
+                val actionWord = if (mode == AccountTransferMode.MOVE) "movido" else "copiado"
+                val destLabel = if (cleanTarget == "offline") "Modo Local" else cleanTarget
+                _transferStatusMessage.value = "Libro \"$bookTitle\" $actionWord a $destLabel."
+                refreshStorageMetrics()
+            } else {
+                _transferStatusMessage.value = "No se pudo transferir el libro (verifica que la cuenta destino sea distinta)."
+            }
+        }
+    }
+
+    fun transferNoteBetweenAccounts(
+        noteId: String,
+        targetAccount: String,
+        mode: AccountTransferMode
+    ) {
+        val cleanTarget = targetAccount.trim().ifBlank { "offline" }
+        viewModelScope.launch(Dispatchers.IO) {
+            syncManager.registerKnownAccount(cleanTarget)
+            val noteTitle = repository.getNote(noteId)?.title.orEmpty().ifBlank { "Nota" }
+            val success = repository.transferNoteToAccount(
+                noteId = noteId,
+                targetAccount = cleanTarget,
+                mode = mode,
+                memoryVault = memoryVault
+            )
+            if (success) {
+                val activeAccount = currentEmail.value.ifBlank { "offline" }
+                if (mode == AccountTransferMode.MOVE && _selectedNote.value?.id == noteId && cleanTarget != activeAccount) {
+                    _selectedNote.value = null
+                }
+                val actionWord = if (mode == AccountTransferMode.MOVE) "movida" else "copiada"
+                val destLabel = if (cleanTarget == "offline") "Modo Local" else cleanTarget
+                _transferStatusMessage.value = "Nota \"$noteTitle\" $actionWord a $destLabel."
+                refreshStorageMetrics()
+            } else {
+                _transferStatusMessage.value = "No se pudo transferir la nota (verifica que la cuenta destino sea distinta)."
+            }
         }
     }
 
@@ -1193,6 +1333,7 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
                 _selectedBook.value = null
                 _selectedPage.value = null
                 _selectedNote.value = null
+                _inspectedAccountId.value = null
             }
         }
 
@@ -1452,7 +1593,10 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
 
 
     // --- DRIVE SYNC ---
+    private var lastDriveActionWasFolders = false
+
     fun triggerDriveSync() {
+        lastDriveActionWasFolders = false
         viewModelScope.launch {
             syncManager.synchronize()
             // After sync completes, if there is no selected book, automatically select the first available restored book and its first page!
@@ -1472,8 +1616,17 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun createDriveDatabaseStructure() {
+        lastDriveActionWasFolders = true
         viewModelScope.launch {
             syncManager.createDriveDatabaseStructure()
+        }
+    }
+
+    fun retryLastDriveActionAfterAuth() {
+        if (lastDriveActionWasFolders) {
+            createDriveDatabaseStructure()
+        } else {
+            triggerDriveSync()
         }
     }
 

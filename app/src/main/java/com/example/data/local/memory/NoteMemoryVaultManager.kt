@@ -223,6 +223,49 @@ class NoteMemoryVaultManager(private val context: Context) {
         }
     }
 
+    suspend fun cloneNoteVault(
+        sourceNoteId: String,
+        targetNoteId: String,
+        targetTitle: String,
+        targetPageId: String
+    ) = withContext(Dispatchers.IO) {
+        try {
+            val sourceBank = getMemoryBank(sourceNoteId)
+            if (sourceBank.summary.isNotBlank() || sourceBank.keyFacts.isNotEmpty() || sourceBank.topics.isNotEmpty() || sourceBank.customContext.isNotBlank()) {
+                saveMemoryBank(
+                    sourceBank.copy(
+                        noteId = targetNoteId,
+                        title = targetTitle,
+                        lastUpdated = System.currentTimeMillis()
+                    )
+                )
+            }
+            val sourceMeta = getMetadata(sourceNoteId)
+            if (sourceMeta != null) {
+                saveMetadata(
+                    sourceMeta.copy(
+                        noteId = targetNoteId,
+                        title = targetTitle,
+                        pageId = targetPageId,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+            }
+            val sourceChats = listChatsForNote(sourceNoteId)
+            sourceChats.forEach { chat ->
+                saveChat(
+                    chat.copy(
+                        chatId = java.util.UUID.randomUUID().toString(),
+                        noteId = targetNoteId,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Error cloning vault from $sourceNoteId to $targetNoteId", e)
+        }
+    }
+
     companion object {
         const val PERMANENT_AI_NAME = "Aura"
         const val PERMANENT_AI_FULL_NAME = "Aura Kioko"

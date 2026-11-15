@@ -32,10 +32,13 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudQueue
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SwitchAccount
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -72,6 +75,7 @@ import com.example.ui.theme.CosmicBorder
 import com.example.ui.theme.CosmicSurface
 import com.example.ui.theme.CosmicSurfaceVariant
 import com.example.ui.theme.GeminiBlue
+import com.example.ui.theme.GeminiOnPrimary
 import com.example.ui.theme.LocalAppLanguage
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
@@ -127,6 +131,7 @@ fun SettingsHubScreen(
             val crashReports by viewModel.crashReports.collectAsStateWithLifecycle()
             val currentEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
             val isConnected by viewModel.syncManager.isConnected.collectAsStateWithLifecycle()
+            var showSwitchUserAction by rememberSaveable { mutableStateOf(false) }
 
             val engineLabel = when (selectedEngine) {
                 AiEngineType.GOOGLE_AI_STUDIO -> "Gemini (${viewModel.getActiveCloudModelLabel()})"
@@ -312,10 +317,15 @@ fun SettingsHubScreen(
                             Surface(
                                 color = CosmicSurface,
                                 shape = RoundedCornerShape(18.dp),
-                                border = BorderStroke(1.dp, CosmicBorder),
+                                border = BorderStroke(
+                                    width = if (showSwitchUserAction) 1.5.dp else 1.dp,
+                                    color = if (showSwitchUserAction) GeminiBlue else CosmicBorder
+                                ),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(bottom = 8.dp)
+                                    .padding(bottom = if (showSwitchUserAction) 6.dp else 8.dp)
+                                    .clickable { showSwitchUserAction = !showSwitchUserAction }
+                                    .testTag("settings_user_account_card")
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -353,9 +363,9 @@ fun SettingsHubScreen(
                                         Spacer(modifier = Modifier.height(2.dp))
                                         Text(
                                             text = if (isConnected && currentEmail != "offline") {
-                                                appText("Sincronización Drive conectada", "Drive sync connected")
+                                                appText("Sincronización Drive conectada · Toca para cambiar", "Drive sync connected · Tap to switch")
                                             } else {
-                                                appText("Almacenamiento local en dispositivo", "Device-local storage")
+                                                appText("Almacenamiento local · Toca para cambiar", "Device-local storage · Tap to switch")
                                             },
                                             color = TextSecondary,
                                             fontSize = 12.sp
@@ -381,6 +391,63 @@ fun SettingsHubScreen(
                                                 color = GeminiBlue,
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(
+                                        imageVector = if (showSwitchUserAction) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = appText("Opciones de cuenta", "Account options"),
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+
+                            AnimatedVisibility(visible = showSwitchUserAction) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 8.dp)
+                                        .padding(bottom = 12.dp),
+                                    contentAlignment = Alignment.CenterEnd
+                                ) {
+                                    Surface(
+                                        onClick = {
+                                            showSwitchUserAction = false
+                                            viewModel.switchAccountSession()
+                                            onAccountSignedOut?.invoke()
+                                        },
+                                        color = GeminiBlue,
+                                        contentColor = GeminiOnPrimary,
+                                        shape = RoundedCornerShape(24.dp),
+                                        shadowElevation = 8.dp,
+                                        tonalElevation = 6.dp,
+                                        border = BorderStroke(1.dp, GeminiOnPrimary.copy(alpha = 0.2f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .minimumInteractiveComponentSize()
+                                            .testTag("settings_switch_user_floating_btn")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 18.dp, vertical = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.SwitchAccount,
+                                                contentDescription = appText("Cambiar de usuario", "Switch user"),
+                                                tint = GeminiOnPrimary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = appText("Cambiar de usuario", "Switch user"),
+                                                color = GeminiOnPrimary,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp
                                             )
                                         }
                                     }

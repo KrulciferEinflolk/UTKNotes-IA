@@ -78,6 +78,20 @@ data class BookStorageItem(
     val isDriveSyncEnabled: Boolean
 )
 
+enum class AccountTransferMode {
+    MOVE,
+    COPY
+}
+
+data class AccountStorageSummary(
+    val accountId: String,
+    val displayName: String,
+    val isCurrentAccount: Boolean,
+    val bookCount: Int,
+    val noteCount: Int,
+    val totalBytes: Long
+)
+
 data class StorageOverviewMetrics(
     val totalLibraryBytes: Long = 0L,
     val totalAttachmentsBytes: Long = 0L,
@@ -444,7 +458,8 @@ object StorageMetricsCalculator {
         pages: List<PageEntity>,
         notes: List<NoteEntity>,
         filterState: DriveFilterState,
-        crashLogsBytes: Long
+        crashLogsBytes: Long,
+        accountEmail: String? = null
     ): StorageOverviewMetrics {
         val pageToBookId = pages.associate { it.id to it.bookId }
         val activeBooks = books.filter { !it.isDeleted }
@@ -500,7 +515,7 @@ object StorageMetricsCalculator {
         }
 
         val mediaDir = File(context.filesDir, "note_media")
-        if (mediaDir.exists()) {
+        if (accountEmail == null && mediaDir.exists()) {
             mediaDir.walkTopDown().filter { it.isFile }.forEach { f ->
                 if (countedFiles.add(f.absolutePath)) {
                     totalAttachBytes += f.length()
@@ -528,10 +543,15 @@ object StorageMetricsCalculator {
         val modelsBytes = directorySizeBytes(modelsDir) +
             (context.filesDir.listFiles()?.filter { it.isFile && it.name.endsWith(".gguf", ignoreCase = true) }?.sumOf { it.length() } ?: 0L)
 
-        val backupFilesBytes = context.getExternalFilesDir(null)
-            ?.listFiles()
-            ?.filter { it.isFile && it.name.startsWith("utk_notes_backup_") }
-            ?.sumOf { it.length() } ?: 0L
+        val backupFilesBytes = if (!accountEmail.isNullOrBlank()) {
+            val specificBackup = File(context.getExternalFilesDir(null), "utk_notes_backup_${accountEmail}.json")
+            if (specificBackup.exists() && specificBackup.isFile) specificBackup.length() else 0L
+        } else {
+            context.getExternalFilesDir(null)
+                ?.listFiles()
+                ?.filter { it.isFile && it.name.startsWith("utk_notes_backup_") }
+                ?.sumOf { it.length() } ?: 0L
+        }
 
         val totalLibBytes = bookItems.sumOf { it.totalBytes }
         return StorageOverviewMetrics(
@@ -541,6 +561,34 @@ object StorageMetricsCalculator {
             totalBackupsBytes = backupFilesBytes,
             totalCrashLogsBytes = crashLogsBytes,
             books = bookItems
+        )
+    }
+
+    fun computeAccountSummary(
+        context: Context,
+        accountId: String,
+        displayName: String,
+        isCurrentAccount: Boolean,
+        books: List<BookEntity>,
+        pages: List<PageEntity>,
+        notes: List<NoteEntity>
+    ): AccountStorageSummary {
+        val overview = computeMetrics(
+            context = context,
+            books = books,
+            pages = pages,
+            notes = notes,
+            filterState = DriveFilterState(),
+            crashLogsBytes = 0L,
+            accountEmail = accountId
+        )
+        return AccountStorageSummary(
+            accountId = accountId,
+            displayName = displayName,
+            isCurrentAccount = isCurrentAccount,
+            bookCount = overview.books.size,
+            noteCount = notes.count { !it.isDeleted },
+            totalBytes = overview.totalLibraryBytes + overview.totalBackupsBytes
         )
     }
 

@@ -25,8 +25,17 @@ import org.json.JSONObject
 import java.io.File
 import java.net.URLEncoder
 import com.google.android.gms.auth.GoogleAuthUtil
+import com.google.android.gms.auth.api.identity.AuthorizationRequest
+import com.google.android.gms.auth.api.identity.Identity
+import com.google.android.gms.common.api.Scope
 import android.accounts.Account
 import android.accounts.AccountManager
+import android.content.IntentSender
+import android.content.pm.PackageManager
+import kotlinx.coroutines.suspendCancellableCoroutine
+import java.security.MessageDigest
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import com.example.data.local.memory.NoteMemoryVaultManager
 import com.example.data.local.memory.NoteMemoryBank
 import com.example.data.local.memory.NoteChatRecord
@@ -68,8 +77,50 @@ class DriveSyncManager(
     private val _recoveryIntent = MutableStateFlow<android.content.Intent?>(null)
     val recoveryIntent: StateFlow<android.content.Intent?> = _recoveryIntent
 
+    private val _pendingAuthIntentSender = MutableStateFlow<IntentSender?>(null)
+    val pendingAuthIntentSender: StateFlow<IntentSender?> = _pendingAuthIntentSender
+
+    @Volatile
+    private var cachedAccessToken: String? = null
+    @Volatile
+    private var cachedTokenEmail: String? = null
+    @Volatile
+    private var cachedTokenExpiresAtMs: Long = 0L
+
     fun clearRecoveryIntent() {
         _recoveryIntent.value = null
+    }
+
+    fun clearPendingAuthIntentSender() {
+        _pendingAuthIntentSender.value = null
+    }
+
+    fun invalidateCachedAccessToken() {
+        cachedAccessToken = null
+        cachedTokenEmail = null
+        cachedTokenExpiresAtMs = 0L
+    }
+
+    fun onAuthorizationResultFromIntent(data: android.content.Intent?): Boolean {
+        _pendingAuthIntentSender.value = null
+        val email = _userEmail.value ?: return false
+        if (data == null) return false
+        return try {
+            val authResult = Identity.getAuthorizationClient(context)
+                .getAuthorizationResultFromIntent(data)
+            val token = authResult.accessToken
+            if (!token.isNullOrBlank()) {
+                cachedAccessToken = token
+                cachedTokenEmail = email
+                cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            Log.e("DriveSyncManager", "Error parsing AuthorizationResult intent", e)
+            false
+        }
     }
 
     private val moshi = Moshi.Builder()
@@ -86,11 +137,29 @@ class DriveSyncManager(
 
         val savedEmail = prefs.getString("google_email", null)
         if (savedEmail != null) {
+            registerKnownAccount(savedEmail)
             _userEmail.value = savedEmail
             _isConnected.value = true
         } else {
             _userEmail.value = null
             _isConnected.value = false
+        }
+    }
+
+    fun getKnownAccounts(): Set<String> {
+        val stored = prefs.getStringSet("known_accounts", emptySet())?.toMutableSet() ?: mutableSetOf()
+        stored.add("offline")
+        _userEmail.value?.takeIf { it.isNotBlank() }?.let { stored.add(it) }
+        return stored
+    }
+
+    fun registerKnownAccount(accountId: String) {
+        val clean = accountId.trim()
+        if (clean.isEmpty()) return
+        val updated = prefs.getStringSet("known_accounts", emptySet())?.toMutableSet() ?: mutableSetOf()
+        updated.add("offline")
+        if (updated.add(clean)) {
+            prefs.edit().putStringSet("known_accounts", updated).apply()
         }
     }
 
@@ -112,20 +181,28 @@ class DriveSyncManager(
     }
 
     fun connectDrive(email: String) {
+        val cleanEmail = email.trim().ifBlank { "offline" }
+        if (cachedTokenEmail != cleanEmail) {
+            invalidateCachedAccessToken()
+        }
+        registerKnownAccount(cleanEmail)
         prefs.edit()
             .putBoolean("auto_login_disabled", false)
-            .putString("google_email", email)
+            .putString("google_email", cleanEmail)
             .apply()
-        _userEmail.value = email
+        _userEmail.value = cleanEmail
         _isConnected.value = true
-        if (email == "offline") {
+        if (cleanEmail == "offline") {
             _syncState.value = SyncState.Success("Iniciado en Modo Local (offline)", System.currentTimeMillis())
         } else {
-            _syncState.value = SyncState.Success("Conectado con $email", System.currentTimeMillis())
+            _syncState.value = SyncState.Success("Conectado con $cleanEmail", System.currentTimeMillis())
         }
     }
 
     fun disconnectDrive() {
+        invalidateCachedAccessToken()
+        clearRecoveryIntent()
+        clearPendingAuthIntentSender()
         prefs.edit()
             .remove("google_email")
             .putBoolean("auto_login_disabled", true)
@@ -152,16 +229,14 @@ class DriveSyncManager(
             Log.d("DriveSyncManager", "Iniciando sincronización para: $email")
             val dao = database.notesDao()
 
-            // Automatically migrate any offline books, pages, notes, and chat sessions to this email
-            if (email != "offline") {
-                try {
-                    dao.migrateOfflineBooks(email)
-                    dao.migrateOfflinePages(email)
-                    dao.migrateOfflineNotes(email)
-                    dao.migrateOfflineChatSessions(email)
-                } catch (mEx: Exception) {
-                    Log.e("DriveSyncManager", "Error durante migración de datos locales", mEx)
-                }
+            // Preserve strict isolation per account: only normalize empty legacy userEmail rows to 'offline'
+            try {
+                dao.normalizeEmptyBooksToOffline()
+                dao.normalizeEmptyPagesToOffline()
+                dao.normalizeEmptyNotesToOffline()
+                dao.normalizeEmptyChatSessionsToOffline()
+            } catch (mEx: Exception) {
+                Log.e("DriveSyncManager", "Error normalizando registros locales heredados", mEx)
             }
 
             // 1. Proactive Local Restoration: If the local database is empty for this email,
@@ -186,31 +261,9 @@ class DriveSyncManager(
 
             var token: String? = null
             if (email != "offline") {
-                // Fetch OAuth Access Token from Google Play Services
-                val account = Account(email, "com.google")
-                val primaryScope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata"
-                val fallbackScope = "oauth2:https://www.googleapis.com/auth/drive.appdata"
-                try {
-                    token = GoogleAuthUtil.getToken(context, account, primaryScope)
-                    Log.d("DriveSyncManager", "OAuth Token con permisos de Drive y AppData obtenido correctamente")
-                } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
-                    Log.w("DriveSyncManager", "Se requiere autorización del usuario para acceder a Drive", recoverable)
-                    _recoveryIntent.value = recoverable.intent
-                    _syncState.value = SyncState.Error("Se requiere permiso para acceder a Google Drive. Por favor concede la autorización.")
+                token = acquireDriveAccessToken(email, emitSyncErrors = true)
+                if (token == null) {
                     return@withContext
-                } catch (authEx: Exception) {
-                    Log.w("DriveSyncManager", "Intentando con scope de fallback para $email: ${authEx.localizedMessage}")
-                    try {
-                        token = GoogleAuthUtil.getToken(context, account, fallbackScope)
-                    } catch (recoverable2: com.google.android.gms.auth.UserRecoverableAuthException) {
-                        _recoveryIntent.value = recoverable2.intent
-                        _syncState.value = SyncState.Error("Se requiere autorización para Google Drive.")
-                        return@withContext
-                    } catch (authEx2: Exception) {
-                        Log.e("DriveSyncManager", "No se pudo obtener token de Google para $email", authEx2)
-                        _syncState.value = SyncState.Error("No se pudo autenticar con Google: ${authEx2.localizedMessage}")
-                        return@withContext
-                    }
                 }
             }
 
@@ -239,7 +292,8 @@ class DriveSyncManager(
                             }
                         }
                     } else if (response.code == 401 || response.code == 403) {
-                        GoogleAuthUtil.clearToken(context, token)
+                        invalidateCachedAccessToken()
+                        runCatching { GoogleAuthUtil.clearToken(context, token) }
                         Log.e("DriveSyncManager", "Token expirado o sin permisos, limpiado.")
                         throw Exception("Permisos de Drive inválidos o expirados. Intenta sincronizar de nuevo.")
                     } else {
@@ -646,18 +700,7 @@ class DriveSyncManager(
         if (!driveFilter.isNoteSynced(note.id, parentBookId)) return@withContext note
 
         // We need the token
-        var token: String? = null
-        try {
-            val account = Account(email, "com.google")
-            val scope = "oauth2:https://www.googleapis.com/auth/drive.appdata"
-            token = GoogleAuthUtil.getToken(context, account, scope)
-        } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
-            Log.w("DriveSyncManager", "Se requiere autorización del usuario para subir adjuntos", recoverable)
-            _recoveryIntent.value = recoverable.intent
-        } catch (authEx: Exception) {
-            Log.e("DriveSyncManager", "Failed to get token for uploading attachments", authEx)
-        }
-
+        val token = acquireDriveAccessToken(email, emitSyncErrors = false)
         if (token == null) return@withContext note
 
         try {
@@ -744,18 +787,7 @@ class DriveSyncManager(
         val email = _userEmail.value
         if (email.isNullOrEmpty() || email == "offline") return@withContext null
 
-        var token: String? = null
-        try {
-            val account = Account(email, "com.google")
-            val scope = "oauth2:https://www.googleapis.com/auth/drive.appdata"
-            token = GoogleAuthUtil.getToken(context, account, scope)
-        } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
-            Log.w("DriveSyncManager", "Se requiere autorización del usuario para descargar adjuntos", recoverable)
-            _recoveryIntent.value = recoverable.intent
-        } catch (authEx: Exception) {
-            Log.e("DriveSyncManager", "Failed to get token for downloading", authEx)
-        }
-
+        val token = acquireDriveAccessToken(email, emitSyncErrors = false)
         if (token == null) return@withContext null
 
         try {
@@ -792,33 +824,9 @@ class DriveSyncManager(
             return@withContext Result.failure(Exception(msg))
         }
 
-        _syncState.value = SyncState.Syncing
-        val account = Account(email, "com.google")
-        val primaryScope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata"
-        val fallbackScope = "oauth2:https://www.googleapis.com/auth/drive.appdata"
-        var token: String? = null
-        try {
-            token = GoogleAuthUtil.getToken(context, account, primaryScope)
-        } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
-            _recoveryIntent.value = recoverable.intent
-            _syncState.value = SyncState.Error("Se requiere autorización para acceder a Google Drive.")
-            return@withContext Result.failure(recoverable)
-        } catch (authEx: Exception) {
-            try {
-                token = GoogleAuthUtil.getToken(context, account, fallbackScope)
-            } catch (recoverable2: com.google.android.gms.auth.UserRecoverableAuthException) {
-                _recoveryIntent.value = recoverable2.intent
-                _syncState.value = SyncState.Error("Se requiere autorización para Google Drive.")
-                return@withContext Result.failure(recoverable2)
-            } catch (authEx2: Exception) {
-                _syncState.value = SyncState.Error("Error de autenticación Google: ${authEx2.localizedMessage}")
-                return@withContext Result.failure(authEx2)
-            }
-        }
-
+        val token = acquireDriveAccessToken(email, emitSyncErrors = true)
         if (token == null) {
-            _syncState.value = SyncState.Error("No se pudo obtener el token de acceso a Google Drive.")
-            return@withContext Result.failure(Exception("Token nulo"))
+            return@withContext Result.failure(Exception("Autorización pendiente o rechazada para Google Drive."))
         }
 
         val dao = database.notesDao()
@@ -1210,6 +1218,135 @@ class DriveSyncManager(
         } catch (e: Exception) {
             Log.e("DriveSyncManager", "Error creando estructura de base de datos en Drive", e)
             null
+        }
+    }
+
+    private suspend fun acquireDriveAccessToken(email: String, emitSyncErrors: Boolean): String? {
+        val now = System.currentTimeMillis()
+        val cached = cachedAccessToken
+        if (!cached.isNullOrBlank() && cachedTokenEmail == email && now < cachedTokenExpiresAtMs) {
+            return cached
+        }
+
+        val account = Account(email, "com.google")
+        val requestedScopes = listOf(
+            Scope("https://www.googleapis.com/auth/drive.file"),
+            Scope("https://www.googleapis.com/auth/drive.appdata")
+        )
+
+        var lastAuthError: Exception? = null
+        try {
+            val authRequest = AuthorizationRequest.builder()
+                .setRequestedScopes(requestedScopes)
+                .setAccount(account)
+                .build()
+            val authResult = suspendCancellableCoroutine { cont ->
+                Identity.getAuthorizationClient(context)
+                    .authorize(authRequest)
+                    .addOnSuccessListener { result ->
+                        if (cont.isActive) cont.resume(result)
+                    }
+                    .addOnFailureListener { ex ->
+                        if (cont.isActive) cont.resumeWithException(ex)
+                    }
+            }
+            if (authResult.hasResolution() && authResult.pendingIntent != null) {
+                _pendingAuthIntentSender.value = authResult.pendingIntent!!.intentSender
+                if (emitSyncErrors) {
+                    _syncState.value = SyncState.Error(
+                        "Concede acceso a Google Drive en la ventana de autorización para continuar."
+                    )
+                }
+                return null
+            }
+            val token = authResult.accessToken
+            if (!token.isNullOrBlank()) {
+                cachedAccessToken = token
+                cachedTokenEmail = email
+                cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                return token
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            lastAuthError = e
+            Log.w("DriveSyncManager", "AuthorizationClient fallback for $email: ${e.message}")
+        }
+
+        // Fallback via GoogleAuthUtil if AuthorizationClient is unavailable or rejected
+        val primaryScope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata"
+        val fallbackScope = "oauth2:https://www.googleapis.com/auth/drive.appdata"
+        try {
+            val token = GoogleAuthUtil.getToken(context, account, primaryScope)
+            if (token.isNotBlank()) {
+                cachedAccessToken = token
+                cachedTokenEmail = email
+                cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                return token
+            }
+        } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
+            _recoveryIntent.value = recoverable.intent
+            if (emitSyncErrors) {
+                _syncState.value = SyncState.Error("Se requiere permiso para acceder a Google Drive. Por favor concede la autorización.")
+            }
+            return null
+        } catch (authEx: Exception) {
+            try {
+                val token = GoogleAuthUtil.getToken(context, account, fallbackScope)
+                if (token.isNotBlank()) {
+                    cachedAccessToken = token
+                    cachedTokenEmail = email
+                    cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                    return token
+                }
+            } catch (recoverable2: com.google.android.gms.auth.UserRecoverableAuthException) {
+                _recoveryIntent.value = recoverable2.intent
+                if (emitSyncErrors) {
+                    _syncState.value = SyncState.Error("Se requiere autorización para Google Drive.")
+                }
+                return null
+            } catch (authEx2: Exception) {
+                lastAuthError = authEx2
+            }
+        }
+
+        if (emitSyncErrors) {
+            val rawMsg = lastAuthError?.localizedMessage.orEmpty()
+            val formattedMsg = if (rawMsg.contains("UnregisteredOnApiConsole", ignoreCase = true)) {
+                val sha1 = getAppSha1Fingerprint()
+                val shaNotice = if (sha1.isNotBlank()) " (SHA-1 APK: $sha1)" else ""
+                "Error OAuth Drive (UnregisteredOnApiConsole)$shaNotice. Registra la huella SHA-1 de firma de esta compilación o usa el cliente OAuth de prueba configurado."
+            } else {
+                "No se pudo autenticar con Google Drive: ${rawMsg.ifBlank { "Error de autorización OAuth" }}"
+            }
+            _syncState.value = SyncState.Error(formattedMsg)
+        }
+        return null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun getAppSha1Fingerprint(): String {
+        return try {
+            val pkgInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                context.packageManager.getPackageInfo(
+                    context.packageName,
+                    PackageManager.GET_SIGNING_CERTIFICATES
+                )
+            } else {
+                context.packageManager.getPackageInfo(
+                    context.packageName,
+                    PackageManager.GET_SIGNATURES
+                )
+            }
+            val certBytes = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                pkgInfo.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
+            } else {
+                pkgInfo.signatures?.firstOrNull()?.toByteArray()
+            } ?: return ""
+            val digest = MessageDigest.getInstance("SHA-1").digest(certBytes)
+            digest.joinToString(":") { "%02X".format(it) }
+        } catch (_: Exception) {
+            ""
         }
     }
 }

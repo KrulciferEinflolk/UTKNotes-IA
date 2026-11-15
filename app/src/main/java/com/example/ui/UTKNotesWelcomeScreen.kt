@@ -32,6 +32,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -64,10 +65,18 @@ fun UTKNotesWelcomeScreen(
 
     val deviceAccounts = remember(context) {
         try {
-            AccountManager.get(context).getAccountsByType("com.google")
+            AccountManager.get(context).getAccountsByType("com.google").map { it.name }
         } catch (e: Exception) {
-            emptyArray()
+            emptyList()
         }
+    }
+    val knownGoogleAccounts = remember(context, deviceAccounts) {
+        val stored = viewModel.syncManager.getKnownAccounts()
+            .filter { it != "offline" && it.contains("@") }
+        (deviceAccounts + stored)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinctBy { it.lowercase() }
     }
 
     val accountPickerLauncher = rememberLauncherForActivityResult(
@@ -85,7 +94,7 @@ fun UTKNotesWelcomeScreen(
     }
 
     val launchSignIn = {
-        if (deviceAccounts.isNotEmpty()) {
+        if (knownGoogleAccounts.isNotEmpty()) {
             showAccountSelectionDialog = true
         } else {
             try {
@@ -306,7 +315,8 @@ fun UTKNotesWelcomeScreen(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(54.dp),
+                            .height(54.dp)
+                            .testTag("welcome_google_signin_btn"),
                         shape = RoundedCornerShape(27.dp),
                         color = Color.White,
                         tonalElevation = 6.dp
@@ -343,7 +353,8 @@ fun UTKNotesWelcomeScreen(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(50.dp),
+                            .height(50.dp)
+                            .testTag("welcome_offline_btn"),
                         colors = ButtonDefaults.outlinedButtonColors(
                             contentColor = Color.White
                         ),
@@ -390,17 +401,19 @@ fun UTKNotesWelcomeScreen(
                         fontSize = 14.sp
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    deviceAccounts.forEach { acc ->
+                    knownGoogleAccounts.forEach { accEmail ->
                         Surface(
                             onClick = {
                                 showAccountSelectionDialog = false
                                 isSigningIn = true
-                                viewModel.syncManager.connectDrive(acc.name)
+                                viewModel.syncManager.connectDrive(accEmail)
                                 viewModel.triggerDriveSync()
                             },
                             color = CosmicBackground,
                             shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("welcome_account_option_$accEmail")
                         ) {
                             Row(
                                 modifier = Modifier
@@ -416,7 +429,7 @@ fun UTKNotesWelcomeScreen(
                                 )
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Text(
-                                    text = acc.name,
+                                    text = accEmail,
                                     color = Color.White,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Medium

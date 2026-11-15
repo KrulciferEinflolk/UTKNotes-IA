@@ -224,4 +224,155 @@ class NotesRepository(private val notesDao: NotesDao) {
     suspend fun getChatSession(id: String): com.example.data.model.ChatSessionEntity? {
         return notesDao.getChatSessionById(id)
     }
+
+    // --- MULTI-ACCOUNT STORAGE & TRANSFERS ---
+    suspend fun normalizeEmptyAccountRecords() {
+        notesDao.normalizeEmptyBooksToOffline()
+        notesDao.normalizeEmptyPagesToOffline()
+        notesDao.normalizeEmptyNotesToOffline()
+        notesDao.normalizeEmptyChatSessionsToOffline()
+    }
+
+    suspend fun getDistinctAccountEmails(): Set<String> {
+        val accounts = linkedSetOf("offline")
+        accounts.addAll(notesDao.getDistinctBookAccounts().filter { it.isNotBlank() })
+        accounts.addAll(notesDao.getDistinctNoteAccounts().filter { it.isNotBlank() })
+        accounts.addAll(notesDao.getDistinctChatAccounts().filter { it.isNotBlank() })
+        return accounts
+    }
+
+    suspend fun transferBookToAccount(
+        bookId: String,
+        targetAccount: String,
+        mode: com.example.data.local.settings.AccountTransferMode,
+        memoryVault: com.example.data.local.memory.NoteMemoryVaultManager? = null
+    ): Boolean {
+        val cleanTarget = targetAccount.trim().ifBlank { "offline" }
+        val book = notesDao.getBookById(bookId) ?: return false
+        if (book.userEmail == cleanTarget) return false
+
+        val now = System.currentTimeMillis()
+        val pages = notesDao.getPagesForBook(bookId)
+
+        if (mode == com.example.data.local.settings.AccountTransferMode.MOVE) {
+            notesDao.reassignBookOwner(bookId, cleanTarget, now)
+            notesDao.reassignPagesOwnerForBook(bookId, cleanTarget, now)
+            notesDao.reassignNotesOwnerForBook(bookId, cleanTarget, now)
+            return true
+        }
+
+        // COPY mode: deep copy book, pages, notes, and note memory vaults with fresh UUIDs
+        val newBookId = UUID.randomUUID().toString()
+        notesDao.insertBook(
+            book.copy(
+                id = newBookId,
+                userEmail = cleanTarget,
+                createdAt = now,
+                updatedAt = now
+            )
+        )
+        for (page in pages) {
+            val newPageId = UUID.randomUUID().toString()
+            notesDao.insertPage(
+                page.copy(
+                    id = newPageId,
+                    bookId = newBookId,
+                    userEmail = cleanTarget,
+                    createdAt = now,
+                    updatedAt = now
+                )
+            )
+            val pageNotes = notesDao.getNotesForPage(page.id)
+            for (note in pageNotes) {
+                val newNoteId = UUID.randomUUID().toString()
+                notesDao.insertNote(
+                    note.copy(
+                        id = newNoteId,
+                        pageId = newPageId,
+                        userEmail = cleanTarget,
+                        isSynced = false,
+                        createdAt = now,
+                        updatedAt = now
+                    )
+                )
+                memoryVault?.cloneNoteVault(
+                    sourceNoteId = note.id,
+                    targetNoteId = newNoteId,
+                    targetTitle = note.title,
+                    targetPageId = newPageId
+                )
+            }
+        }
+        return true
+    }
+
+    suspend fun transferNoteToAccount(
+        noteId: String,
+        targetAccount: String,
+        mode: com.example.data.local.settings.AccountTransferMode,
+        memoryVault: com.example.data.local.memory.NoteMemoryVaultManager? = null
+    ): Boolean {
+        val cleanTarget = targetAccount.trim().ifBlank { "offline" }
+        val note = notesDao.getNoteById(noteId) ?: return false
+        if (note.userEmail == cleanTarget) return false
+
+        val now = System.currentTimeMillis()
+        val sourcePage = notesDao.getPageById(note.pageId)
+        val sourceBook = sourcePage?.let { notesDao.getBookById(it.bookId) }
+
+        val targetBooks = notesDao.getAllBooks(cleanTarget)
+        val preferredTitle = sourceBook?.title?.takeIf { it.isNotBlank() } ?: "Notas Transferidas"
+        val targetBook = targetBooks.firstOrNull { it.title.equals(preferredTitle, ignoreCase = true) }
+            ?: createBook(
+                title = preferredTitle,
+                colorHex = sourceBook?.colorHex ?: "#907CFF",
+                textColorHex = sourceBook?.textColorHex ?: "#FFFFFF",
+                coverUri = sourceBook?.coverUri,
+                coverScale = sourceBook?.coverScale ?: 1.0f,
+                coverOffsetX = sourceBook?.coverOffsetX ?: 0.0f,
+                coverOffsetY = sourceBook?.coverOffsetY ?: 0.0f,
+                fontFamily = sourceBook?.fontFamily ?: "Sans",
+                userEmail = cleanTarget
+            )
+
+        val targetPages = notesDao.getPagesForBook(targetBook.id)
+        val preferredPageTitle = sourcePage?.title?.takeIf { it.isNotBlank() } ?: "General"
+        val targetPage = targetPages.firstOrNull { it.title.equals(preferredPageTitle, ignoreCase = true) }
+            ?: targetPages.firstOrNull()
+            ?: createPage(
+                bookId = targetBook.id,
+                title = preferredPageTitle,
+                orderIndex = 0,
+                userEmail = cleanTarget
+            )
+
+        if (mode == com.example.data.local.settings.AccountTransferMode.MOVE) {
+            notesDao.moveNoteToPageAndAccount(
+                noteId = noteId,
+                targetPageId = targetPage.id,
+                targetEmail = cleanTarget,
+                timestamp = now
+            )
+            return true
+        }
+
+        val newNoteId = UUID.randomUUID().toString()
+        notesDao.insertNote(
+            note.copy(
+                id = newNoteId,
+                pageId = targetPage.id,
+                userEmail = cleanTarget,
+                isSynced = false,
+                createdAt = now,
+                updatedAt = now
+            )
+        )
+        memoryVault?.cloneNoteVault(
+            sourceNoteId = note.id,
+            targetNoteId = newNoteId,
+            targetTitle = note.title,
+            targetPageId = targetPage.id
+        )
+        return true
+    }
 }
