@@ -52,6 +52,17 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import android.content.MutableContextWrapper
+import androidx.credentials.ClearCredentialStateRequest
+import androidx.credentials.CredentialManager
+import androidx.credentials.CustomCredential
+import androidx.credentials.GetCredentialRequest
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
 import com.example.data.local.memory.NoteMemoryVaultManager
 import com.example.data.local.memory.NoteMemoryBank
@@ -79,6 +90,12 @@ sealed class AuthResolutionOutcome {
     object Authorized : AuthResolutionOutcome()
     object PendingRecovery : AuthResolutionOutcome()
     data class Failed(val diagnosticMessage: String) : AuthResolutionOutcome()
+}
+
+sealed class CredentialAuthResult {
+    data class SignedIn(val email: String) : CredentialAuthResult()
+    object Canceled : CredentialAuthResult()
+    data class Failed(val error: Exception) : CredentialAuthResult()
 }
 
 class DriveSyncManager(
@@ -155,10 +172,16 @@ class DriveSyncManager(
     private val _googleSignInIntent = MutableStateFlow<Intent?>(null)
     val googleSignInIntent: StateFlow<Intent?> = _googleSignInIntent
 
+    private val _accountPickerIntent = MutableStateFlow<Intent?>(null)
+    val accountPickerIntent: StateFlow<Intent?> = _accountPickerIntent
+
     private val gmsBlockedAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
     private val legacyRecoveryAttemptedAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
     private val preferLegacyAuthAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
     private val googleSignInAttemptedAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val credentialManagerAttemptedAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val credentialManagerBoundAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val accountPickerAttemptedAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
     private val resolvedGoogleAccounts = ConcurrentHashMap<String, Account>()
 
     @Volatile
@@ -168,7 +191,11 @@ class DriveSyncManager(
         GoogleAuthUtil.getToken(context, account, scope)
     }
 
+    internal var credentialAuthenticator: (suspend (Activity, String?) -> CredentialAuthResult)? = null
+
     internal var disableGoogleSignInFallbackForTests: Boolean = false
+    internal var disableCredentialManagerFallbackForTests: Boolean = false
+    internal var disableAccountPickerFallbackForTests: Boolean = false
 
     @Volatile
     private var activeOAuthSocket: ServerSocket? = null
@@ -204,6 +231,10 @@ class DriveSyncManager(
         _googleSignInIntent.value = null
     }
 
+    fun clearAccountPickerIntent() {
+        _accountPickerIntent.value = null
+    }
+
     fun clearGmsAuthDiagnostic() {
         _gmsAuthDiagnostic.value = null
     }
@@ -227,12 +258,16 @@ class DriveSyncManager(
             legacyRecoveryAttemptedAccounts.clear()
             preferLegacyAuthAccounts.clear()
             googleSignInAttemptedAccounts.clear()
+            credentialManagerAttemptedAccounts.clear()
+            accountPickerAttemptedAccounts.clear()
         } else {
             val key = normalizeAccountKey(email)
             gmsBlockedAccounts.remove(key)
             legacyRecoveryAttemptedAccounts.remove(key)
             preferLegacyAuthAccounts.remove(key)
             googleSignInAttemptedAccounts.remove(key)
+            credentialManagerAttemptedAccounts.remove(key)
+            accountPickerAttemptedAccounts.remove(key)
         }
         _gmsAuthDiagnostic.value = null
     }
@@ -347,9 +382,12 @@ class DriveSyncManager(
         // fall back once to GoogleAuthUtil + UserRecoverableAuthException, and then GoogleSignIn, before blocking GMS.
         val isSignatureOrConsoleErr = apiStatusCode == 10 ||
             apiErrorDetails?.contains("UnregisteredOnApiConsole", ignoreCase = true) == true
-        val matchedSystemAccount = findSystemGoogleAccount(email)
+        var matchedSystemAccount = findSystemGoogleAccount(email)
+        val hasResolutionPayload = apiStatusCode != null || data != null
+
+        // 1. Try GoogleAuthUtil first when AuthorizationClient returned a failure payload
         val shouldTryLegacyFallback = !isSignatureOrConsoleErr &&
-            (apiStatusCode != null || data != null) &&
+            hasResolutionPayload &&
             !legacyRecoveryAttemptedAccounts.contains(key)
 
         if (shouldTryLegacyFallback) {
@@ -377,31 +415,97 @@ class DriveSyncManager(
             }
         }
 
-        // Secondary fallback: GoogleSignInClient binds the OS Google Account to the app even when
-        // AccountManager hides accounts or AuthorizationClient fails internally on Xiaomi/HyperOS.
+        // 2. Bind default account in Play Services via CredentialManager (GetSignInWithGoogleOption),
+        // then retry AuthorizationClient (drive.appdata) and GoogleAuthUtil.
+        if (!disableCredentialManagerFallbackForTests &&
+            !isSignatureOrConsoleErr &&
+            hasResolutionPayload &&
+            !credentialManagerAttemptedAccounts.contains(key)
+        ) {
+            credentialManagerAttemptedAccounts.add(key)
+            when (val credRes = authenticateWithCredentialManager(expectedEmail = email)) {
+                is CredentialAuthResult.SignedIn -> {
+                    matchedSystemAccount = findSystemGoogleAccount(email)
+                    when (val appDataGis = tryAuthorizationClient(email, matchedSystemAccount, listOf(Scope("https://www.googleapis.com/auth/drive.appdata")))) {
+                        is GisAuthAttempt.Token -> {
+                            cachedAccessToken = appDataGis.accessToken
+                            cachedTokenEmail = email
+                            cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                            gmsBlockedAccounts.remove(key)
+                            _gmsAuthDiagnostic.value = null
+                            return@withContext AuthResolutionOutcome.Authorized
+                        }
+                        is GisAuthAttempt.NeedsResolution -> {
+                            _gmsAuthDiagnostic.value = null
+                            _syncState.value = SyncState.Error("Concede acceso a Google Drive en la ventana de autorización para continuar.")
+                            _pendingAuthIntentSender.value = appDataGis.intentSender
+                            return@withContext AuthResolutionOutcome.PendingRecovery
+                        }
+                        is GisAuthAttempt.Failed -> {
+                            Log.w("DriveSyncManager", "AuthorizationClient(drive.appdata) after CredentialManager failed: ${appDataGis.error.message}")
+                        }
+                    }
+                    when (val postCredLegacy = tryAcquireViaGoogleAuthUtil(email, matchedSystemAccount, allowInteractiveAuth = true)) {
+                        is LegacyTokenAttempt.Token -> {
+                            cachedAccessToken = postCredLegacy.accessToken
+                            cachedTokenEmail = email
+                            cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                            gmsBlockedAccounts.remove(key)
+                            preferLegacyAuthAccounts.add(key)
+                            _gmsAuthDiagnostic.value = null
+                            return@withContext AuthResolutionOutcome.Authorized
+                        }
+                        is LegacyTokenAttempt.Recoverable -> {
+                            preferLegacyAuthAccounts.add(key)
+                            _gmsAuthDiagnostic.value = null
+                            _syncState.value = SyncState.Error("Se requiere permiso para acceder a Google Drive. Por favor concede la autorización.")
+                            _recoveryIntent.value = postCredLegacy.intent
+                            return@withContext AuthResolutionOutcome.PendingRecovery
+                        }
+                        is LegacyTokenAttempt.Failed -> {
+                            Log.w("DriveSyncManager", "GoogleAuthUtil after CredentialManager failed: ${postCredLegacy.error.message}")
+                        }
+                    }
+                }
+                is CredentialAuthResult.Canceled -> {
+                    Log.w("DriveSyncManager", "CredentialManager canceled by user during Drive auth recovery")
+                }
+                is CredentialAuthResult.Failed -> {
+                    Log.w("DriveSyncManager", "CredentialManager failed during Drive auth recovery: ${credRes.error.message}")
+                    if (credRes.error is IllegalStateException &&
+                        credRes.error.message?.contains("no coincide", ignoreCase = true) == true
+                    ) {
+                        val mismatchMsg = credRes.error.message!!
+                        gmsBlockedAccounts.add(key)
+                        _gmsAuthDiagnostic.value = mismatchMsg
+                        _syncState.value = SyncState.Error(mismatchMsg)
+                        return@withContext AuthResolutionOutcome.Failed(mismatchMsg)
+                    }
+                }
+            }
+        }
+
+        // 3. If AccountManager hides system accounts on Android 13-15, launch the system account picker
+        // to grant official OS Account visibility without requiring runtime Contacts permission.
+        if (!disableAccountPickerFallbackForTests &&
+            !isSignatureOrConsoleErr &&
+            hasResolutionPayload &&
+            matchedSystemAccount == null &&
+            !accountPickerAttemptedAccounts.contains(key)
+        ) {
+            if (emitAccountPickerForVisibility(email)) {
+                return@withContext AuthResolutionOutcome.PendingRecovery
+            }
+        }
+
+        // 4. Legacy GoogleSignInClient fallback (binds OS Account + non-sensitive drive.appdata scope)
         val shouldTryGoogleSignInFallback = !disableGoogleSignInFallbackForTests &&
             !isSignatureOrConsoleErr &&
-            (apiStatusCode != null || data != null) &&
+            hasResolutionPayload &&
             !googleSignInAttemptedAccounts.contains(key)
 
         if (shouldTryGoogleSignInFallback) {
-            val launchedSignIn = runCatching {
-                val gsoBuilder = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-                    .requestEmail()
-                    .requestScopes(
-                        Scope("https://www.googleapis.com/auth/drive.appdata")
-                    )
-                if (matchedSystemAccount != null) {
-                    gsoBuilder.setAccountName(matchedSystemAccount.name)
-                }
-                val signInClient = GoogleSignIn.getClient(getAuthClientContext(), gsoBuilder.build())
-                googleSignInAttemptedAccounts.add(key)
-                _gmsAuthDiagnostic.value = null
-                _syncState.value = SyncState.Error("Autoriza tu cuenta de Google para conectar con Google Drive.")
-                _googleSignInIntent.value = signInClient.signInIntent
-                true
-            }.getOrDefault(false)
-            if (launchedSignIn) {
+            if (emitGoogleSignInFallback(email, matchedSystemAccount)) {
                 return@withContext AuthResolutionOutcome.PendingRecovery
             }
         }
@@ -486,6 +590,93 @@ class DriveSyncManager(
             resultCode = resultCode,
             statusCode = signInStatusCode,
             rawDetails = signInErrorDetails
+        )
+        _gmsAuthDiagnostic.value = diagnostic
+        _syncState.value = SyncState.Error(diagnostic)
+        AuthResolutionOutcome.Failed(diagnostic)
+    }
+
+    suspend fun handleAccountPickerResult(
+        resultCode: Int,
+        data: Intent?
+    ): AuthResolutionOutcome = withContext(Dispatchers.IO) {
+        _accountPickerIntent.value = null
+        val email = _userEmail.value
+        if (email.isNullOrBlank() || email == "offline") {
+            return@withContext AuthResolutionOutcome.Failed("No hay una cuenta de Google activa.")
+        }
+        val key = normalizeAccountKey(email)
+
+        if (resultCode == Activity.RESULT_OK && data != null) {
+            val chosenName = data.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)?.trim()
+            val chosenType = data.getStringExtra(AccountManager.KEY_ACCOUNT_TYPE)?.trim().orEmpty().ifBlank { "com.google" }
+            if (!chosenName.isNullOrBlank() && !chosenName.equals(email, ignoreCase = true)) {
+                val mismatchMsg = "La cuenta seleccionada ($chosenName) no coincide con la sesión activa ($email). Cambia de usuario para sincronizar con $chosenName."
+                gmsBlockedAccounts.add(key)
+                _gmsAuthDiagnostic.value = mismatchMsg
+                _syncState.value = SyncState.Error(mismatchMsg)
+                return@withContext AuthResolutionOutcome.Failed(mismatchMsg)
+            }
+            val boundAccount = findSystemGoogleAccount(email)
+                ?: chosenName?.takeIf { it.isNotBlank() }?.let { Account(it, chosenType) }
+            if (boundAccount != null) {
+                resolvedGoogleAccounts[key] = boundAccount
+            }
+            when (val legacyRes = tryAcquireViaGoogleAuthUtil(email, boundAccount, allowInteractiveAuth = true)) {
+                is LegacyTokenAttempt.Token -> {
+                    cachedAccessToken = legacyRes.accessToken
+                    cachedTokenEmail = email
+                    cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                    gmsBlockedAccounts.remove(key)
+                    preferLegacyAuthAccounts.add(key)
+                    _gmsAuthDiagnostic.value = null
+                    return@withContext AuthResolutionOutcome.Authorized
+                }
+                is LegacyTokenAttempt.Recoverable -> {
+                    preferLegacyAuthAccounts.add(key)
+                    _gmsAuthDiagnostic.value = null
+                    _syncState.value = SyncState.Error("Concede permiso para acceder a Google Drive para continuar.")
+                    _recoveryIntent.value = legacyRes.intent
+                    return@withContext AuthResolutionOutcome.PendingRecovery
+                }
+                is LegacyTokenAttempt.Failed -> {
+                    Log.w("DriveSyncManager", "GoogleAuthUtil after AccountPicker failed: ${legacyRes.error.message}")
+                }
+            }
+            when (val gisRes = tryAuthorizationClient(email, boundAccount, listOf(Scope("https://www.googleapis.com/auth/drive.appdata")))) {
+                is GisAuthAttempt.Token -> {
+                    cachedAccessToken = gisRes.accessToken
+                    cachedTokenEmail = email
+                    cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                    gmsBlockedAccounts.remove(key)
+                    _gmsAuthDiagnostic.value = null
+                    return@withContext AuthResolutionOutcome.Authorized
+                }
+                is GisAuthAttempt.NeedsResolution -> {
+                    _gmsAuthDiagnostic.value = null
+                    _syncState.value = SyncState.Error("Concede acceso a Google Drive en la ventana de autorización para continuar.")
+                    _pendingAuthIntentSender.value = gisRes.intentSender
+                    return@withContext AuthResolutionOutcome.PendingRecovery
+                }
+                is GisAuthAttempt.Failed -> {
+                    Log.w("DriveSyncManager", "AuthorizationClient after AccountPicker failed: ${gisRes.error.message}")
+                }
+            }
+        }
+
+        if (!disableGoogleSignInFallbackForTests && !googleSignInAttemptedAccounts.contains(key)) {
+            if (emitGoogleSignInFallback(email, findSystemGoogleAccount(email))) {
+                return@withContext AuthResolutionOutcome.PendingRecovery
+            }
+        }
+
+        gmsBlockedAccounts.add(key)
+        runCatching { saveLocalBackupSnapshot(email) }
+        val diagnostic = buildGmsFailureDiagnostic(
+            email = email,
+            resultCode = resultCode,
+            statusCode = null,
+            rawDetails = null
         )
         _gmsAuthDiagnostic.value = diagnostic
         _syncState.value = SyncState.Error(diagnostic)
@@ -641,12 +832,21 @@ class DriveSyncManager(
         clearPendingAuthIntentSender()
         clearBrowserAuthIntent()
         clearGoogleSignInIntent()
+        clearAccountPickerIntent()
         gmsBlockedAccounts.clear()
         legacyRecoveryAttemptedAccounts.clear()
         preferLegacyAuthAccounts.clear()
         googleSignInAttemptedAccounts.clear()
+        credentialManagerAttemptedAccounts.clear()
+        credentialManagerBoundAccounts.clear()
+        accountPickerAttemptedAccounts.clear()
         resolvedGoogleAccounts.clear()
         _gmsAuthDiagnostic.value = null
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching {
+                CredentialManager.create(context).clearCredentialState(ClearCredentialStateRequest())
+            }
+        }
         prefs.edit()
             .remove("google_email")
             .putBoolean("auto_login_disabled", true)
@@ -1777,6 +1977,148 @@ class DriveSyncManager(
         }
     }
 
+    private sealed class GisAuthAttempt {
+        data class Token(val accessToken: String) : GisAuthAttempt()
+        data class NeedsResolution(val intentSender: IntentSender) : GisAuthAttempt()
+        data class Failed(val error: Exception) : GisAuthAttempt()
+    }
+
+    suspend fun authenticateWithCredentialManager(expectedEmail: String? = null): CredentialAuthResult {
+        val activity = activityRef?.get()?.takeIf { !it.isFinishing && !it.isDestroyed }
+            ?: return CredentialAuthResult.Failed(IllegalStateException("No hay una actividad activa disponible."))
+        credentialAuthenticator?.let { overrideAuth ->
+            val overrideRes = overrideAuth.invoke(activity, expectedEmail)
+            if (overrideRes is CredentialAuthResult.SignedIn) {
+                credentialManagerBoundAccounts.add(normalizeAccountKey(overrideRes.email))
+            }
+            return overrideRes
+        }
+        return try {
+            val nonceBytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            val nonce = Base64.encodeToString(nonceBytes, Base64.NO_WRAP or Base64.URL_SAFE or Base64.NO_PADDING)
+            val signInOption = GetSignInWithGoogleOption.Builder(DEFAULT_WEB_OAUTH_CLIENT_ID)
+                .setNonce(nonce)
+                .build()
+            val request = GetCredentialRequest.Builder()
+                .addCredentialOption(signInOption)
+                .build()
+            val credentialManager = CredentialManager.create(activity)
+            val result = withContext(Dispatchers.Main) {
+                credentialManager.getCredential(
+                    request = request,
+                    context = MutableContextWrapper(activity)
+                )
+            }
+            val credential = result.credential
+            if (credential is CustomCredential &&
+                credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
+            ) {
+                val googleCred = GoogleIdTokenCredential.createFrom(credential.data)
+                val signedEmail = googleCred.id.trim()
+                if (signedEmail.isBlank()) {
+                    return CredentialAuthResult.Failed(IllegalStateException("Google no devolvió el correo de la cuenta."))
+                }
+                if (!expectedEmail.isNullOrBlank() && !signedEmail.equals(expectedEmail, ignoreCase = true)) {
+                    return CredentialAuthResult.Failed(
+                        IllegalStateException(
+                            "La cuenta seleccionada ($signedEmail) no coincide con la sesión activa ($expectedEmail). Cambia de usuario para sincronizar con $signedEmail."
+                        )
+                    )
+                }
+                credentialManagerBoundAccounts.add(normalizeAccountKey(signedEmail))
+                CredentialAuthResult.SignedIn(signedEmail)
+            } else {
+                CredentialAuthResult.Failed(IllegalStateException("Tipo de credencial inesperado de Google."))
+            }
+        } catch (_: GetCredentialCancellationException) {
+            CredentialAuthResult.Canceled
+        } catch (e: GetCredentialException) {
+            CredentialAuthResult.Failed(e)
+        } catch (e: Exception) {
+            CredentialAuthResult.Failed(e)
+        }
+    }
+
+    private suspend fun tryAuthorizationClient(
+        email: String,
+        matchedSystemAccount: Account?,
+        scopes: List<Scope>
+    ): GisAuthAttempt {
+        return try {
+            val authReqBuilder = AuthorizationRequest.builder()
+                .setRequestedScopes(scopes)
+            if (matchedSystemAccount != null) {
+                authReqBuilder.setAccount(matchedSystemAccount)
+            }
+            val authRequest = authReqBuilder.build()
+            val authResult = suspendCancellableCoroutine { cont ->
+                Identity.getAuthorizationClient(getAuthClientContext())
+                    .authorize(authRequest)
+                    .addOnSuccessListener { result ->
+                        if (cont.isActive) cont.resume(result)
+                    }
+                    .addOnFailureListener { ex ->
+                        if (cont.isActive) cont.resumeWithException(ex)
+                    }
+            }
+            if (authResult.hasResolution() && authResult.pendingIntent != null) {
+                GisAuthAttempt.NeedsResolution(authResult.pendingIntent!!.intentSender)
+            } else {
+                val token = authResult.accessToken
+                if (!token.isNullOrBlank()) {
+                    GisAuthAttempt.Token(token)
+                } else {
+                    GisAuthAttempt.Failed(IllegalStateException("Token vacío desde AuthorizationClient"))
+                }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("DriveSyncManager", "AuthorizationClient attempt for $email (${scopes.size} scopes): ${e.message}")
+            GisAuthAttempt.Failed(e)
+        }
+    }
+
+    private fun emitAccountPickerForVisibility(email: String): Boolean {
+        val key = normalizeAccountKey(email)
+        return runCatching {
+            val intent = AccountManager.newChooseAccountIntent(
+                Account(email, "com.google"),
+                null,
+                arrayOf("com.google"),
+                null,
+                null,
+                null,
+                null
+            )
+            accountPickerAttemptedAccounts.add(key)
+            _gmsAuthDiagnostic.value = null
+            _syncState.value = SyncState.Error("Confirma tu cuenta de Google en el selector del sistema para autorizar Drive.")
+            _accountPickerIntent.value = intent
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun emitGoogleSignInFallback(email: String, matchedSystemAccount: Account?): Boolean {
+        val key = normalizeAccountKey(email)
+        return runCatching {
+            val gsoBuilder = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                .requestEmail()
+                .requestScopes(
+                    Scope("https://www.googleapis.com/auth/drive.appdata")
+                )
+            if (matchedSystemAccount != null) {
+                gsoBuilder.setAccountName(matchedSystemAccount.name)
+            }
+            val signInClient = GoogleSignIn.getClient(getAuthClientContext(), gsoBuilder.build())
+            googleSignInAttemptedAccounts.add(key)
+            _gmsAuthDiagnostic.value = null
+            _syncState.value = SyncState.Error("Autoriza tu cuenta de Google para conectar con Google Drive.")
+            _googleSignInIntent.value = signInClient.signInIntent
+            true
+        }.getOrDefault(false)
+    }
+
     private suspend fun acquireDriveAccessToken(
         email: String,
         emitSyncErrors: Boolean,
@@ -1821,6 +2163,8 @@ class DriveSyncManager(
             legacyRecoveryAttemptedAccounts.remove(key)
             preferLegacyAuthAccounts.remove(key)
             googleSignInAttemptedAccounts.remove(key)
+            credentialManagerAttemptedAccounts.remove(key)
+            accountPickerAttemptedAccounts.remove(key)
             _gmsAuthDiagnostic.value = null
         } else if (preferLegacyAuth) {
             gmsBlockedAccounts.remove(key)
@@ -1843,35 +2187,63 @@ class DriveSyncManager(
             return null
         }
 
-        val matchedSystemAccount = findSystemGoogleAccount(email)
-        val requestedScopes = listOf(
+        var matchedSystemAccount = findSystemGoogleAccount(email)
+        val fullScopes = listOf(
             Scope("https://www.googleapis.com/auth/drive.file"),
+            Scope("https://www.googleapis.com/auth/drive.appdata")
+        )
+        val appDataOnlyScopes = listOf(
             Scope("https://www.googleapis.com/auth/drive.appdata")
         )
 
         var lastAuthError: Exception? = null
         val skipAuthorizationClient = preferLegacyAuth || preferLegacyAuthAccounts.contains(key)
+
+        // Official Android Identity guidance: authenticate with Credential Manager first so Play Services
+        // binds the app's default Google account before AuthorizationClient requests Drive scopes.
+        if (allowInteractiveAuth &&
+            !skipAuthorizationClient &&
+            !disableCredentialManagerFallbackForTests &&
+            matchedSystemAccount == null &&
+            !credentialManagerBoundAccounts.contains(key) &&
+            !credentialManagerAttemptedAccounts.contains(key) &&
+            activityRef?.get() != null
+        ) {
+            credentialManagerAttemptedAccounts.add(key)
+            when (val credRes = authenticateWithCredentialManager(expectedEmail = email)) {
+                is CredentialAuthResult.SignedIn -> {
+                    matchedSystemAccount = findSystemGoogleAccount(email)
+                }
+                is CredentialAuthResult.Failed -> {
+                    if (credRes.error is IllegalStateException &&
+                        credRes.error.message?.contains("no coincide", ignoreCase = true) == true
+                    ) {
+                        val mismatchMsg = credRes.error.message!!
+                        gmsBlockedAccounts.add(key)
+                        _gmsAuthDiagnostic.value = mismatchMsg
+                        if (emitSyncErrors) {
+                            _syncState.value = SyncState.Error(mismatchMsg)
+                        }
+                        return null
+                    }
+                }
+                is CredentialAuthResult.Canceled -> Unit
+            }
+        }
+
         if (!skipAuthorizationClient) {
-            try {
-                val authReqBuilder = AuthorizationRequest.builder()
-                    .setRequestedScopes(requestedScopes)
-                if (matchedSystemAccount != null) {
-                    authReqBuilder.setAccount(matchedSystemAccount)
+            val primaryAttempt = tryAuthorizationClient(email, matchedSystemAccount, fullScopes)
+            when (primaryAttempt) {
+                is GisAuthAttempt.Token -> {
+                    cachedAccessToken = primaryAttempt.accessToken
+                    cachedTokenEmail = email
+                    cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                    _gmsAuthDiagnostic.value = null
+                    return primaryAttempt.accessToken
                 }
-                val authRequest = authReqBuilder.build()
-                val authResult = suspendCancellableCoroutine { cont ->
-                    Identity.getAuthorizationClient(getAuthClientContext())
-                        .authorize(authRequest)
-                        .addOnSuccessListener { result ->
-                            if (cont.isActive) cont.resume(result)
-                        }
-                        .addOnFailureListener { ex ->
-                            if (cont.isActive) cont.resumeWithException(ex)
-                        }
-                }
-                if (authResult.hasResolution() && authResult.pendingIntent != null) {
+                is GisAuthAttempt.NeedsResolution -> {
                     if (allowInteractiveAuth) {
-                        _pendingAuthIntentSender.value = authResult.pendingIntent!!.intentSender
+                        _pendingAuthIntentSender.value = primaryAttempt.intentSender
                         if (emitSyncErrors) {
                             _syncState.value = SyncState.Error(
                                 "Concede acceso a Google Drive en la ventana de autorización para continuar."
@@ -1880,19 +2252,37 @@ class DriveSyncManager(
                     }
                     return null
                 }
-                val token = authResult.accessToken
-                if (!token.isNullOrBlank()) {
-                    cachedAccessToken = token
-                    cachedTokenEmail = email
-                    cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
-                    _gmsAuthDiagnostic.value = null
-                    return token
+                is GisAuthAttempt.Failed -> {
+                    lastAuthError = primaryAttempt.error
+                    val errMsg = primaryAttempt.error.localizedMessage.orEmpty()
+                    val isSigErr = errMsg.contains("UnregisteredOnApiConsole", ignoreCase = true) ||
+                        (primaryAttempt.error as? ApiException)?.statusCode == 10
+                    if (!isSigErr) {
+                        when (val appDataAttempt = tryAuthorizationClient(email, matchedSystemAccount, appDataOnlyScopes)) {
+                            is GisAuthAttempt.Token -> {
+                                cachedAccessToken = appDataAttempt.accessToken
+                                cachedTokenEmail = email
+                                cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                                _gmsAuthDiagnostic.value = null
+                                return appDataAttempt.accessToken
+                            }
+                            is GisAuthAttempt.NeedsResolution -> {
+                                if (allowInteractiveAuth) {
+                                    _pendingAuthIntentSender.value = appDataAttempt.intentSender
+                                    if (emitSyncErrors) {
+                                        _syncState.value = SyncState.Error(
+                                            "Concede acceso a Google Drive en la ventana de autorización para continuar."
+                                        )
+                                    }
+                                }
+                                return null
+                            }
+                            is GisAuthAttempt.Failed -> {
+                                lastAuthError = appDataAttempt.error
+                            }
+                        }
+                    }
                 }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                lastAuthError = e
-                Log.w("DriveSyncManager", "AuthorizationClient fallback for $email: ${e.message}")
             }
         }
 
@@ -1928,6 +2318,72 @@ class DriveSyncManager(
             }
         }
 
+        // Interactive fallbacks when AuthorizationClient threw ApiException (e.g. code 8) directly without PendingIntent
+        if (allowInteractiveAuth && !isSignatureOrConsoleErr) {
+            if (!disableCredentialManagerFallbackForTests &&
+                !credentialManagerAttemptedAccounts.contains(key) &&
+                activityRef?.get() != null
+            ) {
+                credentialManagerAttemptedAccounts.add(key)
+                when (val credRes = authenticateWithCredentialManager(expectedEmail = email)) {
+                    is CredentialAuthResult.SignedIn -> {
+                        matchedSystemAccount = findSystemGoogleAccount(email)
+                        when (val postCredAppData = tryAuthorizationClient(email, matchedSystemAccount, appDataOnlyScopes)) {
+                            is GisAuthAttempt.Token -> {
+                                cachedAccessToken = postCredAppData.accessToken
+                                cachedTokenEmail = email
+                                cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                                gmsBlockedAccounts.remove(key)
+                                _gmsAuthDiagnostic.value = null
+                                return postCredAppData.accessToken
+                            }
+                            is GisAuthAttempt.NeedsResolution -> {
+                                _pendingAuthIntentSender.value = postCredAppData.intentSender
+                                if (emitSyncErrors) {
+                                    _syncState.value = SyncState.Error(
+                                        "Concede acceso a Google Drive en la ventana de autorización para continuar."
+                                    )
+                                }
+                                return null
+                            }
+                            is GisAuthAttempt.Failed -> {
+                                lastAuthError = postCredAppData.error
+                            }
+                        }
+                    }
+                    is CredentialAuthResult.Failed -> {
+                        if (credRes.error is IllegalStateException &&
+                            credRes.error.message?.contains("no coincide", ignoreCase = true) == true
+                        ) {
+                            val mismatchMsg = credRes.error.message!!
+                            gmsBlockedAccounts.add(key)
+                            _gmsAuthDiagnostic.value = mismatchMsg
+                            if (emitSyncErrors) {
+                                _syncState.value = SyncState.Error(mismatchMsg)
+                            }
+                            return null
+                        }
+                    }
+                    is CredentialAuthResult.Canceled -> Unit
+                }
+            }
+
+            if (!disableAccountPickerFallbackForTests &&
+                matchedSystemAccount == null &&
+                !accountPickerAttemptedAccounts.contains(key)
+            ) {
+                if (emitAccountPickerForVisibility(email)) {
+                    return null
+                }
+            }
+
+            if (!disableGoogleSignInFallbackForTests && !googleSignInAttemptedAccounts.contains(key)) {
+                if (emitGoogleSignInFallback(email, matchedSystemAccount)) {
+                    return null
+                }
+            }
+        }
+
         // Cache block for this account so Play Services doesn't keep flashing on background saves
         gmsBlockedAccounts.add(key)
         val statusCode = (lastAuthError as? ApiException)?.statusCode
@@ -1936,7 +2392,7 @@ class DriveSyncManager(
             resultCode = null,
             statusCode = statusCode,
             rawDetails = lastAuthError?.localizedMessage,
-            accountMissingOnDevice = matchedSystemAccount == null && !skipAuthorizationClient
+            accountMissingOnDevice = matchedSystemAccount == null && !skipAuthorizationClient && !credentialManagerBoundAccounts.contains(key)
         )
         _gmsAuthDiagnostic.value = diag
         if (emitSyncErrors) {

@@ -235,6 +235,31 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                val accountPickerIntent by viewModel.syncManager.accountPickerIntent.collectAsStateWithLifecycle()
+                val accountPickerLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.StartActivityForResult()
+                ) { result ->
+                    viewModel.handleAccountPickerResult(result.resultCode, result.data) {
+                        Toast.makeText(
+                            rootContext,
+                            "No se pudo completar la autorización de Google Drive. Abre Ajustes > Almacenamiento y nube para reintentar o exportar JSON.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+
+                LaunchedEffect(accountPickerIntent) {
+                    accountPickerIntent?.let { intent ->
+                        viewModel.syncManager.clearAccountPickerIntent()
+                        try {
+                            accountPickerLauncher.launch(intent)
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "Failed to launch AccountPicker visibility fallback", e)
+                            viewModel.handleAccountPickerResult(android.app.Activity.RESULT_CANCELED, null)
+                        }
+                    }
+                }
+
                 val browserAuthIntent by viewModel.syncManager.browserAuthIntent.collectAsStateWithLifecycle()
                 LaunchedEffect(browserAuthIntent) {
                     browserAuthIntent?.let { intent ->

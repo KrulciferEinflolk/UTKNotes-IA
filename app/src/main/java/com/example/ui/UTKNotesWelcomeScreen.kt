@@ -41,6 +41,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.data.remote.CredentialAuthResult
 import com.example.data.remote.SyncState
 import com.example.ui.theme.*
 import kotlinx.coroutines.delay
@@ -93,19 +94,39 @@ fun UTKNotesWelcomeScreen(
         }
     }
 
+    val launchSystemOrManualPicker = {
+        try {
+            val intent = AccountManager.newChooseAccountIntent(
+                null, null, arrayOf("com.google"),
+                null, null, null, null
+            )
+            accountPickerLauncher.launch(intent)
+        } catch (e: Exception) {
+            showManualEmailDialog = true
+        }
+    }
+
+    val launchCredentialOrPicker = {
+        scope.launch {
+            when (val credResult = viewModel.syncManager.authenticateWithCredentialManager(expectedEmail = null)) {
+                is CredentialAuthResult.SignedIn -> {
+                    isSigningIn = true
+                    viewModel.syncManager.connectDrive(credResult.email)
+                    viewModel.triggerDriveSync(allowInteractiveAuth = true, forceRetryGms = true)
+                }
+                is CredentialAuthResult.Canceled -> Unit
+                is CredentialAuthResult.Failed -> {
+                    launchSystemOrManualPicker()
+                }
+            }
+        }
+    }
+
     val launchSignIn = {
         if (knownGoogleAccounts.isNotEmpty()) {
             showAccountSelectionDialog = true
         } else {
-            try {
-                val intent = AccountManager.newChooseAccountIntent(
-                    null, null, arrayOf("com.google"),
-                    true, null, null, null, null
-                )
-                accountPickerLauncher.launch(intent)
-            } catch (e: Exception) {
-                showManualEmailDialog = true
-            }
+            launchCredentialOrPicker()
         }
     }
 
@@ -441,15 +462,7 @@ fun UTKNotesWelcomeScreen(
                     Surface(
                         onClick = {
                             showAccountSelectionDialog = false
-                            try {
-                                val intent = AccountManager.newChooseAccountIntent(
-                                    null, null, arrayOf("com.google"),
-                                    true, null, null, null, null
-                                )
-                                accountPickerLauncher.launch(intent)
-                            } catch (e: Exception) {
-                                showManualEmailDialog = true
-                            }
+                            launchCredentialOrPicker()
                         },
                         color = Color.Transparent,
                         shape = RoundedCornerShape(12.dp),

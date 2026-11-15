@@ -503,24 +503,39 @@ class MultiAccountAndMergeRobolectricTest {
             assertTrue(pendingOutcome is com.example.data.remote.AuthResolutionOutcome.PendingRecovery)
             assertEquals(recoveryActionIntent.action, syncManager.recoveryIntent.value?.action)
 
-            // Second attempt without forceRetryGms skips GoogleAuthUtil and tries GoogleSignIn fallback once
+            // Second attempt without forceRetryGms tries AccountPicker / GoogleSignIn fallbacks once before blocking without looping
             syncManager.clearRecoveryIntent()
-            val signInOutcome = syncManager.handleAuthorizationResolutionResult(
+            val nextOutcome = syncManager.handleAuthorizationResolutionResult(
                 android.app.Activity.RESULT_CANCELED,
                 android.content.Intent()
             )
-            if (signInOutcome is com.example.data.remote.AuthResolutionOutcome.PendingRecovery) {
-                // GoogleSignIn intent was emitted cleanly; third attempt must block without looping
-                syncManager.clearGoogleSignInIntent()
-                val blockedOutcome = syncManager.handleAuthorizationResolutionResult(
-                    android.app.Activity.RESULT_CANCELED,
-                    android.content.Intent()
-                )
-                assertTrue(blockedOutcome is com.example.data.remote.AuthResolutionOutcome.Failed)
+            if (nextOutcome is com.example.data.remote.AuthResolutionOutcome.PendingRecovery) {
+                if (syncManager.accountPickerIntent.value != null) {
+                    syncManager.clearAccountPickerIntent()
+                    val afterPicker = syncManager.handleAccountPickerResult(android.app.Activity.RESULT_CANCELED, null)
+                    if (afterPicker is com.example.data.remote.AuthResolutionOutcome.PendingRecovery) {
+                        syncManager.clearGoogleSignInIntent()
+                        val blockedOutcome = syncManager.handleAuthorizationResolutionResult(
+                            android.app.Activity.RESULT_CANCELED,
+                            android.content.Intent()
+                        )
+                        assertTrue(blockedOutcome is com.example.data.remote.AuthResolutionOutcome.Failed)
+                    } else {
+                        assertTrue(afterPicker is com.example.data.remote.AuthResolutionOutcome.Failed)
+                    }
+                } else {
+                    syncManager.clearGoogleSignInIntent()
+                    val blockedOutcome = syncManager.handleAuthorizationResolutionResult(
+                        android.app.Activity.RESULT_CANCELED,
+                        android.content.Intent()
+                    )
+                    assertTrue(blockedOutcome is com.example.data.remote.AuthResolutionOutcome.Failed)
+                }
             } else {
-                assertTrue(signInOutcome is com.example.data.remote.AuthResolutionOutcome.Failed)
+                assertTrue(nextOutcome is com.example.data.remote.AuthResolutionOutcome.Failed)
             }
             assertNull(syncManager.recoveryIntent.value)
+            assertNull(syncManager.accountPickerIntent.value)
             assertNull(syncManager.googleSignInIntent.value)
             assertTrue(syncManager.isGmsBlockedForAccount("fallback.code8@gmail.com"))
 
@@ -528,6 +543,23 @@ class MultiAccountAndMergeRobolectricTest {
             val diag = syncManager.handleLegacyRecoveryCancellation(android.app.Activity.RESULT_CANCELED)
             assertFalse(diag.contains("SHA-1", ignoreCase = true))
             assertFalse(diag.contains(appContext.packageName, ignoreCase = true))
+
+            // 4. AccountPicker result enforces multi-account isolation and grants token via GoogleAuthUtil
+            syncManager.resetGmsBlock("fallback.code8@gmail.com")
+            syncManager.legacyTokenFetcher = { account, _ ->
+                assertEquals("fallback.code8@gmail.com", account.name)
+                "picker-granted-token-456"
+            }
+            val mismatchData = android.content.Intent().putExtra(android.accounts.AccountManager.KEY_ACCOUNT_NAME, "otro@gmail.com")
+            val mismatchOutcome = syncManager.handleAccountPickerResult(android.app.Activity.RESULT_OK, mismatchData)
+            assertTrue(mismatchOutcome is com.example.data.remote.AuthResolutionOutcome.Failed)
+
+            syncManager.resetGmsBlock("fallback.code8@gmail.com")
+            val matchingData = android.content.Intent()
+                .putExtra(android.accounts.AccountManager.KEY_ACCOUNT_NAME, "fallback.code8@gmail.com")
+                .putExtra(android.accounts.AccountManager.KEY_ACCOUNT_TYPE, "com.google")
+            val pickerSuccess = syncManager.handleAccountPickerResult(android.app.Activity.RESULT_OK, matchingData)
+            assertTrue(pickerSuccess is com.example.data.remote.AuthResolutionOutcome.Authorized)
 
             java.io.File(appContext.getExternalFilesDir(null), "utk_notes_backup_fallback.code8@gmail.com.json").delete()
         }

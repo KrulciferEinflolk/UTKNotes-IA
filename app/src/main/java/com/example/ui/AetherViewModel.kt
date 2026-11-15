@@ -1834,6 +1834,30 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun handleAccountPickerResult(
+        resultCode: Int,
+        data: android.content.Intent?,
+        onFailureDiagnostic: ((String) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            when (val outcome = syncManager.handleAccountPickerResult(resultCode, data)) {
+                is com.example.data.remote.AuthResolutionOutcome.Authorized -> {
+                    if (lastDriveActionWasFolders) {
+                        createDriveDatabaseStructure(forceRetryGms = false, preferLegacyAuth = true)
+                    } else {
+                        triggerDriveSync(allowInteractiveAuth = false, forceRetryGms = false, preferLegacyAuth = true)
+                    }
+                }
+                is com.example.data.remote.AuthResolutionOutcome.PendingRecovery -> {
+                    // MainActivity launchers handle the emitted recovery/pending intents
+                }
+                is com.example.data.remote.AuthResolutionOutcome.Failed -> {
+                    onFailureDiagnostic?.invoke(outcome.diagnosticMessage)
+                }
+            }
+        }
+    }
+
     fun handleLegacyRecoveryCancellation(
         resultCode: Int,
         onFailureDiagnostic: ((String) -> Unit)? = null
