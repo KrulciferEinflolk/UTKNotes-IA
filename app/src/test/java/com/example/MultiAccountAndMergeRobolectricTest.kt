@@ -503,14 +503,25 @@ class MultiAccountAndMergeRobolectricTest {
             assertTrue(pendingOutcome is com.example.data.remote.AuthResolutionOutcome.PendingRecovery)
             assertEquals(recoveryActionIntent.action, syncManager.recoveryIntent.value?.action)
 
-            // Second attempt without forceRetryGms must NOT re-emit recoveryIntent (loop guard)
+            // Second attempt without forceRetryGms skips GoogleAuthUtil and tries GoogleSignIn fallback once
             syncManager.clearRecoveryIntent()
-            val blockedOutcome = syncManager.handleAuthorizationResolutionResult(
+            val signInOutcome = syncManager.handleAuthorizationResolutionResult(
                 android.app.Activity.RESULT_CANCELED,
                 android.content.Intent()
             )
-            assertTrue(blockedOutcome is com.example.data.remote.AuthResolutionOutcome.Failed)
+            if (signInOutcome is com.example.data.remote.AuthResolutionOutcome.PendingRecovery) {
+                // GoogleSignIn intent was emitted cleanly; third attempt must block without looping
+                syncManager.clearGoogleSignInIntent()
+                val blockedOutcome = syncManager.handleAuthorizationResolutionResult(
+                    android.app.Activity.RESULT_CANCELED,
+                    android.content.Intent()
+                )
+                assertTrue(blockedOutcome is com.example.data.remote.AuthResolutionOutcome.Failed)
+            } else {
+                assertTrue(signInOutcome is com.example.data.remote.AuthResolutionOutcome.Failed)
+            }
             assertNull(syncManager.recoveryIntent.value)
+            assertNull(syncManager.googleSignInIntent.value)
             assertTrue(syncManager.isGmsBlockedForAccount("fallback.code8@gmail.com"))
 
             // 3. Cancellation of legacy recovery dialog blocks cleanly without private data

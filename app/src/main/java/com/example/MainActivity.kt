@@ -210,6 +210,31 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                val googleSignInIntent by viewModel.syncManager.googleSignInIntent.collectAsStateWithLifecycle()
+                val googleSignInLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.StartActivityForResult()
+                ) { result ->
+                    viewModel.handleGoogleSignInResult(result.resultCode, result.data) {
+                        Toast.makeText(
+                            rootContext,
+                            "No se pudo completar la autorización de Google Drive. Abre Ajustes > Almacenamiento y nube para reintentar o exportar JSON.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+
+                LaunchedEffect(googleSignInIntent) {
+                    googleSignInIntent?.let { intent ->
+                        viewModel.syncManager.clearGoogleSignInIntent()
+                        try {
+                            googleSignInLauncher.launch(intent)
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "Failed to launch GoogleSignIn fallback", e)
+                            viewModel.handleGoogleSignInResult(android.app.Activity.RESULT_CANCELED, null)
+                        }
+                    }
+                }
+
                 val browserAuthIntent by viewModel.syncManager.browserAuthIntent.collectAsStateWithLifecycle()
                 LaunchedEffect(browserAuthIntent) {
                     browserAuthIntent?.let { intent ->

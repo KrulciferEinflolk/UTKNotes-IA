@@ -1810,6 +1810,30 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun handleGoogleSignInResult(
+        resultCode: Int,
+        data: android.content.Intent?,
+        onFailureDiagnostic: ((String) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            when (val outcome = syncManager.handleGoogleSignInResult(resultCode, data)) {
+                is com.example.data.remote.AuthResolutionOutcome.Authorized -> {
+                    if (lastDriveActionWasFolders) {
+                        createDriveDatabaseStructure(forceRetryGms = false, preferLegacyAuth = true)
+                    } else {
+                        triggerDriveSync(allowInteractiveAuth = false, forceRetryGms = false, preferLegacyAuth = true)
+                    }
+                }
+                is com.example.data.remote.AuthResolutionOutcome.PendingRecovery -> {
+                    // MainActivity's recoveryLauncher handles the emitted recoveryIntent
+                }
+                is com.example.data.remote.AuthResolutionOutcome.Failed -> {
+                    onFailureDiagnostic?.invoke(outcome.diagnosticMessage)
+                }
+            }
+        }
+    }
+
     fun handleLegacyRecoveryCancellation(
         resultCode: Int,
         onFailureDiagnostic: ((String) -> Unit)? = null

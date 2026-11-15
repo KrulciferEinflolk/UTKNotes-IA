@@ -35,7 +35,12 @@ import android.content.Intent
 import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.util.Base64
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.common.api.ApiException
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.FormBody
 import java.io.BufferedReader
@@ -147,9 +152,14 @@ class DriveSyncManager(
     private val _browserAuthIntent = MutableStateFlow<Intent?>(null)
     val browserAuthIntent: StateFlow<Intent?> = _browserAuthIntent
 
+    private val _googleSignInIntent = MutableStateFlow<Intent?>(null)
+    val googleSignInIntent: StateFlow<Intent?> = _googleSignInIntent
+
     private val gmsBlockedAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
     private val legacyRecoveryAttemptedAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
     private val preferLegacyAuthAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val googleSignInAttemptedAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val resolvedGoogleAccounts = ConcurrentHashMap<String, Account>()
 
     @Volatile
     private var activityRef: WeakReference<Activity>? = null
@@ -157,6 +167,8 @@ class DriveSyncManager(
     internal var legacyTokenFetcher: (Account, String) -> String = { account, scope ->
         GoogleAuthUtil.getToken(context, account, scope)
     }
+
+    internal var disableGoogleSignInFallbackForTests: Boolean = false
 
     @Volatile
     private var activeOAuthSocket: ServerSocket? = null
@@ -188,6 +200,10 @@ class DriveSyncManager(
         _browserAuthIntent.value = null
     }
 
+    fun clearGoogleSignInIntent() {
+        _googleSignInIntent.value = null
+    }
+
     fun clearGmsAuthDiagnostic() {
         _gmsAuthDiagnostic.value = null
     }
@@ -210,11 +226,13 @@ class DriveSyncManager(
             gmsBlockedAccounts.clear()
             legacyRecoveryAttemptedAccounts.clear()
             preferLegacyAuthAccounts.clear()
+            googleSignInAttemptedAccounts.clear()
         } else {
             val key = normalizeAccountKey(email)
             gmsBlockedAccounts.remove(key)
             legacyRecoveryAttemptedAccounts.remove(key)
             preferLegacyAuthAccounts.remove(key)
+            googleSignInAttemptedAccounts.remove(key)
         }
         _gmsAuthDiagnostic.value = null
     }
@@ -326,16 +344,16 @@ class DriveSyncManager(
         }
 
         // If Play Services AuthorizationClient failed (e.g., code 8 INTERNAL_ERROR on OEM ROMs),
-        // fall back once to GoogleAuthUtil + UserRecoverableAuthException before blocking GMS.
+        // fall back once to GoogleAuthUtil + UserRecoverableAuthException, and then GoogleSignIn, before blocking GMS.
         val isSignatureOrConsoleErr = apiStatusCode == 10 ||
             apiErrorDetails?.contains("UnregisteredOnApiConsole", ignoreCase = true) == true
+        val matchedSystemAccount = findSystemGoogleAccount(email)
         val shouldTryLegacyFallback = !isSignatureOrConsoleErr &&
             (apiStatusCode != null || data != null) &&
             !legacyRecoveryAttemptedAccounts.contains(key)
 
         if (shouldTryLegacyFallback) {
             legacyRecoveryAttemptedAccounts.add(key)
-            val matchedSystemAccount = findSystemGoogleAccount(email)
             when (val legacyRes = tryAcquireViaGoogleAuthUtil(email, matchedSystemAccount, allowInteractiveAuth = true)) {
                 is LegacyTokenAttempt.Token -> {
                     cachedAccessToken = legacyRes.accessToken
@@ -359,6 +377,35 @@ class DriveSyncManager(
             }
         }
 
+        // Secondary fallback: GoogleSignInClient binds the OS Google Account to the app even when
+        // AccountManager hides accounts or AuthorizationClient fails internally on Xiaomi/HyperOS.
+        val shouldTryGoogleSignInFallback = !disableGoogleSignInFallbackForTests &&
+            !isSignatureOrConsoleErr &&
+            (apiStatusCode != null || data != null) &&
+            !googleSignInAttemptedAccounts.contains(key)
+
+        if (shouldTryGoogleSignInFallback) {
+            val launchedSignIn = runCatching {
+                val gsoBuilder = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                    .requestEmail()
+                    .requestScopes(
+                        Scope("https://www.googleapis.com/auth/drive.appdata")
+                    )
+                if (matchedSystemAccount != null) {
+                    gsoBuilder.setAccountName(matchedSystemAccount.name)
+                }
+                val signInClient = GoogleSignIn.getClient(getAuthClientContext(), gsoBuilder.build())
+                googleSignInAttemptedAccounts.add(key)
+                _gmsAuthDiagnostic.value = null
+                _syncState.value = SyncState.Error("Autoriza tu cuenta de Google para conectar con Google Drive.")
+                _googleSignInIntent.value = signInClient.signInIntent
+                true
+            }.getOrDefault(false)
+            if (launchedSignIn) {
+                return@withContext AuthResolutionOutcome.PendingRecovery
+            }
+        }
+
         gmsBlockedAccounts.add(key)
         runCatching { saveLocalBackupSnapshot(email) }
         val diagnostic = buildGmsFailureDiagnostic(
@@ -366,6 +413,79 @@ class DriveSyncManager(
             resultCode = resultCode,
             statusCode = apiStatusCode,
             rawDetails = apiErrorDetails
+        )
+        _gmsAuthDiagnostic.value = diagnostic
+        _syncState.value = SyncState.Error(diagnostic)
+        AuthResolutionOutcome.Failed(diagnostic)
+    }
+
+    suspend fun handleGoogleSignInResult(
+        resultCode: Int,
+        data: Intent?
+    ): AuthResolutionOutcome = withContext(Dispatchers.IO) {
+        _googleSignInIntent.value = null
+        val email = _userEmail.value
+        if (email.isNullOrBlank() || email == "offline") {
+            return@withContext AuthResolutionOutcome.Failed("No hay una cuenta de Google activa.")
+        }
+        val key = normalizeAccountKey(email)
+        var signInStatusCode: Int? = null
+        var signInErrorDetails: String? = null
+
+        if (data != null) {
+            try {
+                val accountObj = GoogleSignIn.getSignedInAccountFromIntent(data)
+                    .getResult(ApiException::class.java)
+                val signedEmail = accountObj?.email?.trim()
+                val sysAccount = accountObj?.account
+                if (!signedEmail.isNullOrBlank() && !signedEmail.equals(email, ignoreCase = true)) {
+                    val mismatchMsg = "La cuenta seleccionada ($signedEmail) no coincide con la sesión activa ($email). Cambia de usuario para sincronizar con $signedEmail."
+                    gmsBlockedAccounts.add(key)
+                    _gmsAuthDiagnostic.value = mismatchMsg
+                    _syncState.value = SyncState.Error(mismatchMsg)
+                    return@withContext AuthResolutionOutcome.Failed(mismatchMsg)
+                }
+                if (sysAccount != null) {
+                    resolvedGoogleAccounts[key] = sysAccount
+                }
+                preferLegacyAuthAccounts.add(key)
+                when (val legacyRes = tryAcquireViaGoogleAuthUtil(email, sysAccount ?: findSystemGoogleAccount(email), allowInteractiveAuth = true)) {
+                    is LegacyTokenAttempt.Token -> {
+                        cachedAccessToken = legacyRes.accessToken
+                        cachedTokenEmail = email
+                        cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                        gmsBlockedAccounts.remove(key)
+                        _gmsAuthDiagnostic.value = null
+                        return@withContext AuthResolutionOutcome.Authorized
+                    }
+                    is LegacyTokenAttempt.Recoverable -> {
+                        _gmsAuthDiagnostic.value = null
+                        _syncState.value = SyncState.Error("Concede permiso para acceder a Google Drive para continuar.")
+                        _recoveryIntent.value = legacyRes.intent
+                        return@withContext AuthResolutionOutcome.PendingRecovery
+                    }
+                    is LegacyTokenAttempt.Failed -> {
+                        signInStatusCode = (legacyRes.error as? ApiException)?.statusCode
+                        signInErrorDetails = legacyRes.error.localizedMessage
+                    }
+                }
+            } catch (apiEx: ApiException) {
+                signInStatusCode = apiEx.statusCode
+                signInErrorDetails = apiEx.localizedMessage
+                Log.w("DriveSyncManager", "GoogleSignIn fallback ApiException (${apiEx.statusCode}): ${apiEx.message}")
+            } catch (e: Exception) {
+                signInErrorDetails = e.localizedMessage
+                Log.w("DriveSyncManager", "GoogleSignIn fallback error: ${e.message}")
+            }
+        }
+
+        gmsBlockedAccounts.add(key)
+        runCatching { saveLocalBackupSnapshot(email) }
+        val diagnostic = buildGmsFailureDiagnostic(
+            email = email,
+            resultCode = resultCode,
+            statusCode = signInStatusCode,
+            rawDetails = signInErrorDetails
         )
         _gmsAuthDiagnostic.value = diagnostic
         _syncState.value = SyncState.Error(diagnostic)
@@ -520,9 +640,12 @@ class DriveSyncManager(
         clearRecoveryIntent()
         clearPendingAuthIntentSender()
         clearBrowserAuthIntent()
+        clearGoogleSignInIntent()
         gmsBlockedAccounts.clear()
         legacyRecoveryAttemptedAccounts.clear()
         preferLegacyAuthAccounts.clear()
+        googleSignInAttemptedAccounts.clear()
+        resolvedGoogleAccounts.clear()
         _gmsAuthDiagnostic.value = null
         prefs.edit()
             .remove("google_email")
@@ -1604,6 +1727,7 @@ class DriveSyncManager(
     }
 
     private fun findSystemGoogleAccount(email: String): Account? {
+        resolvedGoogleAccounts[normalizeAccountKey(email)]?.let { return it }
         return runCatching {
             AccountManager.get(context).getAccountsByType("com.google")
                 .firstOrNull { it.name.equals(email, ignoreCase = true) }
@@ -1696,6 +1820,7 @@ class DriveSyncManager(
             gmsBlockedAccounts.remove(key)
             legacyRecoveryAttemptedAccounts.remove(key)
             preferLegacyAuthAccounts.remove(key)
+            googleSignInAttemptedAccounts.remove(key)
             _gmsAuthDiagnostic.value = null
         } else if (preferLegacyAuth) {
             gmsBlockedAccounts.remove(key)
@@ -1827,14 +1952,19 @@ class DriveSyncManager(
         rawDetails: String?,
         accountMissingOnDevice: Boolean = false
     ): String {
+        val gmsAvailability = runCatching {
+            GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context)
+        }.getOrDefault(ConnectionResult.SUCCESS)
         val codeSuffix = statusCode?.let { " (código $it)" }.orEmpty()
         val statusSummary = when {
+            gmsAvailability != ConnectionResult.SUCCESS ->
+                "Google Play Services no está disponible o requiere actualización en este dispositivo (estado $gmsAvailability)."
             accountMissingOnDevice ->
                 "La cuenta $email no está vinculada en los Ajustes de Google de este dispositivo."
             statusCode == 10 || rawDetails?.contains("UnregisteredOnApiConsole", ignoreCase = true) == true ->
                 "La firma del APK instalado o la API de Google Drive aún no coincide con el proyecto en la nube$codeSuffix."
             statusCode == 8 ->
-                "Google Play Services devolvió un error interno al solicitar permisos de Drive$codeSuffix. Verifica que Google Drive API, los permisos de Drive y tu correo como usuario de prueba estén activos en la consola del proyecto, y luego pulsa «Sincronizar ahora»."
+                "Google Play Services devolvió un error interno al solicitar permisos de Drive$codeSuffix. Verifica que Google Drive API, los permisos de Drive y tu correo como usuario de prueba estén activos en la consola del proyecto, o borra la caché de Google Play Services y reintenta."
             statusCode == 12500 ->
                 "La pantalla de permisos de Google Drive requiere aprobar los alcances o tu correo como usuario de prueba$codeSuffix."
             statusCode == 7 ->
