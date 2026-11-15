@@ -1735,13 +1735,15 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
 
     fun triggerDriveSync(
         allowInteractiveAuth: Boolean = false,
-        forceRetryGms: Boolean = false
+        forceRetryGms: Boolean = false,
+        preferLegacyAuth: Boolean = false
     ) {
         lastDriveActionWasFolders = false
         viewModelScope.launch {
             syncManager.synchronize(
                 allowInteractiveAuth = allowInteractiveAuth,
-                forceRetryGms = forceRetryGms
+                forceRetryGms = forceRetryGms,
+                preferLegacyAuth = preferLegacyAuth
             )
             // After sync completes, if there is no selected book, automatically select the first available restored book and its first page!
             if (_selectedBook.value == null) {
@@ -1759,18 +1761,28 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun createDriveDatabaseStructure(forceRetryGms: Boolean = true) {
+    fun createDriveDatabaseStructure(
+        forceRetryGms: Boolean = true,
+        preferLegacyAuth: Boolean = false
+    ) {
         lastDriveActionWasFolders = true
         viewModelScope.launch {
-            syncManager.createDriveDatabaseStructure(forceRetryGms = forceRetryGms)
+            syncManager.createDriveDatabaseStructure(
+                forceRetryGms = forceRetryGms,
+                preferLegacyAuth = preferLegacyAuth
+            )
         }
     }
 
-    fun retryLastDriveActionAfterAuth() {
+    fun retryLastDriveActionAfterAuth(preferLegacyAuth: Boolean = true) {
         if (lastDriveActionWasFolders) {
-            createDriveDatabaseStructure(forceRetryGms = true)
+            createDriveDatabaseStructure(forceRetryGms = !preferLegacyAuth, preferLegacyAuth = preferLegacyAuth)
         } else {
-            triggerDriveSync(allowInteractiveAuth = true, forceRetryGms = true)
+            triggerDriveSync(
+                allowInteractiveAuth = true,
+                forceRetryGms = !preferLegacyAuth,
+                preferLegacyAuth = preferLegacyAuth
+            )
         }
     }
 
@@ -1783,15 +1795,28 @@ class AetherViewModel(application: Application) : AndroidViewModel(application) 
             when (val outcome = syncManager.handleAuthorizationResolutionResult(resultCode, data)) {
                 is com.example.data.remote.AuthResolutionOutcome.Authorized -> {
                     if (lastDriveActionWasFolders) {
-                        createDriveDatabaseStructure(forceRetryGms = false)
+                        createDriveDatabaseStructure(forceRetryGms = false, preferLegacyAuth = false)
                     } else {
-                        triggerDriveSync(allowInteractiveAuth = false, forceRetryGms = false)
+                        triggerDriveSync(allowInteractiveAuth = false, forceRetryGms = false, preferLegacyAuth = false)
                     }
+                }
+                is com.example.data.remote.AuthResolutionOutcome.PendingRecovery -> {
+                    // MainActivity's recoveryLauncher handles the emitted recoveryIntent
                 }
                 is com.example.data.remote.AuthResolutionOutcome.Failed -> {
                     onFailureDiagnostic?.invoke(outcome.diagnosticMessage)
                 }
             }
+        }
+    }
+
+    fun handleLegacyRecoveryCancellation(
+        resultCode: Int,
+        onFailureDiagnostic: ((String) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            val diag = syncManager.handleLegacyRecoveryCancellation(resultCode)
+            onFailureDiagnostic?.invoke(diag)
         }
     }
 

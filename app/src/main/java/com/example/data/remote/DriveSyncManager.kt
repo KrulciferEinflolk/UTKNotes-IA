@@ -47,6 +47,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import java.lang.ref.WeakReference
 import com.example.data.local.memory.NoteMemoryVaultManager
 import com.example.data.local.memory.NoteMemoryBank
 import com.example.data.local.memory.NoteChatRecord
@@ -71,6 +72,7 @@ sealed class SyncState {
 
 sealed class AuthResolutionOutcome {
     object Authorized : AuthResolutionOutcome()
+    object PendingRecovery : AuthResolutionOutcome()
     data class Failed(val diagnosticMessage: String) : AuthResolutionOutcome()
 }
 
@@ -146,6 +148,15 @@ class DriveSyncManager(
     val browserAuthIntent: StateFlow<Intent?> = _browserAuthIntent
 
     private val gmsBlockedAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val legacyRecoveryAttemptedAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val preferLegacyAuthAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    @Volatile
+    private var activityRef: WeakReference<Activity>? = null
+
+    internal var legacyTokenFetcher: (Account, String) -> String = { account, scope ->
+        GoogleAuthUtil.getToken(context, account, scope)
+    }
 
     @Volatile
     private var activeOAuthSocket: ServerSocket? = null
@@ -156,6 +167,14 @@ class DriveSyncManager(
     private var cachedTokenEmail: String? = null
     @Volatile
     private var cachedTokenExpiresAtMs: Long = 0L
+
+    fun attachActivity(activity: Activity?) {
+        activityRef = activity?.let { WeakReference(it) }
+    }
+
+    private fun getAuthClientContext(): Context {
+        return activityRef?.get()?.takeIf { !it.isFinishing && !it.isDestroyed } ?: context
+    }
 
     fun clearRecoveryIntent() {
         _recoveryIntent.value = null
@@ -189,8 +208,13 @@ class DriveSyncManager(
     fun resetGmsBlock(email: String? = null) {
         if (email == null) {
             gmsBlockedAccounts.clear()
+            legacyRecoveryAttemptedAccounts.clear()
+            preferLegacyAuthAccounts.clear()
         } else {
-            gmsBlockedAccounts.remove(normalizeAccountKey(email))
+            val key = normalizeAccountKey(email)
+            gmsBlockedAccounts.remove(key)
+            legacyRecoveryAttemptedAccounts.remove(key)
+            preferLegacyAuthAccounts.remove(key)
         }
         _gmsAuthDiagnostic.value = null
     }
@@ -241,14 +265,17 @@ class DriveSyncManager(
         val email = _userEmail.value ?: return false
         if (data == null) return false
         return try {
-            val authResult = Identity.getAuthorizationClient(context)
+            val authResult = Identity.getAuthorizationClient(getAuthClientContext())
                 .getAuthorizationResultFromIntent(data)
             val token = authResult.accessToken
             if (!token.isNullOrBlank()) {
+                val key = normalizeAccountKey(email)
                 cachedAccessToken = token
                 cachedTokenEmail = email
                 cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
-                gmsBlockedAccounts.remove(normalizeAccountKey(email))
+                gmsBlockedAccounts.remove(key)
+                legacyRecoveryAttemptedAccounts.remove(key)
+                preferLegacyAuthAccounts.remove(key)
                 _gmsAuthDiagnostic.value = null
                 true
             } else {
@@ -269,19 +296,22 @@ class DriveSyncManager(
         if (email.isNullOrBlank() || email == "offline") {
             return@withContext AuthResolutionOutcome.Failed("No hay una cuenta de Google activa.")
         }
+        val key = normalizeAccountKey(email)
 
         var apiStatusCode: Int? = null
         var apiErrorDetails: String? = null
         if (data != null) {
             try {
-                val authResult = Identity.getAuthorizationClient(context)
+                val authResult = Identity.getAuthorizationClient(getAuthClientContext())
                     .getAuthorizationResultFromIntent(data)
                 val token = authResult.accessToken
                 if (!token.isNullOrBlank()) {
                     cachedAccessToken = token
                     cachedTokenEmail = email
                     cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
-                    gmsBlockedAccounts.remove(normalizeAccountKey(email))
+                    gmsBlockedAccounts.remove(key)
+                    legacyRecoveryAttemptedAccounts.remove(key)
+                    preferLegacyAuthAccounts.remove(key)
                     _gmsAuthDiagnostic.value = null
                     return@withContext AuthResolutionOutcome.Authorized
                 }
@@ -295,7 +325,41 @@ class DriveSyncManager(
             }
         }
 
-        gmsBlockedAccounts.add(normalizeAccountKey(email))
+        // If Play Services AuthorizationClient failed (e.g., code 8 INTERNAL_ERROR on OEM ROMs),
+        // fall back once to GoogleAuthUtil + UserRecoverableAuthException before blocking GMS.
+        val isSignatureOrConsoleErr = apiStatusCode == 10 ||
+            apiErrorDetails?.contains("UnregisteredOnApiConsole", ignoreCase = true) == true
+        val shouldTryLegacyFallback = !isSignatureOrConsoleErr &&
+            (apiStatusCode != null || data != null) &&
+            !legacyRecoveryAttemptedAccounts.contains(key)
+
+        if (shouldTryLegacyFallback) {
+            legacyRecoveryAttemptedAccounts.add(key)
+            val matchedSystemAccount = findSystemGoogleAccount(email)
+            when (val legacyRes = tryAcquireViaGoogleAuthUtil(email, matchedSystemAccount, allowInteractiveAuth = true)) {
+                is LegacyTokenAttempt.Token -> {
+                    cachedAccessToken = legacyRes.accessToken
+                    cachedTokenEmail = email
+                    cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                    gmsBlockedAccounts.remove(key)
+                    preferLegacyAuthAccounts.add(key)
+                    _gmsAuthDiagnostic.value = null
+                    return@withContext AuthResolutionOutcome.Authorized
+                }
+                is LegacyTokenAttempt.Recoverable -> {
+                    preferLegacyAuthAccounts.add(key)
+                    _gmsAuthDiagnostic.value = null
+                    _syncState.value = SyncState.Error("Se requiere permiso para acceder a Google Drive. Por favor concede la autorización.")
+                    _recoveryIntent.value = legacyRes.intent
+                    return@withContext AuthResolutionOutcome.PendingRecovery
+                }
+                is LegacyTokenAttempt.Failed -> {
+                    Log.w("DriveSyncManager", "GoogleAuthUtil fallback after code $apiStatusCode failed: ${legacyRes.error.message}")
+                }
+            }
+        }
+
+        gmsBlockedAccounts.add(key)
         runCatching { saveLocalBackupSnapshot(email) }
         val diagnostic = buildGmsFailureDiagnostic(
             email = email,
@@ -306,6 +370,26 @@ class DriveSyncManager(
         _gmsAuthDiagnostic.value = diagnostic
         _syncState.value = SyncState.Error(diagnostic)
         AuthResolutionOutcome.Failed(diagnostic)
+    }
+
+    suspend fun handleLegacyRecoveryCancellation(resultCode: Int): String = withContext(Dispatchers.IO) {
+        _recoveryIntent.value = null
+        val email = _userEmail.value
+        if (email.isNullOrBlank() || email == "offline") {
+            return@withContext "No hay una cuenta de Google activa."
+        }
+        val key = normalizeAccountKey(email)
+        gmsBlockedAccounts.add(key)
+        runCatching { saveLocalBackupSnapshot(email) }
+        val diagnostic = buildGmsFailureDiagnostic(
+            email = email,
+            resultCode = resultCode,
+            statusCode = null,
+            rawDetails = null
+        )
+        _gmsAuthDiagnostic.value = diagnostic
+        _syncState.value = SyncState.Error(diagnostic)
+        diagnostic
     }
 
     private val moshi = Moshi.Builder()
@@ -436,6 +520,9 @@ class DriveSyncManager(
         clearRecoveryIntent()
         clearPendingAuthIntentSender()
         clearBrowserAuthIntent()
+        gmsBlockedAccounts.clear()
+        legacyRecoveryAttemptedAccounts.clear()
+        preferLegacyAuthAccounts.clear()
         _gmsAuthDiagnostic.value = null
         prefs.edit()
             .remove("google_email")
@@ -480,7 +567,8 @@ class DriveSyncManager(
      */
     suspend fun synchronize(
         allowInteractiveAuth: Boolean = false,
-        forceRetryGms: Boolean = false
+        forceRetryGms: Boolean = false,
+        preferLegacyAuth: Boolean = false
     ): Unit = withContext(Dispatchers.IO) {
         val email = _userEmail.value
         if (email.isNullOrEmpty()) {
@@ -491,7 +579,7 @@ class DriveSyncManager(
         _syncState.value = SyncState.Syncing
 
         try {
-            Log.d("DriveSyncManager", "Iniciando sincronización para: $email (interactive=$allowInteractiveAuth, retryGms=$forceRetryGms)")
+            Log.d("DriveSyncManager", "Iniciando sincronización para: $email (interactive=$allowInteractiveAuth, retryGms=$forceRetryGms, legacy=$preferLegacyAuth)")
             val dao = database.notesDao()
 
             // Preserve strict isolation per account: only normalize empty legacy userEmail rows to 'offline'
@@ -530,14 +618,15 @@ class DriveSyncManager(
                     email = email,
                     emitSyncErrors = allowInteractiveAuth || isGmsBlockedForAccount(email),
                     allowInteractiveAuth = allowInteractiveAuth,
-                    forceRetryGms = forceRetryGms
+                    forceRetryGms = forceRetryGms,
+                    preferLegacyAuth = preferLegacyAuth
                 )
                 if (token == null) {
                     // Always guarantee local JSON backup even when cloud OAuth cannot proceed
                     val (bookCount, _, noteCount) = saveLocalBackupSnapshot(email)
                     if (!allowInteractiveAuth && !isGmsBlockedForAccount(email)) {
                         _syncState.value = SyncState.Success(
-                            "Guardado local ($bookCount libros, $noteCount notas). Pulsa 'Sincronizar ahora' o usa OAuth alternativo en Ajustes para subir a Drive.",
+                            "Guardado local ($bookCount libros, $noteCount notas). Pulsa 'Sincronizar ahora' en Ajustes para subir a Drive.",
                             System.currentTimeMillis()
                         )
                     }
@@ -1094,7 +1183,10 @@ class DriveSyncManager(
         return@withContext null
     }
 
-    suspend fun createDriveDatabaseStructure(forceRetryGms: Boolean = false): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun createDriveDatabaseStructure(
+        forceRetryGms: Boolean = false,
+        preferLegacyAuth: Boolean = false
+    ): Result<String> = withContext(Dispatchers.IO) {
         val email = _userEmail.value
         if (email.isNullOrEmpty() || email == "offline") {
             val msg = "Debes iniciar sesión con una cuenta de Google para crear la estructura en Google Drive."
@@ -1106,7 +1198,8 @@ class DriveSyncManager(
             email = email,
             emitSyncErrors = true,
             allowInteractiveAuth = true,
-            forceRetryGms = forceRetryGms
+            forceRetryGms = forceRetryGms,
+            preferLegacyAuth = preferLegacyAuth
         )
         if (token == null) {
             return@withContext Result.failure(Exception("Autorización pendiente o rechazada para Google Drive."))
@@ -1504,11 +1597,68 @@ class DriveSyncManager(
         }
     }
 
+    private sealed class LegacyTokenAttempt {
+        data class Token(val accessToken: String) : LegacyTokenAttempt()
+        data class Recoverable(val intent: Intent) : LegacyTokenAttempt()
+        data class Failed(val error: Exception) : LegacyTokenAttempt()
+    }
+
+    private fun findSystemGoogleAccount(email: String): Account? {
+        return runCatching {
+            AccountManager.get(context).getAccountsByType("com.google")
+                .firstOrNull { it.name.equals(email, ignoreCase = true) }
+        }.getOrNull()
+    }
+
+    private fun tryAcquireViaGoogleAuthUtil(
+        email: String,
+        matchedSystemAccount: Account?,
+        allowInteractiveAuth: Boolean
+    ): LegacyTokenAttempt {
+        val targetAccount = matchedSystemAccount ?: Account(email, "com.google")
+        val primaryScope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata"
+        val fallbackScope = "oauth2:https://www.googleapis.com/auth/drive.appdata"
+        return try {
+            val token = legacyTokenFetcher(targetAccount, primaryScope)
+            if (token.isNotBlank()) {
+                LegacyTokenAttempt.Token(token)
+            } else {
+                LegacyTokenAttempt.Failed(IllegalStateException("Token vacío desde GoogleAuthUtil"))
+            }
+        } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
+            val recIntent = recoverable.intent
+            if (allowInteractiveAuth && recIntent != null) {
+                LegacyTokenAttempt.Recoverable(recIntent)
+            } else {
+                LegacyTokenAttempt.Failed(recoverable)
+            }
+        } catch (_: Exception) {
+            try {
+                val token = legacyTokenFetcher(targetAccount, fallbackScope)
+                if (token.isNotBlank()) {
+                    LegacyTokenAttempt.Token(token)
+                } else {
+                    LegacyTokenAttempt.Failed(IllegalStateException("Token vacío desde GoogleAuthUtil (fallback)"))
+                }
+            } catch (recoverable2: com.google.android.gms.auth.UserRecoverableAuthException) {
+                val recIntent = recoverable2.intent
+                if (allowInteractiveAuth && recIntent != null) {
+                    LegacyTokenAttempt.Recoverable(recIntent)
+                } else {
+                    LegacyTokenAttempt.Failed(recoverable2)
+                }
+            } catch (authEx2: Exception) {
+                LegacyTokenAttempt.Failed(authEx2)
+            }
+        }
+    }
+
     private suspend fun acquireDriveAccessToken(
         email: String,
         emitSyncErrors: Boolean,
         allowInteractiveAuth: Boolean = false,
-        forceRetryGms: Boolean = false
+        forceRetryGms: Boolean = false,
+        preferLegacyAuth: Boolean = false
     ): String? {
         val now = System.currentTimeMillis()
         val key = normalizeAccountKey(email)
@@ -1542,8 +1692,14 @@ class DriveSyncManager(
             }
         }
 
-        if (forceRetryGms) {
+        if (forceRetryGms && !preferLegacyAuth) {
             gmsBlockedAccounts.remove(key)
+            legacyRecoveryAttemptedAccounts.remove(key)
+            preferLegacyAuthAccounts.remove(key)
+            _gmsAuthDiagnostic.value = null
+        } else if (preferLegacyAuth) {
+            gmsBlockedAccounts.remove(key)
+            preferLegacyAuthAccounts.add(key)
             _gmsAuthDiagnostic.value = null
         }
 
@@ -1562,103 +1718,87 @@ class DriveSyncManager(
             return null
         }
 
-        val matchedSystemAccount = runCatching {
-            AccountManager.get(context).getAccountsByType("com.google")
-                .firstOrNull { it.name.equals(email, ignoreCase = true) }
-        }.getOrNull()
+        val matchedSystemAccount = findSystemGoogleAccount(email)
         val requestedScopes = listOf(
             Scope("https://www.googleapis.com/auth/drive.file"),
             Scope("https://www.googleapis.com/auth/drive.appdata")
         )
 
         var lastAuthError: Exception? = null
-        try {
-            val authReqBuilder = AuthorizationRequest.builder()
-                .setRequestedScopes(requestedScopes)
-            if (matchedSystemAccount != null) {
-                authReqBuilder.setAccount(matchedSystemAccount)
-            }
-            val authRequest = authReqBuilder.build()
-            val authResult = suspendCancellableCoroutine { cont ->
-                Identity.getAuthorizationClient(context)
-                    .authorize(authRequest)
-                    .addOnSuccessListener { result ->
-                        if (cont.isActive) cont.resume(result)
-                    }
-                    .addOnFailureListener { ex ->
-                        if (cont.isActive) cont.resumeWithException(ex)
-                    }
-            }
-            if (authResult.hasResolution() && authResult.pendingIntent != null) {
-                if (allowInteractiveAuth) {
-                    _pendingAuthIntentSender.value = authResult.pendingIntent!!.intentSender
-                    if (emitSyncErrors) {
-                        _syncState.value = SyncState.Error(
-                            "Concede acceso a Google Drive en la ventana de autorización para continuar."
-                        )
-                    }
-                }
-                return null
-            }
-            val token = authResult.accessToken
-            if (!token.isNullOrBlank()) {
-                cachedAccessToken = token
-                cachedTokenEmail = email
-                cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
-                _gmsAuthDiagnostic.value = null
-                return token
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            lastAuthError = e
-            Log.w("DriveSyncManager", "AuthorizationClient fallback for $email: ${e.message}")
-        }
-
-        // Fallback via GoogleAuthUtil if AuthorizationClient is unavailable or rejected (non-signature errors)
-        val rawFirstMsg = lastAuthError?.localizedMessage.orEmpty()
-        val isSignatureOrConsoleErr = rawFirstMsg.contains("UnregisteredOnApiConsole", ignoreCase = true) ||
-            (lastAuthError as? ApiException)?.statusCode == 10
-        if (!isSignatureOrConsoleErr && matchedSystemAccount != null) {
-            val primaryScope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata"
-            val fallbackScope = "oauth2:https://www.googleapis.com/auth/drive.appdata"
+        val skipAuthorizationClient = preferLegacyAuth || preferLegacyAuthAccounts.contains(key)
+        if (!skipAuthorizationClient) {
             try {
-                val token = GoogleAuthUtil.getToken(context, matchedSystemAccount, primaryScope)
-                if (token.isNotBlank()) {
+                val authReqBuilder = AuthorizationRequest.builder()
+                    .setRequestedScopes(requestedScopes)
+                if (matchedSystemAccount != null) {
+                    authReqBuilder.setAccount(matchedSystemAccount)
+                }
+                val authRequest = authReqBuilder.build()
+                val authResult = suspendCancellableCoroutine { cont ->
+                    Identity.getAuthorizationClient(getAuthClientContext())
+                        .authorize(authRequest)
+                        .addOnSuccessListener { result ->
+                            if (cont.isActive) cont.resume(result)
+                        }
+                        .addOnFailureListener { ex ->
+                            if (cont.isActive) cont.resumeWithException(ex)
+                        }
+                }
+                if (authResult.hasResolution() && authResult.pendingIntent != null) {
+                    if (allowInteractiveAuth) {
+                        _pendingAuthIntentSender.value = authResult.pendingIntent!!.intentSender
+                        if (emitSyncErrors) {
+                            _syncState.value = SyncState.Error(
+                                "Concede acceso a Google Drive en la ventana de autorización para continuar."
+                            )
+                        }
+                    }
+                    return null
+                }
+                val token = authResult.accessToken
+                if (!token.isNullOrBlank()) {
                     cachedAccessToken = token
                     cachedTokenEmail = email
                     cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
                     _gmsAuthDiagnostic.value = null
                     return token
                 }
-            } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
-                if (allowInteractiveAuth) {
-                    _recoveryIntent.value = recoverable.intent
-                    if (emitSyncErrors) {
-                        _syncState.value = SyncState.Error("Se requiere permiso para acceder a Google Drive. Por favor concede la autorización.")
-                    }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastAuthError = e
+                Log.w("DriveSyncManager", "AuthorizationClient fallback for $email: ${e.message}")
+            }
+        }
+
+        // Fallback via GoogleAuthUtil if AuthorizationClient is unavailable/rejected or legacy recovery succeeded
+        val rawFirstMsg = lastAuthError?.localizedMessage.orEmpty()
+        val isSignatureOrConsoleErr = rawFirstMsg.contains("UnregisteredOnApiConsole", ignoreCase = true) ||
+            (lastAuthError as? ApiException)?.statusCode == 10
+        if (!isSignatureOrConsoleErr && (matchedSystemAccount != null || allowInteractiveAuth || skipAuthorizationClient)) {
+            when (val legacyRes = tryAcquireViaGoogleAuthUtil(email, matchedSystemAccount, allowInteractiveAuth)) {
+                is LegacyTokenAttempt.Token -> {
+                    cachedAccessToken = legacyRes.accessToken
+                    cachedTokenEmail = email
+                    cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                    gmsBlockedAccounts.remove(key)
+                    _gmsAuthDiagnostic.value = null
+                    return legacyRes.accessToken
                 }
-                return null
-            } catch (_: Exception) {
-                try {
-                    val token = GoogleAuthUtil.getToken(context, matchedSystemAccount, fallbackScope)
-                    if (token.isNotBlank()) {
-                        cachedAccessToken = token
-                        cachedTokenEmail = email
-                        cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
-                        _gmsAuthDiagnostic.value = null
-                        return token
-                    }
-                } catch (recoverable2: com.google.android.gms.auth.UserRecoverableAuthException) {
-                    if (allowInteractiveAuth) {
-                        _recoveryIntent.value = recoverable2.intent
+                is LegacyTokenAttempt.Recoverable -> {
+                    if (allowInteractiveAuth && !legacyRecoveryAttemptedAccounts.contains(key)) {
+                        legacyRecoveryAttemptedAccounts.add(key)
+                        preferLegacyAuthAccounts.add(key)
+                        _recoveryIntent.value = legacyRes.intent
                         if (emitSyncErrors) {
-                            _syncState.value = SyncState.Error("Se requiere autorización para Google Drive.")
+                            _syncState.value = SyncState.Error("Se requiere permiso para acceder a Google Drive. Por favor concede la autorización.")
                         }
+                        return null
                     }
-                    return null
-                } catch (authEx2: Exception) {
-                    lastAuthError = authEx2
+                    lastAuthError = IllegalStateException("Se requiere autorización para Google Drive.")
+                }
+                is LegacyTokenAttempt.Failed -> {
+                    lastAuthError = legacyRes.error
                 }
             }
         }
@@ -1671,7 +1811,7 @@ class DriveSyncManager(
             resultCode = null,
             statusCode = statusCode,
             rawDetails = lastAuthError?.localizedMessage,
-            accountMissingOnDevice = matchedSystemAccount == null
+            accountMissingOnDevice = matchedSystemAccount == null && !skipAuthorizationClient
         )
         _gmsAuthDiagnostic.value = diag
         if (emitSyncErrors) {
@@ -1693,6 +1833,8 @@ class DriveSyncManager(
                 "La cuenta $email no está vinculada en los Ajustes de Google de este dispositivo."
             statusCode == 10 || rawDetails?.contains("UnregisteredOnApiConsole", ignoreCase = true) == true ->
                 "La firma del APK instalado o la API de Google Drive aún no coincide con el proyecto en la nube$codeSuffix."
+            statusCode == 8 ->
+                "Google Play Services devolvió un error interno al solicitar permisos de Drive$codeSuffix. Verifica que Google Drive API, los permisos de Drive y tu correo como usuario de prueba estén activos en la consola del proyecto, y luego pulsa «Sincronizar ahora»."
             statusCode == 12500 ->
                 "La pantalla de permisos de Google Drive requiere aprobar los alcances o tu correo como usuario de prueba$codeSuffix."
             statusCode == 7 ->

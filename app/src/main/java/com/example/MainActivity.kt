@@ -148,15 +148,22 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                DisposableEffect(this@MainActivity) {
+                    viewModel.syncManager.attachActivity(this@MainActivity)
+                    onDispose {
+                        viewModel.syncManager.attachActivity(null)
+                    }
+                }
+
                 val recoveryIntent by viewModel.syncManager.recoveryIntent.collectAsStateWithLifecycle()
                 val recoveryLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.StartActivityForResult()
                 ) { result ->
                     viewModel.syncManager.clearRecoveryIntent()
                     if (result.resultCode == android.app.Activity.RESULT_OK) {
-                        viewModel.retryLastDriveActionAfterAuth()
+                        viewModel.retryLastDriveActionAfterAuth(preferLegacyAuth = true)
                     } else {
-                        viewModel.handleAuthResolutionResult(result.resultCode, result.data) {
+                        viewModel.handleLegacyRecoveryCancellation(result.resultCode) {
                             Toast.makeText(
                                 rootContext,
                                 "No se pudo completar la autorización de Google Drive. Abre Ajustes > Almacenamiento y nube para reintentar o exportar JSON.",
@@ -192,6 +199,7 @@ class MainActivity : ComponentActivity() {
 
                 LaunchedEffect(pendingAuthIntentSender) {
                     pendingAuthIntentSender?.let { sender ->
+                        viewModel.syncManager.clearPendingAuthIntentSender()
                         try {
                             val req = androidx.activity.result.IntentSenderRequest.Builder(sender).build()
                             authIntentSenderLauncher.launch(req)

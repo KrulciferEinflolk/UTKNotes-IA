@@ -466,5 +466,61 @@ class MultiAccountAndMergeRobolectricTest {
             backupFile.delete()
         }
     }
+
+    @Test
+    fun `DriveSyncManager falls back to GoogleAuthUtil when AuthorizationClient resolution fails and skips GIS on preferLegacyAuth`() {
+        runBlocking {
+            val db = AppDatabase.getDatabase(appContext)
+            val syncManager = DriveSyncManager(appContext, db)
+            syncManager.connectDrive("fallback.code8@gmail.com")
+
+            // 1. If AuthorizationClient returns an Intent that fails resolution, GoogleAuthUtil fallback obtains token
+            var fetchedScopes = mutableListOf<String>()
+            syncManager.legacyTokenFetcher = { _, scope ->
+                fetchedScopes.add(scope)
+                "legacy-access-token-123"
+            }
+            val outcome = syncManager.handleAuthorizationResolutionResult(
+                android.app.Activity.RESULT_CANCELED,
+                android.content.Intent()
+            )
+            assertTrue(outcome is com.example.data.remote.AuthResolutionOutcome.Authorized)
+            assertFalse(syncManager.isGmsBlockedForAccount("fallback.code8@gmail.com"))
+            assertTrue(fetchedScopes.isNotEmpty())
+            assertNull(syncManager.gmsAuthDiagnostic.value)
+
+            // 2. If GoogleAuthUtil throws UserRecoverableAuthException during fallback, it emits recoveryIntent once without looping
+            syncManager.resetGmsBlock("fallback.code8@gmail.com")
+            syncManager.invalidateCachedAccessToken()
+            val recoveryActionIntent = android.content.Intent("com.google.android.gms.auth.GOOGLE_SIGN_IN")
+            syncManager.legacyTokenFetcher = { _, _ ->
+                throw com.google.android.gms.auth.UserRecoverableAuthException("Consent required", recoveryActionIntent)
+            }
+            val pendingOutcome = syncManager.handleAuthorizationResolutionResult(
+                android.app.Activity.RESULT_CANCELED,
+                android.content.Intent()
+            )
+            assertTrue(pendingOutcome is com.example.data.remote.AuthResolutionOutcome.PendingRecovery)
+            assertEquals(recoveryActionIntent.action, syncManager.recoveryIntent.value?.action)
+
+            // Second attempt without forceRetryGms must NOT re-emit recoveryIntent (loop guard)
+            syncManager.clearRecoveryIntent()
+            val blockedOutcome = syncManager.handleAuthorizationResolutionResult(
+                android.app.Activity.RESULT_CANCELED,
+                android.content.Intent()
+            )
+            assertTrue(blockedOutcome is com.example.data.remote.AuthResolutionOutcome.Failed)
+            assertNull(syncManager.recoveryIntent.value)
+            assertTrue(syncManager.isGmsBlockedForAccount("fallback.code8@gmail.com"))
+
+            // 3. Cancellation of legacy recovery dialog blocks cleanly without private data
+            val diag = syncManager.handleLegacyRecoveryCancellation(android.app.Activity.RESULT_CANCELED)
+            assertFalse(diag.contains("SHA-1", ignoreCase = true))
+            assertFalse(diag.contains(appContext.packageName, ignoreCase = true))
+
+            java.io.File(appContext.getExternalFilesDir(null), "utk_notes_backup_fallback.code8@gmail.com.json").delete()
+        }
+    }
 }
+
 
