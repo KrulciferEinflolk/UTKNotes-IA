@@ -176,6 +176,9 @@ interface NotesDao {
     @Query("SELECT DISTINCT userEmail FROM books WHERE isDeleted = 0 AND userEmail != ''")
     suspend fun getDistinctBookAccounts(): List<String>
 
+    @Query("SELECT DISTINCT userEmail FROM pages WHERE userEmail != ''")
+    suspend fun getDistinctPageAccounts(): List<String>
+
     @Query("SELECT DISTINCT userEmail FROM notes WHERE isDeleted = 0 AND userEmail != ''")
     suspend fun getDistinctNoteAccounts(): List<String>
 

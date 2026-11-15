@@ -88,7 +88,7 @@ fun UTKNotesWelcomeScreen(
             if (!selectedAccount.isNullOrEmpty()) {
                 isSigningIn = true
                 viewModel.syncManager.connectDrive(selectedAccount)
-                viewModel.triggerDriveSync()
+                viewModel.triggerDriveSync(allowInteractiveAuth = true, forceRetryGms = true)
             }
         }
     }
@@ -116,7 +116,7 @@ fun UTKNotesWelcomeScreen(
             if (!detectedEmail.isNullOrEmpty()) {
                 isSigningIn = true
                 viewModel.syncManager.connectDrive(detectedEmail)
-                viewModel.triggerDriveSync()
+                viewModel.triggerDriveSync(allowInteractiveAuth = false, forceRetryGms = false)
             }
         }
     }
@@ -205,7 +205,7 @@ fun UTKNotesWelcomeScreen(
                 if (syncState is SyncState.Error) {
                     Button(
                         onClick = {
-                            viewModel.triggerDriveSync()
+                            viewModel.triggerDriveSync(allowInteractiveAuth = true, forceRetryGms = true)
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
                         shape = RoundedCornerShape(24.dp),
@@ -407,7 +407,7 @@ fun UTKNotesWelcomeScreen(
                                 showAccountSelectionDialog = false
                                 isSigningIn = true
                                 viewModel.syncManager.connectDrive(accEmail)
-                                viewModel.triggerDriveSync()
+                                viewModel.triggerDriveSync(allowInteractiveAuth = true, forceRetryGms = true)
                             },
                             color = CosmicBackground,
                             shape = RoundedCornerShape(12.dp),
@@ -529,7 +529,7 @@ fun UTKNotesWelcomeScreen(
                             showManualEmailDialog = false
                             isSigningIn = true
                             viewModel.syncManager.connectDrive(emailToUse)
-                            viewModel.triggerDriveSync()
+                            viewModel.triggerDriveSync(allowInteractiveAuth = true, forceRetryGms = true)
                         } else {
                             Toast.makeText(context, "Por favor ingresa un correo válido", Toast.LENGTH_SHORT).show()
                         }

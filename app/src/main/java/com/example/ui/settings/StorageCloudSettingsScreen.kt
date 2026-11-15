@@ -1,6 +1,12 @@
 package com.example.ui.settings
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -15,6 +21,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -23,7 +30,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
@@ -35,10 +44,15 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.ManageAccounts
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -72,7 +86,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -84,6 +100,7 @@ import com.example.data.local.settings.BookStorageItem
 import com.example.data.local.settings.StorageMetricsCalculator
 import com.example.data.remote.SyncState
 import com.example.ui.AetherViewModel
+import com.example.ui.TransferFeedback
 import com.example.ui.theme.CosmicBackground
 import com.example.ui.theme.CosmicBorder
 import com.example.ui.theme.CosmicSurface
@@ -114,21 +131,41 @@ fun StorageCloudSettingsScreen(
         viewModel.refreshStorageMetrics()
     }
 
+    val context = LocalContext.current
     val metrics by viewModel.storageMetrics.collectAsStateWithLifecycle()
     val availableAccounts by viewModel.availableStorageAccounts.collectAsStateWithLifecycle()
     val inspectedAccountId by viewModel.inspectedAccountId.collectAsStateWithLifecycle()
     val transferStatusMessage by viewModel.transferStatusMessage.collectAsStateWithLifecycle()
+    val transferFeedback by viewModel.transferFeedback.collectAsStateWithLifecycle()
     val currentEmail by viewModel.syncManager.userEmail.collectAsStateWithLifecycle()
     val isConnected by viewModel.syncManager.isConnected.collectAsStateWithLifecycle()
     val syncState by viewModel.syncManager.syncState.collectAsStateWithLifecycle()
+    val gmsAuthDiagnostic by viewModel.syncManager.gmsAuthDiagnostic.collectAsStateWithLifecycle()
+    val apkSha1 = remember { viewModel.syncManager.getApkSigningSha1().ifBlank { "No disponible" } }
     val expandedBooks = remember { mutableStateMapOf<String, Boolean>() }
     var transferRequest by remember { mutableStateOf<TransferDialogRequest?>(null) }
+    var showBrowserOAuthDialog by remember { mutableStateOf(false) }
 
     val activeAccountId = currentEmail?.takeIf { it.isNotBlank() } ?: "offline"
     val selectedAccountId = inspectedAccountId ?: activeAccountId
-    val isInspectingActiveAccount = selectedAccountId == activeAccountId
+    val isInspectingActiveAccount = selectedAccountId.equals(activeAccountId, ignoreCase = true)
     val selectedAccountLabel = if (selectedAccountId == "offline") appText("Modo Local", "Local Mode") else selectedAccountId
     val activeAccountLabel = if (activeAccountId == "offline") appText("Modo Local", "Local Mode") else activeAccountId
+
+    val exportBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportAccountBackupToUri(selectedAccountId, uri)
+        }
+    }
+    val importBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importAccountBackupFromUri(selectedAccountId, uri)
+        }
+    }
 
     val totalAppBytes = metrics.totalLibraryBytes + metrics.totalModelsBytes + metrics.totalBackupsBytes + metrics.totalCrashLogsBytes
 
@@ -273,42 +310,102 @@ fun StorageCloudSettingsScreen(
                     }
                 }
 
-                // Transfer status banner
-                if (!transferStatusMessage.isNullOrBlank()) {
+                // Transfer status banner with optional jump to destination account
+                val activeFeedback = transferFeedback
+                    ?: transferStatusMessage?.takeIf { it.isNotBlank() }?.let { TransferFeedback(it) }
+                if (activeFeedback != null) {
                     item {
                         Surface(
-                            color = GeminiBlue.copy(alpha = 0.14f),
+                            color = if (activeFeedback.isError) {
+                                MaterialTheme.colorScheme.error.copy(alpha = 0.14f)
+                            } else {
+                                GeminiBlue.copy(alpha = 0.14f)
+                            },
                             shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.5f)),
+                            border = BorderStroke(
+                                1.dp,
+                                if (activeFeedback.isError) {
+                                    MaterialTheme.colorScheme.error.copy(alpha = 0.55f)
+                                } else {
+                                    GeminiBlue.copy(alpha = 0.5f)
+                                }
+                            ),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("storage_transfer_status_banner")
                         ) {
-                            Row(
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = GeminiBlue, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = transferStatusMessage.orEmpty(),
-                                    color = TextPrimary,
-                                    fontSize = 12.5.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                IconButton(
-                                    onClick = { viewModel.clearTransferStatusMessage() },
-                                    modifier = Modifier.size(32.dp)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Close,
-                                        contentDescription = appText("Cerrar aviso", "Dismiss"),
-                                        tint = TextSecondary,
-                                        modifier = Modifier.size(16.dp)
+                                        imageVector = Icons.Default.SwapHoriz,
+                                        contentDescription = null,
+                                        tint = if (activeFeedback.isError) MaterialTheme.colorScheme.error else GeminiBlue,
+                                        modifier = Modifier.size(18.dp)
                                     )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = activeFeedback.message,
+                                        color = TextPrimary,
+                                        fontSize = 12.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(
+                                        onClick = { viewModel.clearTransferStatusMessage() },
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .size(36.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = appText("Cerrar aviso", "Dismiss"),
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                                activeFeedback.targetAccountId?.let { destId ->
+                                    val destLabel = if (destId == "offline") {
+                                        appText("Modo Local", "Local Mode")
+                                    } else {
+                                        destId
+                                    }
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.End
+                                    ) {
+                                        OutlinedButton(
+                                            onClick = { viewModel.selectStorageAccount(destId) },
+                                            border = BorderStroke(1.dp, GeminiBlue),
+                                            modifier = Modifier
+                                                .minimumInteractiveComponentSize()
+                                                .testTag("transfer_view_destination_btn")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.OpenInNew,
+                                                contentDescription = null,
+                                                tint = GeminiBlue,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = appText("Ver destino ($destLabel)", "View destination"),
+                                                color = GeminiBlue,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -381,9 +478,10 @@ fun StorageCloudSettingsScreen(
                     }
                 }
 
-                // Google Drive Connection Card
+                // Google Drive Connection & Diagnostic Card
                 item {
                     val isRealGoogleAccount = isConnected && !currentEmail.isNullOrBlank() && currentEmail != "offline"
+                    val isErrorState = syncState is SyncState.Error || !gmsAuthDiagnostic.isNullOrBlank()
                     Surface(
                         color = CosmicSurface,
                         shape = RoundedCornerShape(18.dp),
@@ -407,8 +505,8 @@ fun StorageCloudSettingsScreen(
                                     )
                                     Text(
                                         text = if (isRealGoogleAccount) currentEmail.orEmpty() else appText(
-                                            "Modo offline (los interruptores configuran qué subir al conectar)",
-                                            "Offline mode (switches configure what syncs once connected)"
+                                            "Modo offline (puedes exportar o importar copias JSON)",
+                                            "Offline mode (you can export or import JSON backups)"
                                         ),
                                         color = TextSecondary,
                                         fontSize = 12.sp
@@ -416,20 +514,97 @@ fun StorageCloudSettingsScreen(
                                 }
                             }
 
-                            if (syncState is SyncState.Success || syncState is SyncState.Error || syncState is SyncState.Syncing) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                val statusMsg = when (val s = syncState) {
-                                    is SyncState.Syncing -> appText("Sincronizando con Google Drive...", "Syncing with Google Drive...")
-                                    is SyncState.Success -> s.message
-                                    is SyncState.Error -> s.message
+                            if (syncState is SyncState.Success || syncState is SyncState.Error || syncState is SyncState.Syncing || !gmsAuthDiagnostic.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(10.dp))
+                                val statusMsg = when {
+                                    syncState is SyncState.Syncing -> appText("Sincronizando con Google Drive...", "Syncing with Google Drive...")
+                                    syncState is SyncState.Error -> (syncState as SyncState.Error).message
+                                    !gmsAuthDiagnostic.isNullOrBlank() -> gmsAuthDiagnostic.orEmpty()
+                                    syncState is SyncState.Success -> (syncState as SyncState.Success).message
                                     else -> ""
                                 }
                                 if (statusMsg.isNotBlank()) {
-                                    Text(
-                                        text = statusMsg,
-                                        color = if (syncState is SyncState.Error) MaterialTheme.colorScheme.error else GeminiBlue,
-                                        fontSize = 12.sp
-                                    )
+                                    Surface(
+                                        color = if (isErrorState) {
+                                            MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+                                        } else {
+                                            GeminiBlue.copy(alpha = 0.10f)
+                                        },
+                                        shape = RoundedCornerShape(12.dp),
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (isErrorState) {
+                                                MaterialTheme.colorScheme.error.copy(alpha = 0.45f)
+                                            } else {
+                                                GeminiBlue.copy(alpha = 0.35f)
+                                            }
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("drive_diagnostic_box")
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(10.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text(
+                                                text = statusMsg,
+                                                color = if (isErrorState) MaterialTheme.colorScheme.error else GeminiBlue,
+                                                fontSize = 12.sp,
+                                                lineHeight = 16.sp
+                                            )
+                                            if (isRealGoogleAccount && isErrorState) {
+                                                HorizontalDivider(color = CosmicBorder.copy(alpha = 0.5f))
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                ) {
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(
+                                                            text = appText("Huella SHA-1 de este APK:", "This APK SHA-1 fingerprint:"),
+                                                            color = TextSecondary,
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.SemiBold
+                                                        )
+                                                        Text(
+                                                            text = apkSha1,
+                                                            color = TextPrimary,
+                                                            fontSize = 10.5.sp,
+                                                            fontFamily = FontFamily.Monospace,
+                                                            maxLines = 2,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                    }
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    OutlinedButton(
+                                                        onClick = {
+                                                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                            cm.setPrimaryClip(ClipData.newPlainText("APK SHA-1", apkSha1))
+                                                            Toast.makeText(
+                                                                context,
+                                                                "SHA-1 copiado al portapapeles",
+                                                                Toast.LENGTH_SHORT
+                                                            ).show()
+                                                        },
+                                                        border = BorderStroke(1.dp, GeminiBlue),
+                                                        modifier = Modifier
+                                                            .minimumInteractiveComponentSize()
+                                                            .testTag("copy_apk_sha1_btn")
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.ContentCopy,
+                                                            contentDescription = appText("Copiar SHA-1", "Copy SHA-1"),
+                                                            tint = GeminiBlue,
+                                                            modifier = Modifier.size(15.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text("SHA-1", color = GeminiBlue, fontSize = 11.5.sp)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
@@ -440,7 +615,7 @@ fun StorageCloudSettingsScreen(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Button(
-                                        onClick = { viewModel.triggerDriveSync() },
+                                        onClick = { viewModel.triggerDriveSync(allowInteractiveAuth = true, forceRetryGms = true) },
                                         colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
                                         modifier = Modifier
                                             .weight(1f)
@@ -452,7 +627,7 @@ fun StorageCloudSettingsScreen(
                                         Text(appText("Sincronizar ahora", "Sync now"), color = GeminiOnPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                     }
                                     OutlinedButton(
-                                        onClick = { viewModel.createDriveDatabaseStructure() },
+                                        onClick = { viewModel.createDriveDatabaseStructure(forceRetryGms = true) },
                                         border = BorderStroke(1.dp, GeminiBlue),
                                         modifier = Modifier
                                             .weight(1f)
@@ -463,14 +638,72 @@ fun StorageCloudSettingsScreen(
                                 }
                                 Spacer(modifier = Modifier.height(8.dp))
                                 OutlinedButton(
+                                    onClick = { showBrowserOAuthDialog = true },
+                                    border = BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.7f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("drive_alt_oauth_btn")
+                                ) {
+                                    Icon(Icons.Default.Key, contentDescription = null, tint = GeminiBlue, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = appText("Autorizar Drive en navegador (OAuth alternativo)", "Authorize Drive in browser (Alt OAuth)"),
+                                        color = GeminiBlue,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedButton(
                                     onClick = {
                                         viewModel.switchAccountSession()
                                         onSignedOut?.invoke()
                                     },
                                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.6f)),
-                                    modifier = Modifier.fillMaxWidth()
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .minimumInteractiveComponentSize()
                                 ) {
                                     Text(appText("Cerrar sesión de Google", "Disconnect Google Account"), color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+                            HorizontalDivider(color = CosmicBorder.copy(alpha = 0.5f))
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        val safePrefix = selectedAccountId.replace("[^a-zA-Z0-9._-]".toRegex(), "_")
+                                        exportBackupLauncher.launch("utk_notes_respaldo_${safePrefix}.json")
+                                    },
+                                    border = BorderStroke(1.dp, CosmicBorder),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("backup_export_json_btn")
+                                ) {
+                                    Icon(Icons.Default.FileUpload, contentDescription = null, tint = TextPrimary, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(appText("Exportar JSON", "Export JSON"), color = TextPrimary, fontSize = 12.sp)
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        importBackupLauncher.launch(arrayOf("application/json", "*/*"))
+                                    },
+                                    border = BorderStroke(1.dp, CosmicBorder),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("backup_import_json_btn")
+                                ) {
+                                    Icon(Icons.Default.FileDownload, contentDescription = null, tint = TextPrimary, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(appText("Importar JSON", "Import JSON"), color = TextPrimary, fontSize = 12.sp)
                                 }
                             }
                         }
@@ -561,7 +794,7 @@ fun StorageCloudSettingsScreen(
         AccountTransferDialog(
             request = req,
             availableAccounts = availableAccounts,
-            preferredDestinationAccount = if (req.sourceAccountId != activeAccountId) activeAccountId else null,
+            preferredDestinationAccount = if (!req.sourceAccountId.equals(activeAccountId, ignoreCase = true)) activeAccountId else null,
             onDismiss = { transferRequest = null },
             onConfirmTransfer = { targetAccountId, mode ->
                 if (req.isBook) {
@@ -573,6 +806,126 @@ fun StorageCloudSettingsScreen(
             }
         )
     }
+
+    if (showBrowserOAuthDialog) {
+        BrowserOAuthConfigDialog(
+            initialClientId = viewModel.syncManager.getSavedCustomOAuthClientId(),
+            initialClientSecret = viewModel.syncManager.getSavedCustomOAuthClientSecret(),
+            apkSha1 = apkSha1,
+            onDismiss = { showBrowserOAuthDialog = false },
+            onLaunchOAuth = { clientId, clientSecret ->
+                showBrowserOAuthDialog = false
+                viewModel.launchAlternativeBrowserOAuth(clientId, clientSecret)
+            }
+        )
+    }
+}
+
+@Composable
+private fun BrowserOAuthConfigDialog(
+    initialClientId: String,
+    initialClientSecret: String,
+    apkSha1: String,
+    onDismiss: () -> Unit,
+    onLaunchOAuth: (String, String) -> Unit
+) {
+    var clientId by remember(initialClientId) { mutableStateOf(initialClientId) }
+    var clientSecret by remember(initialClientSecret) { mutableStateOf(initialClientSecret) }
+    val scrollState = rememberScrollState()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = CosmicSurface,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Security, contentDescription = null, tint = GeminiBlue)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = appText("OAuth en navegador (PKCE)", "Browser OAuth (PKCE)"),
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(scrollState),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = appText(
+                        "Este flujo abre el navegador y evita Google Play Services cuando tu APK (por ejemplo, de GitHub Workflow) tiene una firma SHA-1 no autorizada.",
+                        "This opens your browser and bypasses Play Services when your APK signature SHA-1 isn't registered."
+                    ),
+                    color = TextSecondary,
+                    fontSize = 12.sp
+                )
+                Text(
+                    text = appText(
+                        "Recomendado: usa un Client ID de Google Cloud tipo «Aplicación de escritorio (Desktop app)» que admite redirección local http://127.0.0.1.",
+                        "Recommended: use a Google Cloud 'Desktop app' Client ID allowing loopback http://127.0.0.1."
+                    ),
+                    color = GeminiBlue,
+                    fontSize = 11.5.sp
+                )
+                OutlinedTextField(
+                    value = clientId,
+                    onValueChange = { clientId = it },
+                    singleLine = true,
+                    label = { Text("OAuth Client ID") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = GeminiBlue,
+                        unfocusedBorderColor = CosmicBorder,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = clientSecret,
+                    onValueChange = { clientSecret = it },
+                    singleLine = true,
+                    label = { Text(appText("Client Secret (opcional)", "Client Secret (optional)")) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = GeminiBlue,
+                        unfocusedBorderColor = CosmicBorder,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    text = "SHA-1 APK: $apkSha1",
+                    color = TextSecondary,
+                    fontSize = 10.5.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onLaunchOAuth(clientId, clientSecret) },
+                enabled = clientId.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
+                modifier = Modifier.testTag("launch_browser_oauth_confirm_btn")
+            ) {
+                Text(
+                    text = appText("Abrir navegador", "Open browser"),
+                    color = GeminiOnPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(appText("Cancelar", "Cancel"), color = TextSecondary)
+            }
+        }
+    )
 }
 
 @Composable
@@ -647,24 +1000,30 @@ private fun AccountTransferDialog(
     onConfirmTransfer: (String, AccountTransferMode) -> Unit
 ) {
     val destinationCandidates = remember(availableAccounts, request.sourceAccountId) {
-        availableAccounts.filter { it.accountId != request.sourceAccountId }
+        availableAccounts.filter { !it.accountId.equals(request.sourceAccountId, ignoreCase = true) }
     }
-    var selectedMode by remember { mutableStateOf(AccountTransferMode.COPY) }
-    var useCustomEmail by remember { mutableStateOf(destinationCandidates.isEmpty()) }
-    var selectedTargetId by remember(request, destinationCandidates, preferredDestinationAccount) {
+    val candidateKeys = remember(destinationCandidates) { destinationCandidates.map { it.accountId } }
+
+    var selectedMode by remember(request.id) { mutableStateOf(AccountTransferMode.MOVE) }
+    var useCustomEmail by remember(request.id, request.sourceAccountId, candidateKeys) {
+        mutableStateOf(false)
+    }
+    var selectedTargetId by remember(request.id, request.sourceAccountId, candidateKeys, preferredDestinationAccount) {
         mutableStateOf(
-            preferredDestinationAccount?.takeIf { pref -> destinationCandidates.any { it.accountId == pref } }
-                ?: destinationCandidates.firstOrNull()?.accountId
-                ?: ""
+            preferredDestinationAccount?.takeIf { pref ->
+                destinationCandidates.any { it.accountId.equals(pref, ignoreCase = true) }
+            } ?: destinationCandidates.firstOrNull()?.accountId ?: ""
         )
     }
-    var customEmailText by remember { mutableStateOf("") }
+    var customEmailText by remember(request.id) { mutableStateOf("") }
 
     val sourceLabel = if (request.sourceAccountId == "offline") appText("Modo Local", "Local Mode") else request.sourceAccountId
     val resolvedTarget = if (useCustomEmail) customEmailText.trim() else selectedTargetId.trim()
     val canConfirm = resolvedTarget.isNotBlank() &&
-        resolvedTarget != request.sourceAccountId &&
-        (!useCustomEmail || resolvedTarget == "offline" || resolvedTarget.contains("@"))
+        !resolvedTarget.equals(request.sourceAccountId, ignoreCase = true) &&
+        (!useCustomEmail || resolvedTarget.equals("offline", ignoreCase = true) || resolvedTarget.contains("@"))
+
+    val bodyScroll = rememberScrollState()
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -689,9 +1048,15 @@ private fun AccountTransferDialog(
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 380.dp)
+                    .verticalScroll(bodyScroll),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 Text(
-                    text = appText("Acción de transferencia", "Transfer action"),
+                    text = appText("1. Acción de transferencia", "1. Transfer action"),
                     color = GeminiBlue,
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.5.sp
@@ -776,14 +1141,25 @@ private fun AccountTransferDialog(
                 )
 
                 Text(
-                    text = appText("Cuenta destino", "Destination account"),
+                    text = appText("2. Elige la cuenta destino en la app", "2. Choose destination account in app"),
                     color = GeminiBlue,
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.5.sp
                 )
 
+                if (destinationCandidates.isEmpty()) {
+                    Text(
+                        text = appText(
+                            "Aún no hay otra cuenta registrada con libros o notas. Inicia sesión con otra cuenta o escribe un correo abajo.",
+                            "No other accessed accounts yet. Sign in with another account or type an email below."
+                        ),
+                        color = TextSecondary,
+                        fontSize = 11.5.sp
+                    )
+                }
+
                 destinationCandidates.forEach { acc ->
-                    val checked = !useCustomEmail && selectedTargetId == acc.accountId
+                    val checked = !useCustomEmail && selectedTargetId.equals(acc.accountId, ignoreCase = true)
                     Surface(
                         onClick = {
                             useCustomEmail = false
@@ -817,7 +1193,7 @@ private fun AccountTransferDialog(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = "${acc.bookCount} lib · ${StorageMetricsCalculator.formatByteSize(acc.totalBytes)}",
+                                    text = "${acc.bookCount} lib · ${acc.noteCount} not · ${StorageMetricsCalculator.formatByteSize(acc.totalBytes)}",
                                     color = TextSecondary,
                                     fontSize = 11.sp
                                 )
@@ -847,7 +1223,7 @@ private fun AccountTransferDialog(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = appText("Otra cuenta de Google (correo)...", "Another Google account (email)..."),
+                            text = appText("Otra cuenta de Google (escribir correo)...", "Another Google account (type email)..."),
                             color = TextPrimary,
                             fontSize = 13.sp
                         )
@@ -881,10 +1257,12 @@ private fun AccountTransferDialog(
                 onClick = { onConfirmTransfer(resolvedTarget, selectedMode) },
                 enabled = canConfirm,
                 colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
-                modifier = Modifier.testTag("confirm_transfer_btn")
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .testTag("confirm_transfer_btn")
             ) {
                 Text(
-                    text = if (selectedMode == AccountTransferMode.MOVE) appText("Mover", "Move") else appText("Copiar", "Copy"),
+                    text = if (selectedMode == AccountTransferMode.MOVE) appText("Confirmar mover", "Confirm move") else appText("Confirmar copia", "Confirm copy"),
                     color = GeminiOnPrimary,
                     fontWeight = FontWeight.Bold
                 )

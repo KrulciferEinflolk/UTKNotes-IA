@@ -155,6 +155,14 @@ class MainActivity : ComponentActivity() {
                     viewModel.syncManager.clearRecoveryIntent()
                     if (result.resultCode == android.app.Activity.RESULT_OK) {
                         viewModel.retryLastDriveActionAfterAuth()
+                    } else {
+                        viewModel.handleAuthResolutionResult(result.resultCode, result.data) {
+                            Toast.makeText(
+                                rootContext,
+                                "Play Services canceló la autorización. Revisa Ajustes > Almacenamiento y nube para usar OAuth alternativo o copiar SHA-1.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
                     }
                 }
 
@@ -173,11 +181,12 @@ class MainActivity : ComponentActivity() {
                 val authIntentSenderLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.StartIntentSenderForResult()
                 ) { result ->
-                    val authorized = viewModel.syncManager.onAuthorizationResultFromIntent(result.data)
-                    if (authorized || result.resultCode == android.app.Activity.RESULT_OK) {
-                        viewModel.retryLastDriveActionAfterAuth()
-                    } else {
-                        viewModel.syncManager.clearPendingAuthIntentSender()
+                    viewModel.handleAuthResolutionResult(result.resultCode, result.data) {
+                        Toast.makeText(
+                            rootContext,
+                            "Play Services cerró la autorización de Drive. Abre Ajustes > Almacenamiento y nube para copiar tu SHA-1 o usar OAuth en navegador.",
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                 }
 
@@ -188,7 +197,24 @@ class MainActivity : ComponentActivity() {
                             authIntentSenderLauncher.launch(req)
                         } catch (e: Exception) {
                             android.util.Log.e("MainActivity", "Failed to launch Drive OAuth IntentSender", e)
-                            viewModel.syncManager.clearPendingAuthIntentSender()
+                            viewModel.handleAuthResolutionResult(android.app.Activity.RESULT_CANCELED, null)
+                        }
+                    }
+                }
+
+                val browserAuthIntent by viewModel.syncManager.browserAuthIntent.collectAsStateWithLifecycle()
+                LaunchedEffect(browserAuthIntent) {
+                    browserAuthIntent?.let { intent ->
+                        viewModel.syncManager.clearBrowserAuthIntent()
+                        try {
+                            rootContext.startActivity(intent)
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "Failed to launch Browser OAuth intent", e)
+                            Toast.makeText(
+                                rootContext,
+                                "No se pudo abrir el navegador para autorizar Google Drive.",
+                                Toast.LENGTH_LONG
+                            ).show()
                         }
                     }
                 }
@@ -792,7 +818,7 @@ fun AetherAppScreen(
                     isConnected = isConnected,
                     onSearchQueryChange = { viewModel.updateSearchQuery(it) },
                     onBack = { viewModel.clearSelectedBook() },
-                    onSyncClick = { viewModel.triggerDriveSync() },
+                    onSyncClick = { viewModel.triggerDriveSync(allowInteractiveAuth = true, forceRetryGms = true) },
                     onChatClick = { viewModel.openChatbot() },
                     selectedNote = selectedNote,
                     onImportPdfClick = {

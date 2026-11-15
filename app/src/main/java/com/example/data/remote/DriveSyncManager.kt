@@ -30,10 +30,21 @@ import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.common.api.Scope
 import android.accounts.Account
 import android.accounts.AccountManager
+import android.app.Activity
+import android.content.Intent
 import android.content.IntentSender
 import android.content.pm.PackageManager
+import android.util.Base64
+import com.google.android.gms.common.api.ApiException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.FormBody
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.URLDecoder
 import java.security.MessageDigest
+import java.security.SecureRandom
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import com.example.data.local.memory.NoteMemoryVaultManager
@@ -58,10 +69,58 @@ sealed class SyncState {
     data class Error(val message: String, val timestamp: Long = System.currentTimeMillis()) : SyncState()
 }
 
+sealed class AuthResolutionOutcome {
+    object Authorized : AuthResolutionOutcome()
+    data class Failed(val diagnosticMessage: String) : AuthResolutionOutcome()
+}
+
 class DriveSyncManager(
     private val context: Context,
     private val database: AppDatabase
 ) {
+    companion object {
+        const val DEFAULT_WEB_OAUTH_CLIENT_ID =
+            "854876463054-06pc7gofcrao1f15d85b6jii2o61ts9f.apps.googleusercontent.com"
+        private const val PREF_CUSTOM_OAUTH_CLIENT_ID = "custom_oauth_client_id"
+        private const val PREF_CUSTOM_OAUTH_CLIENT_SECRET = "custom_oauth_client_secret"
+
+        fun generatePkceCodeVerifier(): String {
+            val bytes = ByteArray(48)
+            SecureRandom().nextBytes(bytes)
+            return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+        }
+
+        fun computePkceCodeChallenge(codeVerifier: String): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest(codeVerifier.toByteArray(Charsets.US_ASCII))
+            return Base64.encodeToString(digest, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+        }
+
+        fun buildBrowserOAuthUrl(
+            clientId: String,
+            redirectUri: String,
+            codeChallenge: String,
+            state: String,
+            loginHint: String?
+        ): String {
+            val scopes = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata"
+            val builder = Uri.parse("https://accounts.google.com/o/oauth2/v2/auth").buildUpon()
+                .appendQueryParameter("client_id", clientId.trim())
+                .appendQueryParameter("redirect_uri", redirectUri)
+                .appendQueryParameter("response_type", "code")
+                .appendQueryParameter("scope", scopes)
+                .appendQueryParameter("code_challenge", codeChallenge)
+                .appendQueryParameter("code_challenge_method", "S256")
+                .appendQueryParameter("state", state)
+                .appendQueryParameter("access_type", "offline")
+                .appendQueryParameter("prompt", "consent")
+            if (!loginHint.isNullOrBlank() && loginHint != "offline") {
+                builder.appendQueryParameter("login_hint", loginHint)
+            }
+            return builder.build().toString()
+        }
+    }
+
     private val prefs = context.getSharedPreferences("utk_notes_prefs", Context.MODE_PRIVATE)
     private val memoryVault = NoteMemoryVaultManager(context)
 
@@ -74,11 +133,22 @@ class DriveSyncManager(
     private val _userEmail = MutableStateFlow<String?>(null)
     val userEmail: StateFlow<String?> = _userEmail
 
-    private val _recoveryIntent = MutableStateFlow<android.content.Intent?>(null)
-    val recoveryIntent: StateFlow<android.content.Intent?> = _recoveryIntent
+    private val _recoveryIntent = MutableStateFlow<Intent?>(null)
+    val recoveryIntent: StateFlow<Intent?> = _recoveryIntent
 
     private val _pendingAuthIntentSender = MutableStateFlow<IntentSender?>(null)
     val pendingAuthIntentSender: StateFlow<IntentSender?> = _pendingAuthIntentSender
+
+    private val _gmsAuthDiagnostic = MutableStateFlow<String?>(null)
+    val gmsAuthDiagnostic: StateFlow<String?> = _gmsAuthDiagnostic
+
+    private val _browserAuthIntent = MutableStateFlow<Intent?>(null)
+    val browserAuthIntent: StateFlow<Intent?> = _browserAuthIntent
+
+    private val gmsBlockedAccounts = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    @Volatile
+    private var activeOAuthSocket: ServerSocket? = null
 
     @Volatile
     private var cachedAccessToken: String? = null
@@ -95,13 +165,73 @@ class DriveSyncManager(
         _pendingAuthIntentSender.value = null
     }
 
+    fun clearBrowserAuthIntent() {
+        _browserAuthIntent.value = null
+    }
+
+    fun clearGmsAuthDiagnostic() {
+        _gmsAuthDiagnostic.value = null
+    }
+
+    fun normalizeAccountKey(accountId: String): String {
+        val clean = accountId.trim()
+        return if (clean.isEmpty() || clean.equals("offline", ignoreCase = true)) {
+            "offline"
+        } else {
+            clean.lowercase()
+        }
+    }
+
+    fun isGmsBlockedForAccount(email: String): Boolean {
+        return gmsBlockedAccounts.contains(normalizeAccountKey(email))
+    }
+
+    fun resetGmsBlock(email: String? = null) {
+        if (email == null) {
+            gmsBlockedAccounts.clear()
+        } else {
+            gmsBlockedAccounts.remove(normalizeAccountKey(email))
+        }
+        _gmsAuthDiagnostic.value = null
+    }
+
+    fun getApkSigningSha1(): String = getAppSha1Fingerprint()
+
+    fun getAppPackageName(): String = context.packageName
+
+    fun getDefaultWebClientId(): String = DEFAULT_WEB_OAUTH_CLIENT_ID
+
+    fun getSavedCustomOAuthClientId(): String {
+        return prefs.getString(PREF_CUSTOM_OAUTH_CLIENT_ID, null)?.trim()?.takeIf { it.isNotEmpty() }
+            ?: DEFAULT_WEB_OAUTH_CLIENT_ID
+    }
+
+    fun getSavedCustomOAuthClientSecret(): String {
+        return prefs.getString(PREF_CUSTOM_OAUTH_CLIENT_SECRET, null).orEmpty()
+    }
+
+    fun saveCustomOAuthConfig(clientId: String, clientSecret: String) {
+        prefs.edit()
+            .putString(PREF_CUSTOM_OAUTH_CLIENT_ID, clientId.trim())
+            .putString(PREF_CUSTOM_OAUTH_CLIENT_SECRET, clientSecret.trim())
+            .commit()
+    }
+
+    fun hasBrowserOAuthCredentials(email: String): Boolean {
+        val key = normalizeAccountKey(email)
+        if (key == "offline") return false
+        val token = prefs.getString("custom_oauth_access_token_$key", null)
+        val refresh = prefs.getString("custom_oauth_refresh_token_$key", null)
+        return !token.isNullOrBlank() || !refresh.isNullOrBlank()
+    }
+
     fun invalidateCachedAccessToken() {
         cachedAccessToken = null
         cachedTokenEmail = null
         cachedTokenExpiresAtMs = 0L
     }
 
-    fun onAuthorizationResultFromIntent(data: android.content.Intent?): Boolean {
+    fun onAuthorizationResultFromIntent(data: Intent?): Boolean {
         _pendingAuthIntentSender.value = null
         val email = _userEmail.value ?: return false
         if (data == null) return false
@@ -113,6 +243,8 @@ class DriveSyncManager(
                 cachedAccessToken = token
                 cachedTokenEmail = email
                 cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                gmsBlockedAccounts.remove(normalizeAccountKey(email))
+                _gmsAuthDiagnostic.value = null
                 true
             } else {
                 false
@@ -121,6 +253,54 @@ class DriveSyncManager(
             Log.e("DriveSyncManager", "Error parsing AuthorizationResult intent", e)
             false
         }
+    }
+
+    suspend fun handleAuthorizationResolutionResult(
+        resultCode: Int,
+        data: Intent?
+    ): AuthResolutionOutcome = withContext(Dispatchers.IO) {
+        _pendingAuthIntentSender.value = null
+        val email = _userEmail.value
+        if (email.isNullOrBlank() || email == "offline") {
+            return@withContext AuthResolutionOutcome.Failed("No hay una cuenta de Google activa.")
+        }
+
+        var apiStatusCode: Int? = null
+        var apiErrorDetails: String? = null
+        if (data != null) {
+            try {
+                val authResult = Identity.getAuthorizationClient(context)
+                    .getAuthorizationResultFromIntent(data)
+                val token = authResult.accessToken
+                if (!token.isNullOrBlank()) {
+                    cachedAccessToken = token
+                    cachedTokenEmail = email
+                    cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                    gmsBlockedAccounts.remove(normalizeAccountKey(email))
+                    _gmsAuthDiagnostic.value = null
+                    return@withContext AuthResolutionOutcome.Authorized
+                }
+            } catch (apiEx: ApiException) {
+                apiStatusCode = apiEx.statusCode
+                apiErrorDetails = apiEx.localizedMessage ?: "Código GMS ${apiEx.statusCode}"
+                Log.w("DriveSyncManager", "GMS Auth ApiException (${apiEx.statusCode}): ${apiEx.message}")
+            } catch (e: Exception) {
+                apiErrorDetails = e.localizedMessage
+                Log.w("DriveSyncManager", "GMS Auth Intent error: ${e.message}")
+            }
+        }
+
+        gmsBlockedAccounts.add(normalizeAccountKey(email))
+        runCatching { saveLocalBackupSnapshot(email) }
+        val diagnostic = buildGmsFailureDiagnostic(
+            email = email,
+            resultCode = resultCode,
+            statusCode = apiStatusCode,
+            rawDetails = apiErrorDetails
+        )
+        _gmsAuthDiagnostic.value = diagnostic
+        _syncState.value = SyncState.Error(diagnostic)
+        AuthResolutionOutcome.Failed(diagnostic)
     }
 
     private val moshi = Moshi.Builder()
@@ -147,19 +327,63 @@ class DriveSyncManager(
     }
 
     fun getKnownAccounts(): Set<String> {
-        val stored = prefs.getStringSet("known_accounts", emptySet())?.toMutableSet() ?: mutableSetOf()
-        stored.add("offline")
-        _userEmail.value?.takeIf { it.isNotBlank() }?.let { stored.add(it) }
-        return stored
+        val canonicalByKey = linkedMapOf<String, String>()
+        canonicalByKey["offline"] = "offline"
+
+        val storedSet = prefs.getStringSet("known_accounts", emptySet())?.toHashSet() ?: emptySet()
+        for (raw in storedSet) {
+            val clean = raw.trim()
+            if (clean.isNotEmpty()) {
+                val key = normalizeAccountKey(clean)
+                canonicalByKey.putIfAbsent(key, if (key == "offline") "offline" else clean)
+            }
+        }
+
+        // Discover any local backup JSON files from previously accessed accounts on this device
+        runCatching {
+            context.getExternalFilesDir(null)?.listFiles()?.forEach { file ->
+                val name = file.name
+                if (name.startsWith("utk_notes_backup_") && name.endsWith(".json")) {
+                    val rawAcc = name.removePrefix("utk_notes_backup_").removeSuffix(".json").trim()
+                    if (rawAcc.isNotEmpty()) {
+                        val key = normalizeAccountKey(rawAcc)
+                        canonicalByKey.putIfAbsent(key, if (key == "offline") "offline" else rawAcc)
+                    }
+                }
+            }
+        }
+
+        _userEmail.value?.trim()?.takeIf { it.isNotEmpty() }?.let { active ->
+            val key = normalizeAccountKey(active)
+            canonicalByKey[key] = if (key == "offline") "offline" else active
+        }
+        return canonicalByKey.values.toCollection(linkedSetOf())
     }
 
     fun registerKnownAccount(accountId: String) {
         val clean = accountId.trim()
         if (clean.isEmpty()) return
-        val updated = prefs.getStringSet("known_accounts", emptySet())?.toMutableSet() ?: mutableSetOf()
+        val normalizedNew = normalizeAccountKey(clean)
+        val existingSet = prefs.getStringSet("known_accounts", emptySet())?.let { HashSet(it) } ?: HashSet()
+        val updated = HashSet<String>()
         updated.add("offline")
-        if (updated.add(clean)) {
-            prefs.edit().putStringSet("known_accounts", updated).apply()
+        var alreadyContainsNormalized = normalizedNew == "offline"
+        for (entry in existingSet) {
+            val t = entry.trim()
+            if (t.isNotEmpty()) {
+                if (normalizeAccountKey(t) == normalizedNew) {
+                    alreadyContainsNormalized = true
+                    updated.add(t)
+                } else {
+                    updated.add(t)
+                }
+            }
+        }
+        if (!alreadyContainsNormalized) {
+            updated.add(clean)
+        }
+        if (updated != existingSet || !existingSet.contains(clean) && !alreadyContainsNormalized) {
+            prefs.edit().putStringSet("known_accounts", updated).commit()
         }
     }
 
@@ -182,17 +406,20 @@ class DriveSyncManager(
 
     fun connectDrive(email: String) {
         val cleanEmail = email.trim().ifBlank { "offline" }
-        if (cachedTokenEmail != cleanEmail) {
+        val normalizedNew = normalizeAccountKey(cleanEmail)
+        if (cachedTokenEmail == null || normalizeAccountKey(cachedTokenEmail!!) != normalizedNew) {
             invalidateCachedAccessToken()
+            _gmsAuthDiagnostic.value = null
         }
         registerKnownAccount(cleanEmail)
         prefs.edit()
             .putBoolean("auto_login_disabled", false)
             .putString("google_email", cleanEmail)
-            .apply()
+            .commit()
         _userEmail.value = cleanEmail
         _isConnected.value = true
         if (cleanEmail == "offline") {
+            _gmsAuthDiagnostic.value = null
             _syncState.value = SyncState.Success("Iniciado en Modo Local (offline)", System.currentTimeMillis())
         } else {
             _syncState.value = SyncState.Success("Conectado con $cleanEmail", System.currentTimeMillis())
@@ -203,20 +430,53 @@ class DriveSyncManager(
         invalidateCachedAccessToken()
         clearRecoveryIntent()
         clearPendingAuthIntentSender()
+        clearBrowserAuthIntent()
+        _gmsAuthDiagnostic.value = null
         prefs.edit()
             .remove("google_email")
             .putBoolean("auto_login_disabled", true)
-            .apply()
+            .commit()
         _userEmail.value = null
         _isConnected.value = false
         _syncState.value = SyncState.Idle
     }
 
+    private suspend fun saveLocalBackupSnapshot(email: String): Triple<Int, Int, Int> {
+        val dao = database.notesDao()
+        val books = dao.getAllBooks(email)
+        val pages = mutableListOf<PageEntity>()
+        for (book in books) {
+            pages.addAll(dao.getPagesForBook(book.id))
+        }
+        val notes = mutableListOf<NoteEntity>()
+        for (page in pages) {
+            notes.addAll(dao.getNotesForPage(page.id))
+        }
+        val chatSessions = dao.getAllChatSessions(email)
+
+        val payload = DriveBackupPayload(
+            books = books,
+            pages = pages,
+            notes = notes,
+            chatSessions = chatSessions,
+            apiKey = null,
+            timestamp = System.currentTimeMillis()
+        )
+        val jsonString = moshi.adapter(DriveBackupPayload::class.java).toJson(payload)
+        val localBackupFile = File(context.getExternalFilesDir(null), "utk_notes_backup_${email}.json")
+        localBackupFile.writeText(jsonString)
+        return Triple(books.size, pages.size, notes.size)
+    }
+
     /**
      * Performs active two-way synchronization between local Room DB and Google Drive.
-     * Restores all books, pages, notes, multimedia metadata, chat agent history, and custom API key.
+     * Restores all books, pages, notes, multimedia metadata, and chat agent history.
+     * Automatic/background callers should keep allowInteractiveAuth = false to avoid Play Services popups.
      */
-    suspend fun synchronize(): Unit = withContext(Dispatchers.IO) {
+    suspend fun synchronize(
+        allowInteractiveAuth: Boolean = false,
+        forceRetryGms: Boolean = false
+    ): Unit = withContext(Dispatchers.IO) {
         val email = _userEmail.value
         if (email.isNullOrEmpty()) {
             _syncState.value = SyncState.Error("No se encontró correo asociado.")
@@ -226,7 +486,7 @@ class DriveSyncManager(
         _syncState.value = SyncState.Syncing
 
         try {
-            Log.d("DriveSyncManager", "Iniciando sincronización para: $email")
+            Log.d("DriveSyncManager", "Iniciando sincronización para: $email (interactive=$allowInteractiveAuth, retryGms=$forceRetryGms)")
             val dao = database.notesDao()
 
             // Preserve strict isolation per account: only normalize empty legacy userEmail rows to 'offline'
@@ -261,8 +521,21 @@ class DriveSyncManager(
 
             var token: String? = null
             if (email != "offline") {
-                token = acquireDriveAccessToken(email, emitSyncErrors = true)
+                token = acquireDriveAccessToken(
+                    email = email,
+                    emitSyncErrors = allowInteractiveAuth || isGmsBlockedForAccount(email),
+                    allowInteractiveAuth = allowInteractiveAuth,
+                    forceRetryGms = forceRetryGms
+                )
                 if (token == null) {
+                    // Always guarantee local JSON backup even when cloud OAuth cannot proceed
+                    val (bookCount, _, noteCount) = saveLocalBackupSnapshot(email)
+                    if (!allowInteractiveAuth && !isGmsBlockedForAccount(email)) {
+                        _syncState.value = SyncState.Success(
+                            "Guardado local ($bookCount libros, $noteCount notas). Pulsa 'Sincronizar ahora' o usa OAuth alternativo en Ajustes para subir a Drive.",
+                            System.currentTimeMillis()
+                        )
+                    }
                     return@withContext
                 }
             }
@@ -816,7 +1089,7 @@ class DriveSyncManager(
         return@withContext null
     }
 
-    suspend fun createDriveDatabaseStructure(): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun createDriveDatabaseStructure(forceRetryGms: Boolean = false): Result<String> = withContext(Dispatchers.IO) {
         val email = _userEmail.value
         if (email.isNullOrEmpty() || email == "offline") {
             val msg = "Debes iniciar sesión con una cuenta de Google para crear la estructura en Google Drive."
@@ -824,7 +1097,12 @@ class DriveSyncManager(
             return@withContext Result.failure(Exception(msg))
         }
 
-        val token = acquireDriveAccessToken(email, emitSyncErrors = true)
+        val token = acquireDriveAccessToken(
+            email = email,
+            emitSyncErrors = true,
+            allowInteractiveAuth = true,
+            forceRetryGms = forceRetryGms
+        )
         if (token == null) {
             return@withContext Result.failure(Exception("Autorización pendiente o rechazada para Google Drive."))
         }
@@ -1221,11 +1499,62 @@ class DriveSyncManager(
         }
     }
 
-    private suspend fun acquireDriveAccessToken(email: String, emitSyncErrors: Boolean): String? {
+    private suspend fun acquireDriveAccessToken(
+        email: String,
+        emitSyncErrors: Boolean,
+        allowInteractiveAuth: Boolean = false,
+        forceRetryGms: Boolean = false
+    ): String? {
         val now = System.currentTimeMillis()
+        val key = normalizeAccountKey(email)
+
+        // 1. In-memory cache
         val cached = cachedAccessToken
-        if (!cached.isNullOrBlank() && cachedTokenEmail == email && now < cachedTokenExpiresAtMs) {
+        if (!cached.isNullOrBlank() &&
+            cachedTokenEmail != null &&
+            normalizeAccountKey(cachedTokenEmail!!) == key &&
+            now < cachedTokenExpiresAtMs
+        ) {
             return cached
+        }
+
+        // 2. Alternative Browser OAuth stored access / refresh token (bypasses GMS completely once authorized)
+        val storedBrowserToken = prefs.getString("custom_oauth_access_token_$key", null)
+        val storedBrowserExpires = prefs.getLong("custom_oauth_expires_$key", 0L)
+        if (!storedBrowserToken.isNullOrBlank() && now < storedBrowserExpires - 30_000L) {
+            cachedAccessToken = storedBrowserToken
+            cachedTokenEmail = email
+            cachedTokenExpiresAtMs = storedBrowserExpires
+            _gmsAuthDiagnostic.value = null
+            return storedBrowserToken
+        }
+        val storedRefresh = prefs.getString("custom_oauth_refresh_token_$key", null)
+        if (!storedRefresh.isNullOrBlank()) {
+            val refreshed = refreshBrowserOAuthToken(email, storedRefresh)
+            if (!refreshed.isNullOrBlank()) {
+                _gmsAuthDiagnostic.value = null
+                return refreshed
+            }
+        }
+
+        if (forceRetryGms) {
+            gmsBlockedAccounts.remove(key)
+            _gmsAuthDiagnostic.value = null
+        }
+
+        // Prevent repeated 1-second GMS popup flashes once Play Services has rejected/canceled this APK
+        if (isGmsBlockedForAccount(email)) {
+            if (emitSyncErrors) {
+                val diag = _gmsAuthDiagnostic.value ?: buildGmsFailureDiagnostic(
+                    email = email,
+                    resultCode = null,
+                    statusCode = null,
+                    rawDetails = null
+                )
+                _gmsAuthDiagnostic.value = diag
+                _syncState.value = SyncState.Error(diag)
+            }
+            return null
         }
 
         val account = Account(email, "com.google")
@@ -1251,11 +1580,13 @@ class DriveSyncManager(
                     }
             }
             if (authResult.hasResolution() && authResult.pendingIntent != null) {
-                _pendingAuthIntentSender.value = authResult.pendingIntent!!.intentSender
-                if (emitSyncErrors) {
-                    _syncState.value = SyncState.Error(
-                        "Concede acceso a Google Drive en la ventana de autorización para continuar."
-                    )
+                if (allowInteractiveAuth) {
+                    _pendingAuthIntentSender.value = authResult.pendingIntent!!.intentSender
+                    if (emitSyncErrors) {
+                        _syncState.value = SyncState.Error(
+                            "Concede acceso a Google Drive en la ventana de autorización para continuar."
+                        )
+                    }
                 }
                 return null
             }
@@ -1264,6 +1595,7 @@ class DriveSyncManager(
                 cachedAccessToken = token
                 cachedTokenEmail = email
                 cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                _gmsAuthDiagnostic.value = null
                 return token
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -1273,55 +1605,334 @@ class DriveSyncManager(
             Log.w("DriveSyncManager", "AuthorizationClient fallback for $email: ${e.message}")
         }
 
-        // Fallback via GoogleAuthUtil if AuthorizationClient is unavailable or rejected
-        val primaryScope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata"
-        val fallbackScope = "oauth2:https://www.googleapis.com/auth/drive.appdata"
-        try {
-            val token = GoogleAuthUtil.getToken(context, account, primaryScope)
-            if (token.isNotBlank()) {
-                cachedAccessToken = token
-                cachedTokenEmail = email
-                cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
-                return token
-            }
-        } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
-            _recoveryIntent.value = recoverable.intent
-            if (emitSyncErrors) {
-                _syncState.value = SyncState.Error("Se requiere permiso para acceder a Google Drive. Por favor concede la autorización.")
-            }
-            return null
-        } catch (authEx: Exception) {
+        // Fallback via GoogleAuthUtil if AuthorizationClient is unavailable or rejected (non-signature errors)
+        val rawFirstMsg = lastAuthError?.localizedMessage.orEmpty()
+        val isSignatureOrConsoleErr = rawFirstMsg.contains("UnregisteredOnApiConsole", ignoreCase = true) ||
+            (lastAuthError as? ApiException)?.statusCode == 10
+        if (!isSignatureOrConsoleErr) {
+            val primaryScope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata"
+            val fallbackScope = "oauth2:https://www.googleapis.com/auth/drive.appdata"
             try {
-                val token = GoogleAuthUtil.getToken(context, account, fallbackScope)
+                val token = GoogleAuthUtil.getToken(context, account, primaryScope)
                 if (token.isNotBlank()) {
                     cachedAccessToken = token
                     cachedTokenEmail = email
                     cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                    _gmsAuthDiagnostic.value = null
                     return token
                 }
-            } catch (recoverable2: com.google.android.gms.auth.UserRecoverableAuthException) {
-                _recoveryIntent.value = recoverable2.intent
-                if (emitSyncErrors) {
-                    _syncState.value = SyncState.Error("Se requiere autorización para Google Drive.")
+            } catch (recoverable: com.google.android.gms.auth.UserRecoverableAuthException) {
+                if (allowInteractiveAuth) {
+                    _recoveryIntent.value = recoverable.intent
+                    if (emitSyncErrors) {
+                        _syncState.value = SyncState.Error("Se requiere permiso para acceder a Google Drive. Por favor concede la autorización.")
+                    }
                 }
                 return null
-            } catch (authEx2: Exception) {
-                lastAuthError = authEx2
+            } catch (_: Exception) {
+                try {
+                    val token = GoogleAuthUtil.getToken(context, account, fallbackScope)
+                    if (token.isNotBlank()) {
+                        cachedAccessToken = token
+                        cachedTokenEmail = email
+                        cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                        _gmsAuthDiagnostic.value = null
+                        return token
+                    }
+                } catch (recoverable2: com.google.android.gms.auth.UserRecoverableAuthException) {
+                    if (allowInteractiveAuth) {
+                        _recoveryIntent.value = recoverable2.intent
+                        if (emitSyncErrors) {
+                            _syncState.value = SyncState.Error("Se requiere autorización para Google Drive.")
+                        }
+                    }
+                    return null
+                } catch (authEx2: Exception) {
+                    lastAuthError = authEx2
+                }
             }
         }
 
+        // Cache block for this account so Play Services doesn't keep flashing on background saves
+        gmsBlockedAccounts.add(key)
+        val statusCode = (lastAuthError as? ApiException)?.statusCode
+        val diag = buildGmsFailureDiagnostic(
+            email = email,
+            resultCode = null,
+            statusCode = statusCode,
+            rawDetails = lastAuthError?.localizedMessage
+        )
+        _gmsAuthDiagnostic.value = diag
         if (emitSyncErrors) {
-            val rawMsg = lastAuthError?.localizedMessage.orEmpty()
-            val formattedMsg = if (rawMsg.contains("UnregisteredOnApiConsole", ignoreCase = true)) {
-                val sha1 = getAppSha1Fingerprint()
-                val shaNotice = if (sha1.isNotBlank()) " (SHA-1 APK: $sha1)" else ""
-                "Error OAuth Drive (UnregisteredOnApiConsole)$shaNotice. Registra la huella SHA-1 de firma de esta compilación o usa el cliente OAuth de prueba configurado."
-            } else {
-                "No se pudo autenticar con Google Drive: ${rawMsg.ifBlank { "Error de autorización OAuth" }}"
-            }
-            _syncState.value = SyncState.Error(formattedMsg)
+            _syncState.value = SyncState.Error(diag)
         }
         return null
+    }
+
+    private fun buildGmsFailureDiagnostic(
+        email: String,
+        resultCode: Int?,
+        statusCode: Int?,
+        rawDetails: String?
+    ): String {
+        val sha1 = getAppSha1Fingerprint().ifBlank { "No disponible" }
+        val detailNote = when {
+            rawDetails?.contains("UnregisteredOnApiConsole", ignoreCase = true) == true || statusCode == 10 ->
+                "Cliente OAuth de Android no registrado para esta firma (DEVELOPER_ERROR / UnregisteredOnApiConsole)."
+            resultCode == Activity.RESULT_CANCELED ->
+                "Google Play Services cerró o rechazó la ventana de autorización en 1 s. Esto ocurre cuando el APK (compilado en GitHub Workflow) tiene una huella SHA-1 distinta a la registrada en Google Cloud."
+            !rawDetails.isNullOrBlank() -> rawDetails
+            else -> "Google Play Services no pudo completar la autorización automática de Drive."
+        }
+        return buildString {
+            append(detailNote)
+            append("\n• Paquete: ${context.packageName}")
+            append("\n• SHA-1 APK: $sha1")
+            append("\n• Solución sin cerrar la app: usa «OAuth Navegador» abajo, exporta respaldo JSON o registra este SHA-1 en Google Cloud Console. Tus notas en $email siguen guardándose localmente.")
+        }
+    }
+
+    suspend fun launchAlternativeBrowserOAuth(
+        clientIdInput: String,
+        clientSecretInput: String = ""
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val email = _userEmail.value
+        if (email.isNullOrBlank() || email == "offline") {
+            return@withContext Result.failure(IllegalStateException("Inicia sesión con una cuenta de Google antes de autorizar Drive."))
+        }
+        val cleanClientId = clientIdInput.trim().ifBlank { DEFAULT_WEB_OAUTH_CLIENT_ID }
+        val cleanSecret = clientSecretInput.trim()
+        saveCustomOAuthConfig(cleanClientId, cleanSecret)
+
+        runCatching { activeOAuthSocket?.close() }
+        val serverSocket = try {
+            ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).apply {
+                soTimeout = 180_000
+            }
+        } catch (e: Exception) {
+            return@withContext Result.failure(Exception("No se pudo iniciar el servidor local OAuth: ${e.localizedMessage}"))
+        }
+        activeOAuthSocket = serverSocket
+
+        return@withContext try {
+            val port = serverSocket.localPort
+            val redirectUri = "http://127.0.0.1:$port"
+            val codeVerifier = generatePkceCodeVerifier()
+            val codeChallenge = computePkceCodeChallenge(codeVerifier)
+            val state = UUID.randomUUID().toString()
+
+            val authUrl = buildBrowserOAuthUrl(
+                clientId = cleanClientId,
+                redirectUri = redirectUri,
+                codeChallenge = codeChallenge,
+                state = state,
+                loginHint = email
+            )
+
+            _syncState.value = SyncState.Syncing
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(authUrl)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            _browserAuthIntent.value = intent
+
+            var authCode: String? = null
+            var authError: String? = null
+            var returnedState: String? = null
+
+            serverSocket.accept().use { socket ->
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+                val requestLine = reader.readLine().orEmpty()
+                val queryPart = requestLine.substringAfter("GET ", "")
+                    .substringBefore(" HTTP/")
+                    .substringAfter("?", "")
+                if (queryPart.isNotEmpty()) {
+                    for (pair in queryPart.split("&")) {
+                        val idx = pair.indexOf('=')
+                        if (idx > 0) {
+                            val k = URLDecoder.decode(pair.substring(0, idx), "UTF-8")
+                            val v = URLDecoder.decode(pair.substring(idx + 1), "UTF-8")
+                            when (k) {
+                                "code" -> authCode = v
+                                "error" -> authError = v
+                                "state" -> returnedState = v
+                            }
+                        }
+                    }
+                }
+
+                val html = if (!authCode.isNullOrBlank() && returnedState == state) {
+                    "<html><body style='background:#0E0B18;color:#F2ECFF;font-family:sans-serif;text-align:center;padding:48px'><h2>¡Autorizaci&oacute;n completada!</h2><p>Ya puedes volver a UTK Notes para sincronizar con Google Drive.</p></body></html>"
+                } else {
+                    "<html><body style='background:#0E0B18;color:#FFB4AB;font-family:sans-serif;text-align:center;padding:48px'><h2>Autorizaci&oacute;n cancelada</h2><p>Detalle: ${authError ?: "No se recibi&oacute; c&oacute;digo de acceso"}.</p><p>Puedes regresar a UTK Notes.</p></body></html>"
+                }
+                val httpResp = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\nConnection: close\r\n\r\n$html"
+                socket.getOutputStream().write(httpResp.toByteArray(Charsets.UTF_8))
+                socket.getOutputStream().flush()
+            }
+
+            if (!authError.isNullOrBlank()) {
+                val msg = "OAuth navegador rechazado ($authError). Verifica el Client ID de tipo 'Aplicación de escritorio' en Google Cloud."
+                _gmsAuthDiagnostic.value = msg
+                _syncState.value = SyncState.Error(msg)
+                return@withContext Result.failure(Exception(msg))
+            }
+            if (authCode.isNullOrBlank() || returnedState != state) {
+                val msg = "No se completó la autorización en el navegador."
+                _syncState.value = SyncState.Error(msg)
+                return@withContext Result.failure(Exception(msg))
+            }
+
+            val tokenBodyBuilder = FormBody.Builder()
+                .add("grant_type", "authorization_code")
+                .add("code", authCode!!)
+                .add("client_id", cleanClientId)
+                .add("redirect_uri", redirectUri)
+                .add("code_verifier", codeVerifier)
+            if (cleanSecret.isNotEmpty()) {
+                tokenBodyBuilder.add("client_secret", cleanSecret)
+            }
+
+            val tokenRequest = Request.Builder()
+                .url("https://oauth2.googleapis.com/token")
+                .post(tokenBodyBuilder.build())
+                .build()
+
+            client.newCall(tokenRequest).execute().use { resp ->
+                val rawBody = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    val errDesc = runCatching { JSONObject(rawBody).optString("error_description") }
+                        .getOrNull().orEmpty().ifBlank { rawBody.take(180) }
+                    val msg = "No se pudo canjear el token OAuth (${resp.code}): $errDesc. Si aparece redirect_uri_mismatch o invalid_client, crea un Client ID 'Desktop app' en Google Cloud e ingrésalo aquí."
+                    _gmsAuthDiagnostic.value = msg
+                    _syncState.value = SyncState.Error(msg)
+                    return@withContext Result.failure(Exception(msg))
+                }
+                val json = JSONObject(rawBody)
+                val accessToken = json.optString("access_token")
+                if (accessToken.isBlank()) {
+                    return@withContext Result.failure(Exception("Google no devolvió un access_token."))
+                }
+                val expiresInSec = json.optLong("expires_in", 3600L).coerceAtLeast(120L)
+                val refreshToken = json.optString("refresh_token")
+                val expiresAtMs = System.currentTimeMillis() + expiresInSec * 1000L
+                val key = normalizeAccountKey(email)
+
+                prefs.edit().apply {
+                    putString("custom_oauth_access_token_$key", accessToken)
+                    putLong("custom_oauth_expires_$key", expiresAtMs)
+                    if (refreshToken.isNotBlank()) {
+                        putString("custom_oauth_refresh_token_$key", refreshToken)
+                    }
+                }.commit()
+
+                cachedAccessToken = accessToken
+                cachedTokenEmail = email
+                cachedTokenExpiresAtMs = expiresAtMs
+                gmsBlockedAccounts.remove(key)
+                _gmsAuthDiagnostic.value = null
+            }
+
+            synchronize(allowInteractiveAuth = false, forceRetryGms = false)
+            Result.success("Google Drive autorizado mediante navegador para $email")
+        } catch (e: Exception) {
+            val msg = "OAuth en navegador no completado: ${e.localizedMessage ?: "Tiempo agotado o cancelado"}"
+            _syncState.value = SyncState.Error(msg)
+            Result.failure(Exception(msg))
+        } finally {
+            runCatching { serverSocket.close() }
+            if (activeOAuthSocket === serverSocket) {
+                activeOAuthSocket = null
+            }
+        }
+    }
+
+    private fun refreshBrowserOAuthToken(email: String, refreshToken: String): String? {
+        val clientId = getSavedCustomOAuthClientId()
+        val clientSecret = getSavedCustomOAuthClientSecret()
+        return try {
+            val form = FormBody.Builder()
+                .add("grant_type", "refresh_token")
+                .add("refresh_token", refreshToken)
+                .add("client_id", clientId)
+                .apply {
+                    if (clientSecret.isNotBlank()) add("client_secret", clientSecret)
+                }
+                .build()
+            val req = Request.Builder()
+                .url("https://oauth2.googleapis.com/token")
+                .post(form)
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val json = JSONObject(resp.body?.string().orEmpty())
+                val newAccess = json.optString("access_token")
+                if (newAccess.isBlank()) return null
+                val expiresAtMs = System.currentTimeMillis() + json.optLong("expires_in", 3600L) * 1000L
+                val key = normalizeAccountKey(email)
+                prefs.edit()
+                    .putString("custom_oauth_access_token_$key", newAccess)
+                    .putLong("custom_oauth_expires_$key", expiresAtMs)
+                    .commit()
+                cachedAccessToken = newAccess
+                cachedTokenEmail = email
+                cachedTokenExpiresAtMs = expiresAtMs
+                newAccess
+            }
+        } catch (e: Exception) {
+            Log.w("DriveSyncManager", "Error refreshing browser OAuth token", e)
+            null
+        }
+    }
+
+    suspend fun exportAccountBackupToUri(accountId: String, uri: Uri): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val cleanAccount = accountId.trim().ifBlank { "offline" }
+            val dao = database.notesDao()
+            val books = dao.getAllBooks(cleanAccount)
+            val pages = mutableListOf<PageEntity>()
+            for (b in books) pages.addAll(dao.getPagesForBook(b.id))
+            val notes = mutableListOf<NoteEntity>()
+            for (p in pages) notes.addAll(dao.getNotesForPage(p.id))
+            val chats = dao.getAllChatSessions(cleanAccount)
+            val payload = DriveBackupPayload(
+                books = books,
+                pages = pages,
+                notes = notes,
+                chatSessions = chats,
+                apiKey = null,
+                timestamp = System.currentTimeMillis()
+            )
+            val json = moshi.adapter(DriveBackupPayload::class.java).toJson(payload)
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                out.write(json.toByteArray(Charsets.UTF_8))
+                out.flush()
+            } ?: return@withContext Result.failure(Exception("No se pudo abrir el archivo destino."))
+
+            val label = if (cleanAccount == "offline") "Modo Local" else cleanAccount
+            Result.success("Respaldo exportado ($label): ${books.size} libros y ${notes.size} notas.")
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun importAccountBackupFromUri(targetAccountId: String, uri: Uri): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val cleanAccount = targetAccountId.trim().ifBlank { "offline" }
+            registerKnownAccount(cleanAccount)
+            val jsonText = context.contentResolver.openInputStream(uri)?.use { input ->
+                input.bufferedReader().readText()
+            }.orEmpty()
+            if (jsonText.isBlank()) {
+                return@withContext Result.failure(Exception("El archivo seleccionado está vacío."))
+            }
+            val payload = moshi.adapter(DriveBackupPayload::class.java).fromJson(jsonText)
+                ?: return@withContext Result.failure(Exception("Formato de respaldo JSON inválido."))
+            mergeBackup(payload, cleanAccount)
+            val label = if (cleanAccount == "offline") "Modo Local" else cleanAccount
+            Result.success("Importados en $label: ${payload.books.size} libros, ${payload.pages.size} páginas y ${payload.notes.size} notas.")
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     @Suppress("DEPRECATION")

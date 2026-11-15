@@ -314,6 +314,8 @@ class MultiAccountAndMergeRobolectricTest {
         composeTestRule.onNodeWithTag("transfer_book_btn_bk_local").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("account_transfer_dialog").assertIsDisplayed()
+        // Accessed accounts are listed directly without forcing manual email input
+        assertEquals(0, composeTestRule.onAllNodesWithTag("transfer_custom_email_input").fetchSemanticsNodes().size)
         composeTestRule.onNodeWithTag("transfer_mode_copy").performClick()
         composeTestRule.onNodeWithTag("transfer_target_option_alice@gmail.com").performClick()
         composeTestRule.onNodeWithTag("confirm_transfer_btn").performClick()
@@ -321,9 +323,12 @@ class MultiAccountAndMergeRobolectricTest {
         composeTestRule.waitUntil(timeoutMillis = 5000) {
             !viewModel.transferStatusMessage.value.isNullOrBlank()
         }
+        // Stays on current inspected account after transfer, with option to jump to destination
+        assertEquals("offline", viewModel.inspectedAccountId.value)
         composeTestRule.onNodeWithTag("storage_cloud_lazy_column")
             .performScrollToNode(hasTestTag("storage_transfer_status_banner"))
         composeTestRule.onNodeWithText("Libro Local", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("transfer_view_destination_btn").assertIsDisplayed()
 
         // Verify Room now has 2 books in alice@gmail.com and still 1 in offline
         val aliceBooks = db.notesDao().getAllBooks("alice@gmail.com")
@@ -331,5 +336,89 @@ class MultiAccountAndMergeRobolectricTest {
         assertEquals(1, offlineBooks.size)
         assertEquals(2, aliceBooks.size)
         assertTrue(aliceBooks.any { it.title == "Libro Local" })
+
+        // Tap "Ver destino" jumps to destination account (alice@gmail.com) showing copied book
+        composeTestRule.onNodeWithTag("transfer_view_destination_btn").performClick()
+        composeTestRule.waitUntil(timeoutMillis = 5000) {
+            viewModel.inspectedAccountId.value == "alice@gmail.com" &&
+                viewModel.storageMetrics.value.books.size == 2
+        }
+        assertEquals(2, viewModel.storageMetrics.value.books.size)
+    }
+
+    @Test
+    fun `DriveSyncManager blocks repeat GMS loops after cancel, saves local backup, and generates PKCE URL`() {
+        runBlocking {
+            val db = AppDatabase.getDatabase(appContext)
+            db.notesDao().insertBook(BookEntity(id = "bk_gms", title = "Libro GMS", userEmail = "usuario.gms@gmail.com"))
+            db.notesDao().insertPage(PageEntity(id = "pg_gms", bookId = "bk_gms", title = "General", userEmail = "usuario.gms@gmail.com"))
+            db.notesDao().insertNote(NoteEntity(id = "nt_gms", pageId = "pg_gms", title = "Nota GMS", content = "Texto", userEmail = "usuario.gms@gmail.com"))
+
+            val syncManager = DriveSyncManager(appContext, db)
+            syncManager.connectDrive("usuario.gms@gmail.com")
+
+            // Simulated Play Services popup instant cancel (RESULT_CANCELED, null data)
+            val outcome = syncManager.handleAuthorizationResolutionResult(android.app.Activity.RESULT_CANCELED, null)
+            assertTrue(outcome is com.example.data.remote.AuthResolutionOutcome.Failed)
+            assertTrue(syncManager.isGmsBlockedForAccount("usuario.gms@gmail.com"))
+            assertFalse(syncManager.gmsAuthDiagnostic.value.isNullOrBlank())
+
+            val backupFile = java.io.File(appContext.getExternalFilesDir(null), "utk_notes_backup_usuario.gms@gmail.com.json")
+            assertTrue(backupFile.exists())
+
+            // Background / automatic synchronize must NOT emit another GMS IntentSender popup while blocked
+            syncManager.synchronize(allowInteractiveAuth = false, forceRetryGms = false)
+            assertNull(syncManager.pendingAuthIntentSender.value)
+
+            // PKCE verification for browser OAuth fallback
+            val verifier = DriveSyncManager.generatePkceCodeVerifier()
+            val challenge = DriveSyncManager.computePkceCodeChallenge(verifier)
+            assertTrue(verifier.length >= 43)
+            assertTrue(challenge.isNotBlank() && verifier != challenge)
+            val oauthUrl = DriveSyncManager.buildBrowserOAuthUrl(
+                clientId = "custom-client.apps.googleusercontent.com",
+                redirectUri = "http://127.0.0.1:41234",
+                codeChallenge = challenge,
+                state = "st-123",
+                loginHint = "usuario.gms@gmail.com"
+            )
+            assertTrue(oauthUrl.contains("code_challenge_method=S256"))
+            assertTrue(oauthUrl.contains("drive.appdata"))
+            assertTrue(oauthUrl.contains("login_hint=usuario.gms%40gmail.com"))
+
+            backupFile.delete()
+        }
+    }
+
+    @Test
+    fun `DriveSyncManager exports and imports account JSON backup across isolated accounts`() {
+        runBlocking {
+            val db = AppDatabase.getDatabase(appContext)
+            db.notesDao().insertBook(BookEntity(id = "bk_exp", title = "Cuaderno Exportable", userEmail = "offline"))
+            db.notesDao().insertPage(PageEntity(id = "pg_exp", bookId = "bk_exp", title = "Sección 1", userEmail = "offline"))
+            db.notesDao().insertNote(NoteEntity(id = "nt_exp", pageId = "pg_exp", title = "Apunte", content = "Contenido portable", userEmail = "offline"))
+
+            val syncManager = DriveSyncManager(appContext, db)
+            val tempFile = java.io.File.createTempFile("utk_export_test", ".json", appContext.cacheDir)
+            try {
+                val fileUri = android.net.Uri.fromFile(tempFile)
+                val exportRes = syncManager.exportAccountBackupToUri("offline", fileUri)
+                assertTrue(exportRes.isSuccess)
+                assertTrue(tempFile.readText().contains("Cuaderno Exportable"))
+
+                val importRes = syncManager.importAccountBackupFromUri("destino@gmail.com", fileUri)
+                assertTrue(importRes.isSuccess)
+
+                val importedBooks = db.notesDao().getAllBooks("destino@gmail.com")
+                val importedNotes = db.notesDao().getAllNotes("destino@gmail.com")
+                assertEquals(1, importedBooks.size)
+                assertEquals("Cuaderno Exportable", importedBooks.first().title)
+                assertEquals(1, importedNotes.size)
+                assertEquals("Contenido portable", importedNotes.first().content)
+            } finally {
+                tempFile.delete()
+            }
+        }
     }
 }
+
