@@ -361,7 +361,13 @@ class MultiAccountAndMergeRobolectricTest {
             val outcome = syncManager.handleAuthorizationResolutionResult(android.app.Activity.RESULT_CANCELED, null)
             assertTrue(outcome is com.example.data.remote.AuthResolutionOutcome.Failed)
             assertTrue(syncManager.isGmsBlockedForAccount("usuario.gms@gmail.com"))
-            assertFalse(syncManager.gmsAuthDiagnostic.value.isNullOrBlank())
+            val diagnostic = syncManager.gmsAuthDiagnostic.value.orEmpty()
+            assertFalse(diagnostic.isBlank())
+            assertFalse(diagnostic.contains("SHA-1", ignoreCase = true))
+            assertFalse(diagnostic.contains(appContext.packageName, ignoreCase = true))
+            assertFalse(diagnostic.contains("GitHub Workflow", ignoreCase = true))
+            assertFalse(diagnostic.contains("UnregisteredOnApiConsole", ignoreCase = true))
+            assertFalse(diagnostic.contains(DriveSyncManager.DEFAULT_WEB_OAUTH_CLIENT_ID, ignoreCase = true))
 
             val backupFile = java.io.File(appContext.getExternalFilesDir(null), "utk_notes_backup_usuario.gms@gmail.com.json")
             assertTrue(backupFile.exists())
@@ -418,6 +424,45 @@ class MultiAccountAndMergeRobolectricTest {
             } finally {
                 tempFile.delete()
             }
+        }
+    }
+
+    @Test
+    fun `StorageCloudSettingsScreen hides SHA-1, package name, and Client ID even when GMS diagnostic is active`() {
+        val backupFile = java.io.File(appContext.getExternalFilesDir(null), "utk_notes_backup_privado@gmail.com.json")
+        try {
+            val viewModel = AetherViewModel(appContext)
+            viewModel.syncManager.connectDrive("privado@gmail.com")
+            runBlocking {
+                viewModel.syncManager.handleAuthorizationResolutionResult(android.app.Activity.RESULT_CANCELED, null)
+            }
+
+            composeTestRule.setContent {
+                MyApplicationTheme {
+                    StorageCloudSettingsScreen(
+                        viewModel = viewModel,
+                        onBack = {},
+                        onSignedOut = {}
+                    )
+                }
+            }
+
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("storage_cloud_lazy_column")
+                .performScrollToNode(hasTestTag("drive_diagnostic_box"))
+            composeTestRule.onNodeWithTag("drive_diagnostic_box").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("storage_cloud_lazy_column")
+                .performScrollToNode(hasTestTag("drive_alt_oauth_btn"))
+            composeTestRule.waitForIdle()
+
+            composeTestRule.onNodeWithTag("drive_alt_oauth_btn").assertIsDisplayed()
+            assertEquals(0, composeTestRule.onAllNodesWithTag("copy_apk_sha1_btn").fetchSemanticsNodes().size)
+            assertEquals(0, composeTestRule.onAllNodesWithTag("launch_browser_oauth_confirm_btn").fetchSemanticsNodes().size)
+            composeTestRule.onNodeWithText("SHA-1", substring = true, ignoreCase = true).assertDoesNotExist()
+            composeTestRule.onNodeWithText(appContext.packageName, substring = true).assertDoesNotExist()
+            composeTestRule.onNodeWithText(DriveSyncManager.DEFAULT_WEB_OAUTH_CLIENT_ID, substring = true).assertDoesNotExist()
+        } finally {
+            backupFile.delete()
         }
     }
 }

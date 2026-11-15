@@ -133,17 +133,6 @@ jobs:
               print("App icon image file already exists (with webp, png, or other extension).")
           '
 
-      - name: Setup Release Keystore
-        env:
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
-        run: |
-          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
-            echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > my-upload-key.keystore
-            echo "Successfully restored Release Keystore file."
-          else
-            echo "WARNING: RELEASE_KEYSTORE_BASE64 secret is not set. Release APK signing will be skipped if keystore is missing."
-          fi
-
       - name: Setup Debug Keystore
         run: |
           if [ -f "debug.keystore.base64" ]; then
@@ -154,7 +143,7 @@ jobs:
             keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
             base64 -w 0 debug.keystore > debug.keystore.base64
           fi
-          echo "Verifying debug keystore fingerprints..."
+          echo "Verifying signing keystore fingerprints..."
           keytool -list -v -keystore debug.keystore -alias androiddebugkey -storepass android -keypass android | grep -E "(SHA1|SHA256)" || true
 
       - name: Regenerate Gradle Wrapper
@@ -166,19 +155,10 @@ jobs:
           chmod +x gradlew
 
       - name: Build with Gradle
-        env:
-          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          KEY_ALIAS: "my-key-alias"
-          KEYSTORE_PATH: "my-upload-key.keystore"
         run: |
-          if [ -f "my-upload-key.keystore" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
-            echo "Building signed Release APK..."
-            ./gradlew assembleRelease --no-daemon
-          else
-            echo "Keystore or passwords missing, building Debug APK instead..."
-            ./gradlew assembleDebug --no-daemon
-          fi
+          echo "Building APK signed with registered debug.keystore (matches Console & Firebase SHA-1)..."
+          rm -f my-upload-key.keystore
+          ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK Artifacts
         uses: actions/upload-artifact@v4
@@ -186,4 +166,3 @@ jobs:
           name: UTKNotes-Apks
           path: |
             app/build/outputs/apk/debug/*.apk
-            app/build/outputs/apk/release/*.apk

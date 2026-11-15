@@ -1675,21 +1675,15 @@ class DriveSyncManager(
         statusCode: Int?,
         rawDetails: String?
     ): String {
-        val sha1 = getAppSha1Fingerprint().ifBlank { "No disponible" }
-        val detailNote = when {
-            rawDetails?.contains("UnregisteredOnApiConsole", ignoreCase = true) == true || statusCode == 10 ->
-                "Cliente OAuth de Android no registrado para esta firma (DEVELOPER_ERROR / UnregisteredOnApiConsole)."
+        val statusSummary = when {
             resultCode == Activity.RESULT_CANCELED ->
-                "Google Play Services cerró o rechazó la ventana de autorización en 1 s. Esto ocurre cuando el APK (compilado en GitHub Workflow) tiene una huella SHA-1 distinta a la registrada en Google Cloud."
-            !rawDetails.isNullOrBlank() -> rawDetails
-            else -> "Google Play Services no pudo completar la autorización automática de Drive."
+                "No se completó la autorización automática de Google Drive."
+            rawDetails?.contains("UnregisteredOnApiConsole", ignoreCase = true) == true || statusCode == 10 ->
+                "La autorización directa con Google Play Services no está disponible en esta instalación."
+            else ->
+                "No se pudo conectar automáticamente con Google Drive."
         }
-        return buildString {
-            append(detailNote)
-            append("\n• Paquete: ${context.packageName}")
-            append("\n• SHA-1 APK: $sha1")
-            append("\n• Solución sin cerrar la app: usa «OAuth Navegador» abajo, exporta respaldo JSON o registra este SHA-1 en Google Cloud Console. Tus notas en $email siguen guardándose localmente.")
-        }
+        return "$statusSummary Tus notas en $email siguen respaldadas de forma segura en este dispositivo. Puedes usar «Autorizar Drive en navegador» o «Exportar JSON» abajo."
     }
 
     suspend fun launchAlternativeBrowserOAuth(
@@ -1771,7 +1765,7 @@ class DriveSyncManager(
             }
 
             if (!authError.isNullOrBlank()) {
-                val msg = "OAuth navegador rechazado ($authError). Verifica el Client ID de tipo 'Aplicación de escritorio' en Google Cloud."
+                val msg = "No se completó la autorización en el navegador. Puedes intentarlo de nuevo o usar «Exportar JSON»."
                 _gmsAuthDiagnostic.value = msg
                 _syncState.value = SyncState.Error(msg)
                 return@withContext Result.failure(Exception(msg))
@@ -1800,9 +1794,7 @@ class DriveSyncManager(
             client.newCall(tokenRequest).execute().use { resp ->
                 val rawBody = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
-                    val errDesc = runCatching { JSONObject(rawBody).optString("error_description") }
-                        .getOrNull().orEmpty().ifBlank { rawBody.take(180) }
-                    val msg = "No se pudo canjear el token OAuth (${resp.code}): $errDesc. Si aparece redirect_uri_mismatch o invalid_client, crea un Client ID 'Desktop app' en Google Cloud e ingrésalo aquí."
+                    val msg = "No se pudo completar el acceso con Google Drive en el navegador (código ${resp.code}). Intenta de nuevo o usa «Exportar JSON»."
                     _gmsAuthDiagnostic.value = msg
                     _syncState.value = SyncState.Error(msg)
                     return@withContext Result.failure(Exception(msg))

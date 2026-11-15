@@ -1,9 +1,5 @@
 package com.example.ui.settings
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -52,7 +48,6 @@ import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -86,9 +81,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -131,7 +124,6 @@ fun StorageCloudSettingsScreen(
         viewModel.refreshStorageMetrics()
     }
 
-    val context = LocalContext.current
     val metrics by viewModel.storageMetrics.collectAsStateWithLifecycle()
     val availableAccounts by viewModel.availableStorageAccounts.collectAsStateWithLifecycle()
     val inspectedAccountId by viewModel.inspectedAccountId.collectAsStateWithLifecycle()
@@ -141,10 +133,8 @@ fun StorageCloudSettingsScreen(
     val isConnected by viewModel.syncManager.isConnected.collectAsStateWithLifecycle()
     val syncState by viewModel.syncManager.syncState.collectAsStateWithLifecycle()
     val gmsAuthDiagnostic by viewModel.syncManager.gmsAuthDiagnostic.collectAsStateWithLifecycle()
-    val apkSha1 = remember { viewModel.syncManager.getApkSigningSha1().ifBlank { "No disponible" } }
     val expandedBooks = remember { mutableStateMapOf<String, Boolean>() }
     var transferRequest by remember { mutableStateOf<TransferDialogRequest?>(null) }
-    var showBrowserOAuthDialog by remember { mutableStateOf(false) }
 
     val activeAccountId = currentEmail?.takeIf { it.isNotBlank() } ?: "offline"
     val selectedAccountId = inspectedAccountId ?: activeAccountId
@@ -545,7 +535,7 @@ fun StorageCloudSettingsScreen(
                                     ) {
                                         Column(
                                             modifier = Modifier.padding(10.dp),
-                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
                                             Text(
                                                 text = statusMsg,
@@ -553,56 +543,6 @@ fun StorageCloudSettingsScreen(
                                                 fontSize = 12.sp,
                                                 lineHeight = 16.sp
                                             )
-                                            if (isRealGoogleAccount && isErrorState) {
-                                                HorizontalDivider(color = CosmicBorder.copy(alpha = 0.5f))
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.SpaceBetween
-                                                ) {
-                                                    Column(modifier = Modifier.weight(1f)) {
-                                                        Text(
-                                                            text = appText("Huella SHA-1 de este APK:", "This APK SHA-1 fingerprint:"),
-                                                            color = TextSecondary,
-                                                            fontSize = 11.sp,
-                                                            fontWeight = FontWeight.SemiBold
-                                                        )
-                                                        Text(
-                                                            text = apkSha1,
-                                                            color = TextPrimary,
-                                                            fontSize = 10.5.sp,
-                                                            fontFamily = FontFamily.Monospace,
-                                                            maxLines = 2,
-                                                            overflow = TextOverflow.Ellipsis
-                                                        )
-                                                    }
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    OutlinedButton(
-                                                        onClick = {
-                                                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                                            cm.setPrimaryClip(ClipData.newPlainText("APK SHA-1", apkSha1))
-                                                            Toast.makeText(
-                                                                context,
-                                                                "SHA-1 copiado al portapapeles",
-                                                                Toast.LENGTH_SHORT
-                                                            ).show()
-                                                        },
-                                                        border = BorderStroke(1.dp, GeminiBlue),
-                                                        modifier = Modifier
-                                                            .minimumInteractiveComponentSize()
-                                                            .testTag("copy_apk_sha1_btn")
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = Icons.Default.ContentCopy,
-                                                            contentDescription = appText("Copiar SHA-1", "Copy SHA-1"),
-                                                            tint = GeminiBlue,
-                                                            modifier = Modifier.size(15.dp)
-                                                        )
-                                                        Spacer(modifier = Modifier.width(4.dp))
-                                                        Text("SHA-1", color = GeminiBlue, fontSize = 11.5.sp)
-                                                    }
-                                                }
-                                            }
                                         }
                                     }
                                 }
@@ -638,7 +578,7 @@ fun StorageCloudSettingsScreen(
                                 }
                                 Spacer(modifier = Modifier.height(8.dp))
                                 OutlinedButton(
-                                    onClick = { showBrowserOAuthDialog = true },
+                                    onClick = { viewModel.launchAlternativeBrowserOAuth("", "") },
                                     border = BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.7f)),
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -806,126 +746,6 @@ fun StorageCloudSettingsScreen(
             }
         )
     }
-
-    if (showBrowserOAuthDialog) {
-        BrowserOAuthConfigDialog(
-            initialClientId = viewModel.syncManager.getSavedCustomOAuthClientId(),
-            initialClientSecret = viewModel.syncManager.getSavedCustomOAuthClientSecret(),
-            apkSha1 = apkSha1,
-            onDismiss = { showBrowserOAuthDialog = false },
-            onLaunchOAuth = { clientId, clientSecret ->
-                showBrowserOAuthDialog = false
-                viewModel.launchAlternativeBrowserOAuth(clientId, clientSecret)
-            }
-        )
-    }
-}
-
-@Composable
-private fun BrowserOAuthConfigDialog(
-    initialClientId: String,
-    initialClientSecret: String,
-    apkSha1: String,
-    onDismiss: () -> Unit,
-    onLaunchOAuth: (String, String) -> Unit
-) {
-    var clientId by remember(initialClientId) { mutableStateOf(initialClientId) }
-    var clientSecret by remember(initialClientSecret) { mutableStateOf(initialClientSecret) }
-    val scrollState = rememberScrollState()
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = CosmicSurface,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Security, contentDescription = null, tint = GeminiBlue)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = appText("OAuth en navegador (PKCE)", "Browser OAuth (PKCE)"),
-                    color = TextPrimary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp
-                )
-            }
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 360.dp)
-                    .verticalScroll(scrollState),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text(
-                    text = appText(
-                        "Este flujo abre el navegador y evita Google Play Services cuando tu APK (por ejemplo, de GitHub Workflow) tiene una firma SHA-1 no autorizada.",
-                        "This opens your browser and bypasses Play Services when your APK signature SHA-1 isn't registered."
-                    ),
-                    color = TextSecondary,
-                    fontSize = 12.sp
-                )
-                Text(
-                    text = appText(
-                        "Recomendado: usa un Client ID de Google Cloud tipo «Aplicación de escritorio (Desktop app)» que admite redirección local http://127.0.0.1.",
-                        "Recommended: use a Google Cloud 'Desktop app' Client ID allowing loopback http://127.0.0.1."
-                    ),
-                    color = GeminiBlue,
-                    fontSize = 11.5.sp
-                )
-                OutlinedTextField(
-                    value = clientId,
-                    onValueChange = { clientId = it },
-                    singleLine = true,
-                    label = { Text("OAuth Client ID") },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = GeminiBlue,
-                        unfocusedBorderColor = CosmicBorder,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = clientSecret,
-                    onValueChange = { clientSecret = it },
-                    singleLine = true,
-                    label = { Text(appText("Client Secret (opcional)", "Client Secret (optional)")) },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = GeminiBlue,
-                        unfocusedBorderColor = CosmicBorder,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Text(
-                    text = "SHA-1 APK: $apkSha1",
-                    color = TextSecondary,
-                    fontSize = 10.5.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onLaunchOAuth(clientId, clientSecret) },
-                enabled = clientId.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = GeminiBlue),
-                modifier = Modifier.testTag("launch_browser_oauth_confirm_btn")
-            ) {
-                Text(
-                    text = appText("Abrir navegador", "Open browser"),
-                    color = GeminiOnPrimary,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(appText("Cancelar", "Cancel"), color = TextSecondary)
-            }
-        }
-    )
 }
 
 @Composable
