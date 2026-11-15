@@ -452,10 +452,11 @@ class MultiAccountAndMergeRobolectricTest {
                 .performScrollToNode(hasTestTag("drive_diagnostic_box"))
             composeTestRule.onNodeWithTag("drive_diagnostic_box").assertIsDisplayed()
             composeTestRule.onNodeWithTag("storage_cloud_lazy_column")
-                .performScrollToNode(hasTestTag("drive_alt_oauth_btn"))
+                .performScrollToNode(hasTestTag("backup_export_json_btn"))
             composeTestRule.waitForIdle()
 
-            composeTestRule.onNodeWithTag("drive_alt_oauth_btn").assertIsDisplayed()
+            composeTestRule.onNodeWithTag("backup_export_json_btn").assertIsDisplayed()
+            assertEquals(0, composeTestRule.onAllNodesWithTag("drive_alt_oauth_btn").fetchSemanticsNodes().size)
             assertEquals(0, composeTestRule.onAllNodesWithTag("copy_apk_sha1_btn").fetchSemanticsNodes().size)
             assertEquals(0, composeTestRule.onAllNodesWithTag("launch_browser_oauth_confirm_btn").fetchSemanticsNodes().size)
             composeTestRule.onNodeWithText("SHA-1", substring = true, ignoreCase = true).assertDoesNotExist()

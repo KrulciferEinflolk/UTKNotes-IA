@@ -159,7 +159,7 @@ class MainActivity : ComponentActivity() {
                         viewModel.handleAuthResolutionResult(result.resultCode, result.data) {
                             Toast.makeText(
                                 rootContext,
-                                "No se pudo completar la autorización de Google Drive. Abre Ajustes > Almacenamiento y nube para autorizar desde el navegador o exportar JSON.",
+                                "No se pudo completar la autorización de Google Drive. Abre Ajustes > Almacenamiento y nube para reintentar o exportar JSON.",
                                 Toast.LENGTH_LONG
                             ).show()
                         }
@@ -184,7 +184,7 @@ class MainActivity : ComponentActivity() {
                     viewModel.handleAuthResolutionResult(result.resultCode, result.data) {
                         Toast.makeText(
                             rootContext,
-                            "No se pudo completar la autorización de Google Drive. Abre Ajustes > Almacenamiento y nube para autorizar desde el navegador o exportar JSON.",
+                            "No se pudo completar la autorización de Google Drive. Abre Ajustes > Almacenamiento y nube para reintentar o exportar JSON.",
                             Toast.LENGTH_LONG
                         ).show()
                     }

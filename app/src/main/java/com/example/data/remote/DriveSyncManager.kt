@@ -217,6 +217,11 @@ class DriveSyncManager(
             .commit()
     }
 
+    fun hasCustomDesktopOAuthClient(): Boolean {
+        val saved = prefs.getString(PREF_CUSTOM_OAUTH_CLIENT_ID, null)?.trim().orEmpty()
+        return saved.isNotBlank() && saved != DEFAULT_WEB_OAUTH_CLIENT_ID
+    }
+
     fun hasBrowserOAuthCredentials(email: String): Boolean {
         val key = normalizeAccountKey(email)
         if (key == "offline") return false
@@ -1557,7 +1562,10 @@ class DriveSyncManager(
             return null
         }
 
-        val account = Account(email, "com.google")
+        val matchedSystemAccount = runCatching {
+            AccountManager.get(context).getAccountsByType("com.google")
+                .firstOrNull { it.name.equals(email, ignoreCase = true) }
+        }.getOrNull()
         val requestedScopes = listOf(
             Scope("https://www.googleapis.com/auth/drive.file"),
             Scope("https://www.googleapis.com/auth/drive.appdata")
@@ -1565,10 +1573,12 @@ class DriveSyncManager(
 
         var lastAuthError: Exception? = null
         try {
-            val authRequest = AuthorizationRequest.builder()
+            val authReqBuilder = AuthorizationRequest.builder()
                 .setRequestedScopes(requestedScopes)
-                .setAccount(account)
-                .build()
+            if (matchedSystemAccount != null) {
+                authReqBuilder.setAccount(matchedSystemAccount)
+            }
+            val authRequest = authReqBuilder.build()
             val authResult = suspendCancellableCoroutine { cont ->
                 Identity.getAuthorizationClient(context)
                     .authorize(authRequest)
@@ -1609,11 +1619,11 @@ class DriveSyncManager(
         val rawFirstMsg = lastAuthError?.localizedMessage.orEmpty()
         val isSignatureOrConsoleErr = rawFirstMsg.contains("UnregisteredOnApiConsole", ignoreCase = true) ||
             (lastAuthError as? ApiException)?.statusCode == 10
-        if (!isSignatureOrConsoleErr) {
+        if (!isSignatureOrConsoleErr && matchedSystemAccount != null) {
             val primaryScope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata"
             val fallbackScope = "oauth2:https://www.googleapis.com/auth/drive.appdata"
             try {
-                val token = GoogleAuthUtil.getToken(context, account, primaryScope)
+                val token = GoogleAuthUtil.getToken(context, matchedSystemAccount, primaryScope)
                 if (token.isNotBlank()) {
                     cachedAccessToken = token
                     cachedTokenEmail = email
@@ -1631,7 +1641,7 @@ class DriveSyncManager(
                 return null
             } catch (_: Exception) {
                 try {
-                    val token = GoogleAuthUtil.getToken(context, account, fallbackScope)
+                    val token = GoogleAuthUtil.getToken(context, matchedSystemAccount, fallbackScope)
                     if (token.isNotBlank()) {
                         cachedAccessToken = token
                         cachedTokenEmail = email
@@ -1660,7 +1670,8 @@ class DriveSyncManager(
             email = email,
             resultCode = null,
             statusCode = statusCode,
-            rawDetails = lastAuthError?.localizedMessage
+            rawDetails = lastAuthError?.localizedMessage,
+            accountMissingOnDevice = matchedSystemAccount == null
         )
         _gmsAuthDiagnostic.value = diag
         if (emitSyncErrors) {
@@ -1673,17 +1684,25 @@ class DriveSyncManager(
         email: String,
         resultCode: Int?,
         statusCode: Int?,
-        rawDetails: String?
+        rawDetails: String?,
+        accountMissingOnDevice: Boolean = false
     ): String {
+        val codeSuffix = statusCode?.let { " (código $it)" }.orEmpty()
         val statusSummary = when {
+            accountMissingOnDevice ->
+                "La cuenta $email no está vinculada en los Ajustes de Google de este dispositivo."
+            statusCode == 10 || rawDetails?.contains("UnregisteredOnApiConsole", ignoreCase = true) == true ->
+                "La firma del APK instalado o la API de Google Drive aún no coincide con el proyecto en la nube$codeSuffix."
+            statusCode == 12500 ->
+                "La pantalla de permisos de Google Drive requiere aprobar los alcances o tu correo como usuario de prueba$codeSuffix."
+            statusCode == 7 ->
+                "No se pudo contactar a Google Play Services por un fallo temporal de red$codeSuffix."
             resultCode == Activity.RESULT_CANCELED ->
-                "No se completó la autorización automática de Google Drive."
-            rawDetails?.contains("UnregisteredOnApiConsole", ignoreCase = true) == true || statusCode == 10 ->
-                "La autorización directa con Google Play Services no está disponible en esta instalación."
+                "No se completó la autorización automática de Google Drive$codeSuffix."
             else ->
-                "No se pudo conectar automáticamente con Google Drive."
+                "No se pudo conectar automáticamente con Google Drive$codeSuffix."
         }
-        return "$statusSummary Tus notas en $email siguen respaldadas de forma segura en este dispositivo. Puedes usar «Autorizar Drive en navegador» o «Exportar JSON» abajo."
+        return "$statusSummary Tus notas en $email siguen respaldadas de forma segura en este dispositivo. Puedes reintentar con «Sincronizar ahora» o usar «Exportar JSON» abajo."
     }
 
     suspend fun launchAlternativeBrowserOAuth(
@@ -1694,7 +1713,14 @@ class DriveSyncManager(
         if (email.isNullOrBlank() || email == "offline") {
             return@withContext Result.failure(IllegalStateException("Inicia sesión con una cuenta de Google antes de autorizar Drive."))
         }
-        val cleanClientId = clientIdInput.trim().ifBlank { DEFAULT_WEB_OAUTH_CLIENT_ID }
+        val cleanClientId = clientIdInput.trim().ifBlank {
+            prefs.getString(PREF_CUSTOM_OAUTH_CLIENT_ID, null)?.trim().orEmpty()
+        }
+        if (cleanClientId.isBlank() || cleanClientId == DEFAULT_WEB_OAUTH_CLIENT_ID) {
+            val msg = "La autorización directa en navegador no está habilitada para clientes Web en redirección local. Usa «Sincronizar ahora» o «Exportar JSON»."
+            _syncState.value = SyncState.Error(msg)
+            return@withContext Result.failure(IllegalStateException(msg))
+        }
         val cleanSecret = clientSecretInput.trim()
         saveCustomOAuthConfig(cleanClientId, cleanSecret)
 

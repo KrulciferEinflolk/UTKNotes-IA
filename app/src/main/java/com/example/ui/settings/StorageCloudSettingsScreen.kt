@@ -576,23 +576,25 @@ fun StorageCloudSettingsScreen(
                                         Text(appText("Carpetas Drive", "Drive Folders"), color = GeminiBlue, fontSize = 12.sp)
                                     }
                                 }
-                                Spacer(modifier = Modifier.height(8.dp))
-                                OutlinedButton(
-                                    onClick = { viewModel.launchAlternativeBrowserOAuth("", "") },
-                                    border = BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.7f)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .minimumInteractiveComponentSize()
-                                        .testTag("drive_alt_oauth_btn")
-                                ) {
-                                    Icon(Icons.Default.Key, contentDescription = null, tint = GeminiBlue, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = appText("Autorizar Drive en navegador (OAuth alternativo)", "Authorize Drive in browser (Alt OAuth)"),
-                                        color = GeminiBlue,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
+                                if (viewModel.syncManager.hasCustomDesktopOAuthClient()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    OutlinedButton(
+                                        onClick = { viewModel.launchAlternativeBrowserOAuth("", "") },
+                                        border = BorderStroke(1.dp, GeminiBlue.copy(alpha = 0.7f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .minimumInteractiveComponentSize()
+                                            .testTag("drive_alt_oauth_btn")
+                                    ) {
+                                        Icon(Icons.Default.Key, contentDescription = null, tint = GeminiBlue, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = appText("Autorizar Drive en navegador (OAuth alternativo)", "Authorize Drive in browser (Alt OAuth)"),
+                                            color = GeminiBlue,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    }
                                 }
                                 Spacer(modifier = Modifier.height(8.dp))
                                 OutlinedButton(
