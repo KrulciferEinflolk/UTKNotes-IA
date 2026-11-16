@@ -561,6 +561,43 @@ class MultiAccountAndMergeRobolectricTest {
             val pickerSuccess = syncManager.handleAccountPickerResult(android.app.Activity.RESULT_OK, matchingData)
             assertTrue(pickerSuccess is com.example.data.remote.AuthResolutionOutcome.Authorized)
 
+            // 5. Code 10 diagnostic distinguishes mismatched vs registered signing keys without leaking private details
+            syncManager.sha1FingerprintOverrideForTests = { "3D:4C:A1:41:51:3E:4A:26:69:A0:BE:02:1A:00:6E:9C:9A:60:13:E6" }
+            val mismatchDiag = syncManager.buildGmsFailureDiagnostic(
+                email = "fallback.code8@gmail.com",
+                resultCode = null,
+                statusCode = 10,
+                rawDetails = "10: DEVELOPER_ERROR"
+            )
+            assertTrue(mismatchDiag.contains("firma distinta", ignoreCase = true))
+            assertFalse(mismatchDiag.contains("SHA-1", ignoreCase = true))
+            assertFalse(mismatchDiag.contains("3D:4C", ignoreCase = true))
+            assertFalse(mismatchDiag.contains(appContext.packageName, ignoreCase = true))
+
+            syncManager.sha1FingerprintOverrideForTests = { "0C:CF:C0:5E:AC:EC:49:FA:CC:1F:2F:2D:8B:98:B2:55:A0:69:7E:3C" }
+            val matchedKeyDiag = syncManager.buildGmsFailureDiagnostic(
+                email = "fallback.code8@gmail.com",
+                resultCode = null,
+                statusCode = 10,
+                rawDetails = "10: UnregisteredOnApiConsole"
+            )
+            assertTrue(matchedKeyDiag.contains("coincide", ignoreCase = true))
+            assertFalse(matchedKeyDiag.contains("SHA-1", ignoreCase = true))
+            assertFalse(matchedKeyDiag.contains("0C:CF", ignoreCase = true))
+            assertFalse(matchedKeyDiag.contains("UnregisteredOnApiConsole", ignoreCase = true))
+            assertFalse(matchedKeyDiag.contains(appContext.packageName, ignoreCase = true))
+
+            syncManager.sha1FingerprintOverrideForTests = { "3B:F4:A3:78:CC:E2:47:8D:93:3C:7F:53:84:6F:FB:D5:3F:0C:74:F1" }
+            val secondaryMatchedKeyDiag = syncManager.buildGmsFailureDiagnostic(
+                email = "fallback.code8@gmail.com",
+                resultCode = null,
+                statusCode = 10,
+                rawDetails = "10: UnregisteredOnApiConsole"
+            )
+            assertTrue(secondaryMatchedKeyDiag.contains("coincide", ignoreCase = true))
+            assertFalse(secondaryMatchedKeyDiag.contains("3B:F4", ignoreCase = true))
+            assertFalse(secondaryMatchedKeyDiag.contains("SHA-1", ignoreCase = true))
+
             java.io.File(appContext.getExternalFilesDir(null), "utk_notes_backup_fallback.code8@gmail.com.json").delete()
         }
     }

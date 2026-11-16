@@ -59,6 +59,7 @@ import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.CoroutineScope
@@ -105,6 +106,10 @@ class DriveSyncManager(
     companion object {
         const val DEFAULT_WEB_OAUTH_CLIENT_ID =
             "854876463054-06pc7gofcrao1f15d85b6jii2o61ts9f.apps.googleusercontent.com"
+        private val REGISTERED_DEBUG_CERT_HASHES = setOf(
+            "0ccfc05eacec49facc1f2f2d8b98b255a0697e3c",
+            "3bf4a378cce2478d933c7f53846ffbd53f0c74f1"
+        )
         private const val PREF_CUSTOM_OAUTH_CLIENT_ID = "custom_oauth_client_id"
         private const val PREF_CUSTOM_OAUTH_CLIENT_SECRET = "custom_oauth_client_secret"
 
@@ -1956,7 +1961,8 @@ class DriveSyncManager(
             } else {
                 LegacyTokenAttempt.Failed(recoverable)
             }
-        } catch (_: Exception) {
+        } catch (firstEx: Exception) {
+            Log.w("DriveSyncManager", "GoogleAuthUtil primary scopes failed for $email: ${firstEx.message}")
             try {
                 val token = legacyTokenFetcher(targetAccount, fallbackScope)
                 if (token.isNotBlank()) {
@@ -1993,20 +1999,46 @@ class DriveSyncManager(
             }
             return overrideRes
         }
+        val nonceBytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val nonce = Base64.encodeToString(nonceBytes, Base64.NO_WRAP or Base64.URL_SAFE or Base64.NO_PADDING)
+        val credentialManager = CredentialManager.create(activity)
+        val actContext = MutableContextWrapper(activity)
+        val primaryOption = GetSignInWithGoogleOption.Builder(DEFAULT_WEB_OAUTH_CLIENT_ID)
+            .setNonce(nonce)
+            .build()
+        val firstAttempt = executeCredentialRequest(credentialManager, actContext, primaryOption, expectedEmail)
+        if (firstAttempt is CredentialAuthResult.SignedIn || firstAttempt is CredentialAuthResult.Canceled) {
+            return firstAttempt
+        }
+        val firstErr = (firstAttempt as CredentialAuthResult.Failed).error
+        if (firstErr is IllegalStateException && firstErr.message?.contains("no coincide", ignoreCase = true) == true) {
+            return firstAttempt
+        }
+        Log.w("DriveSyncManager", "CredentialManager GetSignInWithGoogleOption failed: ${firstErr.javaClass.simpleName}: ${firstErr.message}")
+
+        val fallbackOption = GetGoogleIdOption.Builder()
+            .setFilterByAuthorizedAccounts(false)
+            .setServerClientId(DEFAULT_WEB_OAUTH_CLIENT_ID)
+            .setAutoSelectEnabled(false)
+            .setNonce(nonce)
+            .build()
+        return executeCredentialRequest(credentialManager, actContext, fallbackOption, expectedEmail)
+    }
+
+    private suspend fun executeCredentialRequest(
+        credentialManager: CredentialManager,
+        actContext: Context,
+        option: androidx.credentials.CredentialOption,
+        expectedEmail: String?
+    ): CredentialAuthResult {
         return try {
-            val nonceBytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
-            val nonce = Base64.encodeToString(nonceBytes, Base64.NO_WRAP or Base64.URL_SAFE or Base64.NO_PADDING)
-            val signInOption = GetSignInWithGoogleOption.Builder(DEFAULT_WEB_OAUTH_CLIENT_ID)
-                .setNonce(nonce)
-                .build()
             val request = GetCredentialRequest.Builder()
-                .addCredentialOption(signInOption)
+                .addCredentialOption(option)
                 .build()
-            val credentialManager = CredentialManager.create(activity)
             val result = withContext(Dispatchers.Main) {
                 credentialManager.getCredential(
                     request = request,
-                    context = MutableContextWrapper(activity)
+                    context = actContext
                 )
             }
             val credential = result.credential
@@ -2044,11 +2076,27 @@ class DriveSyncManager(
         matchedSystemAccount: Account?,
         scopes: List<Scope>
     ): GisAuthAttempt {
+        val firstResult = executeAuthorizationClientCall(email, matchedSystemAccount, scopes)
+        if (firstResult is GisAuthAttempt.Failed &&
+            matchedSystemAccount != null &&
+            (firstResult.error as? ApiException)?.statusCode != 10
+        ) {
+            Log.w("DriveSyncManager", "Retrying AuthorizationClient without explicit Account binding for $email")
+            return executeAuthorizationClientCall(email, null, scopes)
+        }
+        return firstResult
+    }
+
+    private suspend fun executeAuthorizationClientCall(
+        email: String,
+        account: Account?,
+        scopes: List<Scope>
+    ): GisAuthAttempt {
         return try {
             val authReqBuilder = AuthorizationRequest.builder()
                 .setRequestedScopes(scopes)
-            if (matchedSystemAccount != null) {
-                authReqBuilder.setAccount(matchedSystemAccount)
+            if (account != null) {
+                authReqBuilder.setAccount(account)
             }
             val authRequest = authReqBuilder.build()
             val authResult = suspendCancellableCoroutine { cont ->
@@ -2064,6 +2112,14 @@ class DriveSyncManager(
             if (authResult.hasResolution() && authResult.pendingIntent != null) {
                 GisAuthAttempt.NeedsResolution(authResult.pendingIntent!!.intentSender)
             } else {
+                val returnedEmail = runCatching { authResult.toGoogleSignInAccount()?.email?.trim() }.getOrNull()
+                if (!returnedEmail.isNullOrBlank() && !returnedEmail.equals(email, ignoreCase = true)) {
+                    return GisAuthAttempt.Failed(
+                        IllegalStateException(
+                            "La cuenta seleccionada ($returnedEmail) no coincide con la sesión activa ($email)."
+                        )
+                    )
+                }
                 val token = authResult.accessToken
                 if (!token.isNullOrBlank()) {
                     GisAuthAttempt.Token(token)
@@ -2074,7 +2130,7 @@ class DriveSyncManager(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w("DriveSyncManager", "AuthorizationClient attempt for $email (${scopes.size} scopes): ${e.message}")
+            Log.w("DriveSyncManager", "AuthorizationClient attempt for $email (${scopes.size} scopes, withAccount=${account != null}): ${e.message}")
             GisAuthAttempt.Failed(e)
         }
     }
@@ -2286,10 +2342,23 @@ class DriveSyncManager(
             }
         }
 
+        // Reuse previously signed-in GoogleSignInAccount if it matches the active session email
+        val lastSignedAccount = runCatching { GoogleSignIn.getLastSignedInAccount(getAuthClientContext()) }.getOrNull()
+        if (lastSignedAccount != null &&
+            lastSignedAccount.email?.trim()?.equals(email, ignoreCase = true) == true &&
+            lastSignedAccount.account != null
+        ) {
+            resolvedGoogleAccounts.putIfAbsent(key, lastSignedAccount.account!!)
+            if (matchedSystemAccount == null) {
+                matchedSystemAccount = lastSignedAccount.account
+            }
+        }
+
         // Fallback via GoogleAuthUtil if AuthorizationClient is unavailable/rejected or legacy recovery succeeded
         val rawFirstMsg = lastAuthError?.localizedMessage.orEmpty()
+        val firstApiCode = (lastAuthError as? ApiException)?.statusCode
         val isSignatureOrConsoleErr = rawFirstMsg.contains("UnregisteredOnApiConsole", ignoreCase = true) ||
-            (lastAuthError as? ApiException)?.statusCode == 10
+            firstApiCode == 10
         if (!isSignatureOrConsoleErr && (matchedSystemAccount != null || allowInteractiveAuth || skipAuthorizationClient)) {
             when (val legacyRes = tryAcquireViaGoogleAuthUtil(email, matchedSystemAccount, allowInteractiveAuth)) {
                 is LegacyTokenAttempt.Token -> {
@@ -2313,7 +2382,9 @@ class DriveSyncManager(
                     lastAuthError = IllegalStateException("Se requiere autorización para Google Drive.")
                 }
                 is LegacyTokenAttempt.Failed -> {
-                    lastAuthError = legacyRes.error
+                    if (firstApiCode == null) {
+                        lastAuthError = legacyRes.error
+                    }
                 }
             }
         }
@@ -2347,7 +2418,34 @@ class DriveSyncManager(
                                 return null
                             }
                             is GisAuthAttempt.Failed -> {
-                                lastAuthError = postCredAppData.error
+                                if ((lastAuthError as? ApiException)?.statusCode == null) {
+                                    lastAuthError = postCredAppData.error
+                                }
+                            }
+                        }
+                        when (val postCredLegacy = tryAcquireViaGoogleAuthUtil(email, matchedSystemAccount, allowInteractiveAuth = true)) {
+                            is LegacyTokenAttempt.Token -> {
+                                cachedAccessToken = postCredLegacy.accessToken
+                                cachedTokenEmail = email
+                                cachedTokenExpiresAtMs = System.currentTimeMillis() + 45L * 60_000L
+                                gmsBlockedAccounts.remove(key)
+                                preferLegacyAuthAccounts.add(key)
+                                _gmsAuthDiagnostic.value = null
+                                return postCredLegacy.accessToken
+                            }
+                            is LegacyTokenAttempt.Recoverable -> {
+                                if (!legacyRecoveryAttemptedAccounts.contains(key)) {
+                                    legacyRecoveryAttemptedAccounts.add(key)
+                                    preferLegacyAuthAccounts.add(key)
+                                    _recoveryIntent.value = postCredLegacy.intent
+                                    if (emitSyncErrors) {
+                                        _syncState.value = SyncState.Error("Se requiere permiso para acceder a Google Drive. Por favor concede la autorización.")
+                                    }
+                                    return null
+                                }
+                            }
+                            is LegacyTokenAttempt.Failed -> {
+                                Log.w("DriveSyncManager", "GoogleAuthUtil after CredentialManager failed: ${postCredLegacy.error.message}")
                             }
                         }
                     }
@@ -2401,7 +2499,7 @@ class DriveSyncManager(
         return null
     }
 
-    private fun buildGmsFailureDiagnostic(
+    internal fun buildGmsFailureDiagnostic(
         email: String,
         resultCode: Int?,
         statusCode: Int?,
@@ -2413,12 +2511,17 @@ class DriveSyncManager(
         }.getOrDefault(ConnectionResult.SUCCESS)
         val codeSuffix = statusCode?.let { " (código $it)" }.orEmpty()
         val statusSummary = when {
-            gmsAvailability != ConnectionResult.SUCCESS ->
+            gmsAvailability != ConnectionResult.SUCCESS && statusCode == null ->
                 "Google Play Services no está disponible o requiere actualización en este dispositivo (estado $gmsAvailability)."
             accountMissingOnDevice ->
                 "La cuenta $email no está vinculada en los Ajustes de Google de este dispositivo."
-            statusCode == 10 || rawDetails?.contains("UnregisteredOnApiConsole", ignoreCase = true) == true ->
-                "La firma del APK instalado o la API de Google Drive aún no coincide con el proyecto en la nube$codeSuffix."
+            statusCode == 10 || rawDetails?.contains("UnregisteredOnApiConsole", ignoreCase = true) == true -> {
+                when (isApkSignedWithRegisteredKey()) {
+                    false -> "Este APK se compiló con una firma distinta a la registrada en la nube$codeSuffix. Instala el APK compilado con el almacén de claves sincronizado para habilitar la sincronización."
+                    true -> "La firma del APK instalado coincide, pero Google rechazó el cliente OAuth o la pantalla de consentimiento$codeSuffix. Revisa que no exista otro proyecto duplicado en la consola, que Google Drive API esté activa y que $email esté en Usuarios de prueba."
+                    null -> "La firma del APK instalado o la API de Google Drive aún no coincide con el proyecto en la nube$codeSuffix."
+                }
+            }
             statusCode == 8 ->
                 "Google Play Services devolvió un error interno al solicitar permisos de Drive$codeSuffix. Verifica que Google Drive API, los permisos de Drive y tu correo como usuario de prueba estén activos en la consola del proyecto, o borra la caché de Google Play Services y reintenta."
             statusCode == 12500 ->
@@ -2431,6 +2534,15 @@ class DriveSyncManager(
                 "No se pudo conectar automáticamente con Google Drive$codeSuffix."
         }
         return "$statusSummary Tus notas en $email siguen respaldadas de forma segura en este dispositivo. Puedes reintentar con «Sincronizar ahora» o usar «Exportar JSON» abajo."
+    }
+
+    internal var sha1FingerprintOverrideForTests: (() -> String)? = null
+
+    private fun isApkSignedWithRegisteredKey(): Boolean? {
+        val sha1 = sha1FingerprintOverrideForTests?.invoke() ?: getAppSha1Fingerprint()
+        if (sha1.isBlank()) return null
+        val normalized = sha1.replace(":", "").lowercase()
+        return normalized in REGISTERED_DEBUG_CERT_HASHES
     }
 
     suspend fun launchAlternativeBrowserOAuth(
